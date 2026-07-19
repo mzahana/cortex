@@ -10,7 +10,63 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
-_M1 (asset registry) in progress — see `docs/tasks/M1-asset-registry.md`._
+_M2 (consumables & stock) next — see `docs/tasks/M2-consumables-stock.md`._
+
+## [0.2.0] - 2026-07-19
+
+Milestone **M1 — Asset registry core**: the heterogeneous asset registry with
+custom fields, trees, full-text search, and the admin/list/detail/edit UI.
+Meets F2 acceptance; a 10k-row corpus searches in well under 500 ms server-side.
+
+### Added
+
+- **Catalog** — `Category` and `Location` self-referential trees, typed
+  `CustomFieldDef`s (text/int/float/bool/date/enum/json with unit, enum options,
+  required, order), `Tag`s, and the `Project` model (extended with a lead), all
+  tenant-scoped with server-side-paginated CRUD endpoints and
+  `category.manage`/`location.manage` enforcement.
+- **Assets** — the `Asset` model (public UUID + unguessable `qr_token`, category,
+  status lifecycle, condition, holder, JSONB custom field values validated
+  against the category's field defs), `Attachment`s (bytes on the media volume,
+  only the key in the database, with a size cap and content-type allowlist),
+  tag links, and CRUD + retire (hide-but-retain, audited) + attachment upload.
+  Asset actions are RBAC-enforced with the project-scoped union-of-memberships
+  rule.
+- **Asset list & search** — server-side pagination (page and cursor), full-text
+  search (weighted `tsvector` maintained by database triggers) with `pg_trgm`
+  fuzzy fallback and relevance ranking, whitelisted ordering, and filters by
+  category, status, location, project, tag, and consumable flag — scope-aware so
+  a project-scoped user sees only their assets, with bounded query counts.
+- **Audit log** — an append-only `AuditLog` (pulled forward to satisfy the audit
+  invariant for `asset.retire`; database-level immutability lands in M5).
+- **Admin & asset UI** — a reusable tree component; admin screens for the
+  category/field-definition and location trees; a virtualized, filterable,
+  searchable Asset List (card and table views); an Asset Detail screen rendering
+  typed custom fields with permission-gated actions; and a category-driven
+  dynamic Asset create/edit form.
+- **Performance tooling** — a reusable 10k+ asset seed command and a perf test
+  suite asserting sub-500 ms paginated list and search at scale.
+
+### Changed
+
+- Database constraint violations (duplicate names, protected deletes) now return
+  RFC 7807 4xx responses instead of HTTP 500.
+- Django's admin moved from `/admin/` to `/django-admin/` so the single-page
+  app owns the `/admin/*` route namespace.
+
+### Security
+
+- Row-Level Security policies added to all nine new tenant-owned tables via the
+  shared helper, keeping the application filter and the database backstop in
+  lockstep; verified by a runtime test that drives a real request over the
+  non-superuser application role.
+- Tenant provisioning fixed to seed roles within the new tenant's context so it
+  works under Row-Level Security. Attachment uploads reject executable/script
+  content types; user-supplied content is escaped throughout the UI.
+
+### Fixed
+
+- Renaming a tag now refreshes the search vectors of every asset carrying it.
 
 ## [0.1.0] - 2026-07-19
 
