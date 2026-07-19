@@ -3,6 +3,7 @@ import {
   ActionIcon,
   AppShell,
   Badge,
+  Button,
   Group,
   Loader,
   Stack,
@@ -35,6 +36,11 @@ export function HomeShell() {
     setLoggingOut(true);
     try {
       await logout();
+    } catch {
+      // `logout()` itself is best-effort and swallows its own errors (see
+      // `useAuth.logout`); this catch is defense-in-depth so a failure
+      // anywhere else in this handler can never leave the button stuck in
+      // its loading state or throw an unhandled rejection.
     } finally {
       setLoggingOut(false);
       navigate("/login", { replace: true });
@@ -74,6 +80,15 @@ export function HomeShell() {
               {me.tenant.name}
             </Badge>
           </Stack>
+
+          <Button
+            size="lg"
+            fullWidth
+            onClick={() => navigate("/assets")}
+            data-testid="nav-assets"
+          >
+            Browse Assets
+          </Button>
 
           <Stack gap="xs">
             <Text fw={600}>Memberships</Text>
@@ -127,6 +142,24 @@ export function HomeShell() {
               ))}
             </Stack>
           )}
+
+          <Stack gap="xs">
+            <Text fw={600}>Admin</Text>
+            <Group gap="xs" wrap="wrap">
+              <Button variant="light" size="xs" onClick={() => navigate("/admin/categories")}>
+                Categories &amp; Fields
+              </Button>
+              <Button variant="light" size="xs" onClick={() => navigate("/admin/locations")}>
+                Locations
+              </Button>
+            </Group>
+            <Text size="xs" c="dimmed">
+              Visible to anyone who can view the inventory tree; write actions
+              inside are gated by <code>category.manage</code>/
+              <code>location.manage</code> (presentation only — the server is
+              the real authority).
+            </Text>
+          </Stack>
 
           <Text size="xs" c="dimmed">
             Home (Scan FAB, asset lists, etc.) lands in later milestones — this
