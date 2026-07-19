@@ -1,0 +1,223 @@
+name: CI
+
+# T0.8 — lint / typecheck / test / build, gated on a clean checkout. No real
+# secrets are required anywhere in this pipeline: every credential below is
+# an ephemeral, CI-only value for a throwaway service container or a
+# check-only settings module (never TUNNEL_TOKEN/BREVO_API_KEY/real DB creds).
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Backend: lint (ruff + black --check)
+  # ---------------------------------------------------------------------------
+  backend-lint:
+    name: backend / lint (ruff, black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements/dev.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements/dev.txt
+      - name: ruff check
+        working-directory: backend
+        run: ruff check .
+      - name: black --check
+        working-directory: backend
+        run: black --check .
+
+  # ---------------------------------------------------------------------------
+  # Backend: typecheck (mypy)
+  # ---------------------------------------------------------------------------
+  backend-typecheck:
+    name: backend / typecheck (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements/dev.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements/dev.txt
+      - name: mypy
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+          # mypy/django-stubs only needs settings to *import* cleanly, not a
+          # real DB — sqlite keeps this job DB-free and fast.
+          SECRET_KEY: ci-mypy-placeholder-not-a-real-secret
+          DATABASE_URL: sqlite:///ci-mypy-placeholder.db
+        run: mypy apps config conftest.py
+
+  # ---------------------------------------------------------------------------
+  # Backend: test (pytest + pytest-django) against a throwaway Postgres 16,
+  # plus migrate up/down/up and `check --deploy` (prod settings) — all against
+  # the same service container.
+  # ---------------------------------------------------------------------------
+  backend-test:
+    name: backend / test + migrate up/down/up + check --deploy
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: lms
+          POSTGRES_USER: lms
+          POSTGRES_PASSWORD: lms_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lms -d lms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Owner/migration role — matches docker-compose's `migrate` one-off
+      # (see docker-compose.yml). Runtime app role for RLS is provisioned BY
+      # the migrations themselves (tenancy.0003_app_db_role), using
+      # APP_DB_USER/APP_DB_PASSWORD below — nothing extra to seed here.
+      DATABASE_URL: postgres://lms:lms_ci_password@localhost:5432/lms
+      APP_DB_USER: lms_app
+      APP_DB_PASSWORD: lms_app_ci_password
+      SECRET_KEY: ci-throwaway-secret-key-not-used-anywhere-real
+      ALLOWED_HOSTS: testserver,localhost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements/dev.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements/dev.txt
+
+      # --- Migrations up / down / up (dev settings: no ALLOWED_HOSTS/HSTS
+      # constraints to fight, matching how `migrate` runs in docker-compose) ---
+      - name: Migrate up
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.dev
+        run: python manage.py migrate --noinput
+
+      - name: Migrate down (full reverse, proves reversibility)
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.dev
+        run: |
+          python manage.py migrate tenancy zero --noinput
+          python manage.py migrate rbac zero --noinput
+          python manage.py migrate projects zero --noinput
+          python manage.py migrate accounts zero --noinput
+
+      - name: Migrate up again
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.dev
+        run: python manage.py migrate --noinput
+
+      # --- `check --deploy` MUST run under prod settings (dev settings emit
+      # W-warnings by design — see docs review note in T0.8 task) ---
+      - name: manage.py check --deploy (prod settings)
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.prod
+          ALLOWED_HOSTS: lms.example.com
+          CSRF_TRUSTED_ORIGINS: https://lms.example.com
+        run: python manage.py check --deploy
+
+      # --- pytest / pytest-django. Runs as the OWNER role (see
+      # config/settings/test.py's docstring): ordinary @pytest.mark.django_db
+      # tests exercise the app-level tenant filter but bypass RLS by table
+      # ownership. The `app_role_connection` fixture (backend/conftest.py)
+      # opens a second, non-superuser `lms_app` connection to the SAME test
+      # DB for the RLS-specific assertion T0.9 needs — see that fixture and
+      # `apps/common/tests/test_smoke.py::test_app_role_connection_is_rls_subject`
+      # for the harness proof. ---
+      - name: pytest
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+        run: pytest -v
+
+  # ---------------------------------------------------------------------------
+  # Frontend: lint (eslint) + typecheck (tsc) + build (vite)
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend / lint, typecheck, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: eslint
+        working-directory: frontend
+        run: npm run lint
+      - name: tsc --noEmit
+        working-directory: frontend
+        run: npm run typecheck
+      - name: vite build
+        working-directory: frontend
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Build images: the shared web/worker app image, plus a `docker compose
+  # config` validation of the full 7-service topology. Depends on the
+  # frontend build succeeding (nginx serves frontend/dist) and both backend
+  # gates passing, so a broken app never gets an image built for it.
+  # ---------------------------------------------------------------------------
+  build-images:
+    name: build images (app + compose config)
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-typecheck, backend-test, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build the shared web/worker app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: lms-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: docker compose config (validate the 7-service topology)
+        run: |
+          cp .env.example .env
+          docker compose config --quiet

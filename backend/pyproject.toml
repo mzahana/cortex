@@ -1,0 +1,61 @@
+# ------------------------------------------------------------------------------
+# Tooling config for the backend (T0.8): ruff (lint), black (format), mypy
+# (types), pytest/pytest-django (tests). CI (`.github/workflows/ci.yml`) runs
+# every one of these from the `backend/` directory as its working dir.
+# ------------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["migrations", "staticfiles", "media"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+# B008: default args calling functions — DRF/Django idioms (e.g. `models.CASCADE`
+# defaults, `Field(default=dict)`) trip this; not worth the noise here.
+# Deliberately NOT enabling pyupgrade ("UP", e.g. Optional[X] -> X | None):
+# it would force a mass, purely-stylistic rewrite of every existing
+# type-hinted module for a T0.8 CI task whose job is a green, meaningful gate
+# — not a repo-wide style migration. Revisit per-app as new code lands.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Star-imports are the documented, deliberate pattern for settings layering
+# (dev.py/prod.py import * from base.py) — see config/settings/*.py docstrings.
+"config/settings/*.py" = ["F401", "F403", "F405"]
+"**/migrations/*.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["apps", "config"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "migrations"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main"]
+mypy_path = "."
+exclude = "(migrations/|staticfiles/|media/)"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+# Kept lenient (no `disallow_untyped_defs`) at M0: the goal here is a green,
+# meaningful CI gate on the code that exists today, not a full strict-mypy
+# migration — tighten per-app as new code lands (see .claude/agents/backend-engineer.md).
+
+[[tool.mypy.overrides]]
+module = "apps.*.migrations.*"
+ignore_errors = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py", "*_test.py", "tests.py"]
+testpaths = ["apps"]
+addopts = "-ra --strict-markers"
