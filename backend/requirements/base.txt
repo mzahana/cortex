@@ -1,0 +1,19 @@
+# ------------------------------------------------------------------------------
+# Real dependency set (T0.3). Pinned exact versions; bump deliberately.
+# django-redis backs BOTH the cache and the session store; Celery talks to Redis
+# directly via CELERY_BROKER_URL/CELERY_RESULT_BACKEND (see docs/architecture.md
+# — Redis does cache + sessions + broker "triple duty").
+# django-filter provides the per-field list filtering required by
+# docs/api-and-ui.md (?search=, ?ordering=, field filters) once list endpoints
+# land in later milestones.
+# ------------------------------------------------------------------------------
+Django==5.0.9
+djangorestframework==3.15.2
+django-filter==24.3
+psycopg[binary]==3.2.3
+django-environ==0.11.2
+django-redis==5.4.0
+celery==5.4.0
+redis==5.0.8
+gunicorn==22.0.0
+argon2-cffi==23.1.0
