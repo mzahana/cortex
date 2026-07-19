@@ -10,7 +10,7 @@ import { ApiError, type ProblemDetails } from "./problem";
 const API_BASE = "/api/v1";
 
 /** Must match `CSRF_COOKIE_NAME` in `backend/config/settings/base.py`. */
-const CSRF_COOKIE_NAME = "lms_csrftoken";
+const CSRF_COOKIE_NAME = "cortex_csrftoken";
 /** Must match `CSRF_HEADER_NAME` (`HTTP_X_CSRFTOKEN`) in the same file — the
  * actual wire header is `X-CSRFToken`. */
 const CSRF_HEADER_NAME = "X-CSRFToken";
@@ -25,7 +25,7 @@ function readCookie(name: string): string | null {
 }
 
 /** `GET /api/v1/auth/csrf` — unauthenticated, no body. Plants the
- * JS-readable `lms_csrftoken` cookie so the client has a token to echo back
+ * JS-readable `cortex_csrftoken` cookie so the client has a token to echo back
  * on the very first write (login), which has no session yet to rely on. */
 async function ensureCsrfCookie(): Promise<void> {
   if (readCookie(CSRF_COOKIE_NAME)) return;
@@ -78,7 +78,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     ...options,
     method,
     headers,
-    credentials: "include", // same-origin session cookie (lms_sessionid)
+    credentials: "include", // same-origin session cookie (cortex_sessionid)
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
 

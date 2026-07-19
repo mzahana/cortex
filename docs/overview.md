@@ -1,4 +1,4 @@
-# LMS — Lab Asset & Inventory Management Platform
+# Cortex — Lab Asset & Inventory Management Platform
 
 ## 1. Purpose
 

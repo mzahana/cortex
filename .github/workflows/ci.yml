@@ -80,13 +80,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: lms
-          POSTGRES_USER: lms
-          POSTGRES_PASSWORD: lms_ci_password
+          POSTGRES_DB: cortex
+          POSTGRES_USER: cortex
+          POSTGRES_PASSWORD: cortex_ci_password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U lms -d lms"
+          --health-cmd "pg_isready -U cortex -d cortex"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -95,9 +95,9 @@ jobs:
       # (see docker-compose.yml). Runtime app role for RLS is provisioned BY
       # the migrations themselves (tenancy.0003_app_db_role), using
       # APP_DB_USER/APP_DB_PASSWORD below — nothing extra to seed here.
-      DATABASE_URL: postgres://lms:lms_ci_password@localhost:5432/lms
-      APP_DB_USER: lms_app
-      APP_DB_PASSWORD: lms_app_ci_password
+      DATABASE_URL: postgres://cortex:cortex_ci_password@localhost:5432/cortex
+      APP_DB_USER: cortex_app
+      APP_DB_PASSWORD: cortex_app_ci_password
       SECRET_KEY: ci-throwaway-secret-key-not-used-anywhere-real
       ALLOWED_HOSTS: testserver,localhost
     steps:
@@ -141,15 +141,15 @@ jobs:
         working-directory: backend
         env:
           DJANGO_SETTINGS_MODULE: config.settings.prod
-          ALLOWED_HOSTS: lms.example.com
-          CSRF_TRUSTED_ORIGINS: https://lms.example.com
+          ALLOWED_HOSTS: cortex.example.com
+          CSRF_TRUSTED_ORIGINS: https://cortex.example.com
         run: python manage.py check --deploy
 
       # --- pytest / pytest-django. Runs as the OWNER role (see
       # config/settings/test.py's docstring): ordinary @pytest.mark.django_db
       # tests exercise the app-level tenant filter but bypass RLS by table
       # ownership. The `app_role_connection` fixture (backend/conftest.py)
-      # opens a second, non-superuser `lms_app` connection to the SAME test
+      # opens a second, non-superuser `cortex_app` connection to the SAME test
       # DB for the RLS-specific assertion T0.9 needs — see that fixture and
       # `apps/common/tests/test_smoke.py::test_app_role_connection_is_rls_subject`
       # for the harness proof. ---
@@ -214,7 +214,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: false
-          tags: lms-app:ci
+          tags: cortex-app:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: docker compose config (validate the 7-service topology)

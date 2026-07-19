@@ -7,7 +7,7 @@ BOTH traps documented in `conftest.py`'s module docstring and
 `config/settings/test.py`'s RLS note:
 
   - Trap 1 (owner-role bypass): every read below goes through
-    `app_role_connection` (the non-superuser, RLS-subject `lms_app` role),
+    `app_role_connection` (the non-superuser, RLS-subject `cortex_app` role),
     never the owner-role Django ORM connection that wrote the rows.
   - Trap 2 (transaction-isolation false-pass): `transaction=True` on this test
     plus `app_role_connection`'s own `transactional_db` dependency make the
@@ -28,7 +28,7 @@ from conftest import set_app_role_tenant
 @pytest.mark.django_db(transaction=True)
 def test_rls_visibility_differential_on_committed_data(app_role_connection):
     """A SAME committed row, visible or invisible SOLELY based on which
-    tenant `app.current_tenant` is set to on the `lms_app` connection.
+    tenant `app.current_tenant` is set to on the `cortex_app` connection.
 
     Includes negative controls: if RLS were disabled or misconfigured, the
     "different tenant" and "no tenant" assertions below would fail (the row

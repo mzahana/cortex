@@ -48,7 +48,7 @@ Sequenced so each milestone is deployable and testable. Rough effort is relative
 - CSV/Excel importer (mapping + dry-run + commit, background); filtered CSV export.
 - Deploy to DS220+ via Container Manager; Cloudflare Tunnel + DNS + SPF/DKIM/DMARC;
   backup jobs; hardening checklist; load test to verify perf targets.
-- **Dep:** M0–M5. **Effort:** M. **Exit:** F11 met; live on `lms.yourdomain.com`; backups tested; load test passes.
+- **Dep:** M0–M5. **Effort:** M. **Exit:** F11 met; live on `cortex.yourdomain.com`; backups tested; load test passes.
 
 > **End of MVP.** Deployable, seeded from your spreadsheet, usable in the workshop.
 

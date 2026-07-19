@@ -45,7 +45,7 @@ export function HomeShell() {
     <AppShell header={{ height: 60 }} padding="md">
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
-          <Title order={4}>LMS</Title>
+          <Title order={4}>Cortex</Title>
           <Tooltip label="Log out">
             <ActionIcon
               variant="subtle"

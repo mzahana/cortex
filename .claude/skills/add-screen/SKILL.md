@@ -2,14 +2,14 @@
 name: add-screen
 description: >-
   The procedure for adding a React + TypeScript PWA screen or major component to the
-  LMS frontend so it is mobile-first, uses the typed API client against the fixed
+  Cortex frontend so it is mobile-first, uses the typed API client against the fixed
   contract, gates actions by the user's effective permissions, and handles errors
   and long lists correctly. Use for any new page/screen or dynamic form. Trigger
   cues: "build the X screen", "new page/route", "add a form", "dynamic custom-field
   form", "list/table view", "calendar UI".
 ---
 
-# Adding an LMS PWA screen
+# Adding an Cortex PWA screen
 
 Mobile-first, one-handed, server-driven. Read `docs/api-and-ui.md` (the screen list +
 the API contract — it's fixed) and `docs/features.md` (acceptance) first.

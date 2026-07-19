@@ -76,7 +76,7 @@ export function LoginScreen() {
   return (
     <Container size={420} py={80}>
       <Title ta="center" order={2}>
-        LMS
+        Cortex
       </Title>
       <Text ta="center" c="dimmed" size="sm" mt={4}>
         Lab Asset &amp; Inventory Management

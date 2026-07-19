@@ -1,7 +1,7 @@
 ---
 name: add-migration
 description: >-
-  The procedure for writing a database migration in the LMS backend so it is
+  The procedure for writing a database migration in the Cortex backend so it is
   reversible, ships RLS on any new tenant-owned table, adds the required indexes,
   and is verified by running up AND down against a scratch Postgres. Use for any
   schema change, new model, index, RLS policy, exclusion constraint, or trigger.
@@ -9,7 +9,7 @@ description: >-
   "exclusion constraint", "search_vector trigger", "make X immutable".
 ---
 
-# Writing an LMS migration
+# Writing an Cortex migration
 
 The database is the last line of defense for tenant isolation and correctness. No
 tenant-owned table ships without RLS; no migration ships without a working reverse.

@@ -1,4 +1,4 @@
-# LMS Implementation Tasks
+# Cortex Implementation Tasks
 
 Executable, milestone-sliced engineering tasks derived from the design docs in
 `docs/`. Each task is a self-contained unit you can hand to a Claude Code subagent.

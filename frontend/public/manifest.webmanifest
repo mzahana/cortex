@@ -1,6 +1,6 @@
 {
-  "name": "LMS — Lab Asset & Inventory Management",
-  "short_name": "LMS",
+  "name": "Cortex — Lab Asset & Inventory Management",
+  "short_name": "Cortex",
   "description": "Mobile-first lab asset, stock and reservation tracker.",
   "start_url": "/",
   "display": "standalone",

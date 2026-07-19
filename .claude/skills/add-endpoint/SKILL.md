@@ -1,14 +1,14 @@
 ---
 name: add-endpoint
 description: >-
-  The golden-path checklist for adding or changing a DRF endpoint in the LMS
+  The golden-path checklist for adding or changing a DRF endpoint in the Cortex
   backend so it is correctly tenant-scoped, RBAC-enforced, audited, paginated, and
   tested. Use whenever implementing any `/api/v1/...` endpoint or viewset — this is
   the R4 (tenant-leak) hotspot repeated across every milestone. Trigger cues: "add
   an endpoint", "new DRF view/viewset", "expose an API", "new /api/v1 route".
 ---
 
-# Adding a DRF endpoint (LMS golden path)
+# Adding a DRF endpoint (Cortex golden path)
 
 Follow this every time. A single skipped step here is how tenant data leaks (R4) or
 an unaudited mutation slips through. Read `docs/api-and-ui.md` (contract),

@@ -15,7 +15,7 @@ unconditionally, regardless of any GUC. Any assertion made through the
 *ordinary* Django ORM/test-client connection proves nothing about RLS — it
 would pass identically even if RLS were dropped entirely. This is why
 `app_role_connection` below opens a SECOND connection, authenticated as the
-non-superuser, RLS-subject `lms_app` role (provisioned by
+non-superuser, RLS-subject `cortex_app` role (provisioned by
 `apps.tenancy.migrations.0003_app_db_role`).
 
 **Trap 2 — transaction-isolation false-pass (the one that actually bit an
@@ -63,7 +63,7 @@ def _app_role_dsn() -> str:
         host=params.get("host") or "localhost",
         port=params.get("port") or 5432,
         dbname=connection.settings_dict["NAME"],
-        user=os.environ.get("APP_DB_USER", "lms_app"),
+        user=os.environ.get("APP_DB_USER", "cortex_app"),
         password=os.environ.get("APP_DB_PASSWORD", "changeme-app-db-password"),
     )
 
@@ -71,7 +71,7 @@ def _app_role_dsn() -> str:
 @pytest.fixture
 def app_role_connection(transactional_db) -> Iterator[psycopg.Connection]:
     """A raw psycopg connection to the *same* test database pytest-django just
-    migrated, authenticated as the non-superuser, RLS-subject `lms_app` role
+    migrated, authenticated as the non-superuser, RLS-subject `cortex_app` role
     (provisioned by `apps.tenancy.migrations.0003_app_db_role` — the same
     migration that runs for the owner-role test database migrate step).
 
@@ -87,7 +87,7 @@ def app_role_connection(transactional_db) -> Iterator[psycopg.Connection]:
 
     Also exposes `.commit()`-style writes via `insert_and_commit` (module
     function below) for tests that would rather write the row directly on
-    this connection (as the `lms_app` role itself, GUC already set) instead
+    this connection (as the `cortex_app` role itself, GUC already set) instead
     of routing through the Django ORM.
     """
     conn = psycopg.connect(_app_role_dsn())

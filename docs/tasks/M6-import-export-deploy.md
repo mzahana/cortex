@@ -4,7 +4,7 @@
 deploy on the DS220+ over the Cloudflare Tunnel with tested backups and a passing load
 test. End of MVP.
 **Dep:** M0–M5. **Effort:** M.
-**Milestone exit:** F11 met; live on `lms.<domain>`; backups tested; load test passes
+**Milestone exit:** F11 met; live on `cortex.<domain>`; backups tested; load test passes
 the `docs/architecture.md` §4 targets.
 Refs: `docs/features.md` F11, `docs/deployment.md`, `docs/risks.md`.
 
@@ -37,12 +37,12 @@ against the 6 GB budget (and the 2 GB fallback documented in `docs/deployment.md
 
 ### T6.4 · → devops-engineer · deps: T6.3
 **Do:** Cloudflare Tunnel + DNS: cloudflared with `TUNNEL_TOKEN`, public hostname
-`lms.<domain>` → `http://nginx:80`, SSL Full(strict), HSTS, Always-HTTPS, Bot Fight, and a
+`cortex.<domain>` → `http://nginx:80`, SSL Full(strict), HSTS, Always-HTTPS, Bot Fight, and a
 rate-limit rule on `/api/v1/auth/login`. Add SPF/DKIM/DMARC records for the sender domain
 (needed for F9 deliverability). Produce the **Synology Container Manager runbook**
 (shared folders, env-file path, migrate + createsuperuser/seed, auto-restart).
 **Files:** `docker/cloudflared/*`, `docs/deployment-runbook.md`.
-**Exit:** app reachable at `https://lms.<domain>`; camera scan works on a phone (secure
+**Exit:** app reachable at `https://cortex.<domain>`; camera scan works on a phone (secure
 context); mail passes SPF/DKIM/DMARC. **You cannot touch the physical NAS — hand the
 operator exact steps.**
 

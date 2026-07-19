@@ -44,7 +44,7 @@ disagree about "who is the current tenant".
   ``apps.tenancy.context.tenant_context(tenant_id)`` gets the GUC set for free
   — the context manager pushes it alongside the contextvar and restores it on
   exit — so a Celery task or command drives RLS correctly even when the worker
-  connects as the RLS-subject ``lms_app`` role. Migrations themselves run as the
+  connects as the RLS-subject ``cortex_app`` role. Migrations themselves run as the
   table-owner/superuser role, which bypasses RLS by ownership, so cross-tenant
   seed writes work regardless of the GUC.
 """

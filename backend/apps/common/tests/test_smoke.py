@@ -37,7 +37,7 @@ def test_app_imports_and_migrations_ran():
 
 
 def test_app_role_connection_is_rls_subject(app_role_connection):
-    """Proves the harness T0.9 needs is wired correctly: `lms_app` (T0.5) is
+    """Proves the harness T0.9 needs is wired correctly: `cortex_app` (T0.5) is
     a real, connectable, non-superuser login role in the test database, RLS
     is enabled on a known tenant-owned table, and — with no
     `app.current_tenant` GUC set on this connection — the fail-closed
@@ -51,7 +51,7 @@ def test_app_role_connection_is_rls_subject(app_role_connection):
     Tenant.objects.create(name="RLS Smoke Tenant", slug="rls-smoke-tenant")
 
     with app_role_connection.cursor() as cur:
-        # `lms_app` must not be a superuser/BYPASSRLS role, or this whole
+        # `cortex_app` must not be a superuser/BYPASSRLS role, or this whole
         # backstop would be inert (see tenancy/migrations/0003_app_db_role.py).
         cur.execute("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
         rolsuper, rolbypassrls = cur.fetchone()

@@ -26,7 +26,7 @@
 **Contract frozen at T0.6 (code-review approved — build against this):**
 
 - `GET /api/v1/auth/csrf` — unauthenticated. No body. Sets the
-  `lms_csrftoken` cookie (JS-readable) via Django's `ensure_csrf_cookie`; the
+  `cortex_csrftoken` cookie (JS-readable) via Django's `ensure_csrf_cookie`; the
   SPA calls this once before its first write so it has a token to echo back
   as the `X-CSRFToken` header on `POST /api/v1/auth/login` (which enforces
   CSRF even though no session exists yet — logout and every other write rely
@@ -41,7 +41,7 @@
   *per tenant*, so the tenant must be disambiguated by the client at login;
   there is no session yet to infer it from). On success (`200`), the
   response body is the same shape as `GET /api/v1/me` (below) and a session
-  cookie (`lms_sessionid`, `HttpOnly`, `Secure` in prod, `SameSite=Lax`) is
+  cookie (`cortex_sessionid`, `HttpOnly`, `Secure` in prod, `SameSite=Lax`) is
   set. On failure: a uniform `401` (RFC-7807) — "invalid tenant, email, or
   password" — regardless of which one was actually wrong (never reveals
   whether an email exists, in this tenant or another); a `429` if the

@@ -23,7 +23,7 @@ Deliberately **not** covered (not tenant-owned):
 
 Owner/superuser roles (migrations, seed, management commands) bypass RLS by
 ownership, so this does not disturb the T0.4 seed migration. Enforcement bites
-for the non-superuser ``lms_app`` runtime role provisioned in ``0003``.
+for the non-superuser ``cortex_app`` runtime role provisioned in ``0003``.
 
 Reverse drops each policy and disables RLS.
 """

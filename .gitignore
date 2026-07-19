@@ -46,7 +46,7 @@ pnpm-debug.log*
 .eslintcache
 
 # --- Docker / compose local state ---
-docker/lms/
+docker/cortex/
 docker/**/pgdata/
 docker/**/media/
 docker/**/redis-data/

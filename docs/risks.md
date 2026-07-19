@@ -39,7 +39,7 @@
 2. **Uptime expectations** — is occasional home-connection/power downtime
    acceptable for the pilot, or should we plan the cloud tier sooner? (R3/R10)
 3. **Custom domain & hostname** — what exact hostname should the app live on
-   (e.g. `lms.yourdomain.com`), and is the sender/email domain the same? (Needed
+   (e.g. `cortex.yourdomain.com`), and is the sender/email domain the same? (Needed
    for Tunnel + SPF/DKIM/DMARC.)
 4. **Photo storage** — mounted NAS volume for MVP acceptable, or do you want an
    S3-compatible bucket (e.g. Backblaze B2) from day one? (Cheap to defer.)

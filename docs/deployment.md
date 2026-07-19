@@ -49,10 +49,10 @@ disk. All app config via **environment** (12-factor); no host assumptions.
 ## 2. Synology Container Manager steps
 
 1. **Install Container Manager** (DSM Package Center).
-2. **Create a shared folder** `docker/lms` with subfolders `pgdata`, `media`,
+2. **Create a shared folder** `docker/cortex` with subfolders `pgdata`, `media`,
    `secrets`. Put `.env` in `secrets` (permissions restricted to the container user).
 3. **Copy the project** (compose file + built images, or a private registry
-   reference) to `docker/lms`.
+   reference) to `docker/cortex`.
 4. In Container Manager → **Project → Create**, point at the `docker-compose.yml`,
    set the env-file path. Container Manager parses compose and manages the stack.
 5. **Start** the project. Run initial `manage.py migrate` and
@@ -77,15 +77,15 @@ Tunnel wins on security **and** maintenance for a home/lab NAS.
 
 **Setup:**
 1. In Cloudflare Zero Trust → **Networks → Tunnels → Create tunnel**; name it
-   (e.g. `lms-nas`). Copy the tunnel **token**.
+   (e.g. `cortex-nas`). Copy the tunnel **token**.
 2. Add the token to `.env` (`TUNNEL_TOKEN`), consumed by the `cloudflared`
    container (`command: tunnel run`).
-3. Add a **public hostname** route: `lms.yourdomain.com` → service
+3. Add a **public hostname** route: `cortex.yourdomain.com` → service
    `http://nginx:80` (internal to the compose network).
 4. Cloudflare auto-creates the DNS/CNAME and serves the app over **HTTPS at the
    edge** on your domain. Set SSL mode **Full (strict)**; enable **HSTS**,
    **Always Use HTTPS**, and Bot Fight Mode.
-5. Because the browser now loads the app over `https://lms.yourdomain.com`, it's in
+5. Because the browser now loads the app over `https://cortex.yourdomain.com`, it's in
    a **secure context** → `getUserMedia` works → **camera QR scan and photo
    capture function on phones** with no extra cert work. (This is the entire reason
    the mobile flow "just works.")
@@ -94,7 +94,7 @@ Tunnel wins on security **and** maintenance for a home/lab NAS.
 
 You chose **app login only** for MVP. Access is documented as a **toggle**:
 
-- Put a Cloudflare Access **application** in front of `lms.yourdomain.com` (or just
+- Put a Cloudflare Access **application** in front of `cortex.yourdomain.com` (or just
   `/admin` and `/api/v1/users*`) requiring email OTP or SSO **before** the app
   loads.
 - Trade-off: strongest hardening but an extra login step for members. Recommended
@@ -104,7 +104,7 @@ You chose **app login only** for MVP. Access is documented as a **toggle**:
 ## 5. Backup & restore (Synology)
 
 - **DB:** nightly `pg_dump` from the `postgres` container to
-  `docker/lms/backups/` (DSM Task Scheduler running a `docker exec pg_dump`
+  `docker/cortex/backups/` (DSM Task Scheduler running a `docker exec pg_dump`
   one-liner). Keep N daily + weekly (rotate).
 - **Media:** the `media` shared folder is included in **Synology Hyper Backup**
   (to an external USB drive and/or a cloud/B2 target).

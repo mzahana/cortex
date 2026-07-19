@@ -115,14 +115,14 @@ CACHES = {
 # per docs/architecture.md §4).
 SESSION_ENGINE = "django.contrib.sessions.backends.cache"
 SESSION_CACHE_ALIAS = "default"
-SESSION_COOKIE_NAME = "lms_sessionid"
+SESSION_COOKIE_NAME = "cortex_sessionid"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = env.int("SESSION_COOKIE_AGE", default=60 * 60 * 24 * 7)  # 7 days
 
 # CSRF cookie must be JS-readable so the SPA can echo it back as a header on
 # writes (docs/api-and-ui.md); it is not the auth token, session cookie is.
-CSRF_COOKIE_NAME = "lms_csrftoken"
+CSRF_COOKIE_NAME = "cortex_csrftoken"
 CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_HEADER_NAME = "HTTP_X_CSRFTOKEN"
@@ -199,7 +199,7 @@ MEDIA_URL = env.str("MEDIA_URL", default="/media/")
 MEDIA_ROOT = env.str("MEDIA_ROOT", default="/app/media")
 
 # --- Email (Brevo goes behind EmailProvider; wired in a later milestone) -----
-DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="LMS <lms@example.com>")
+DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="Cortex <cortex@example.com>")
 EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
 
 # --- Logging -------------------------------------------------------------------

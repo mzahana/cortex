@@ -1,4 +1,4 @@
-name: lms
+name: cortex
 
 # Seven-service topology per docs/architecture.md §1 and docs/deployment.md §1.
 # mem_limits below sum to the documented ~3.25 GB budget (see report/notes):
@@ -10,14 +10,14 @@ x-app-image: &app-image
   build:
     context: .
     dockerfile: docker/Dockerfile
-  image: lms-app:local
+  image: cortex-app:local
   env_file:
     - .env
   environment:
     DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
     # RLS backstop (T0.5) only fires for a non-superuser role. web/worker/beat
-    # run at RUNTIME as the app role `lms_app`, overriding the owner
-    # `DATABASE_URL` (`lms`) that `.env` sets by default and that migrations
+    # run at RUNTIME as the app role `cortex_app`, overriding the owner
+    # `DATABASE_URL` (`cortex`) that `.env` sets by default and that migrations
     # still use (see the `migrate` one-off service below).
     DATABASE_URL: ${APP_DATABASE_URL}
   depends_on:
@@ -31,7 +31,7 @@ x-app-image: &app-image
 
 services:
   # One-off migration/seed step. Runs as the OWNER role (`DATABASE_URL` from
-  # `.env`, i.e. `lms`) because migrations create tables/roles/RLS policies and
+  # `.env`, i.e. `cortex`) because migrations create tables/roles/RLS policies and
   # the seed inserts cross-tenant rows — all of which rely on owner/superuser
   # RLS bypass (see apps/tenancy/migrations/0003_app_db_role.py). Exits after
   # `migrate` completes; `web`/`worker`/`beat` wait on
@@ -44,12 +44,12 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: lms-app:local
+    image: cortex-app:local
     env_file:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
-      # Owner credentials — NOT overridden to APP_DATABASE_URL. lms_app lacks
+      # Owner credentials — NOT overridden to APP_DATABASE_URL. cortex_app lacks
       # the privilege to create tables/roles/RLS policies.
     command: >
       python manage.py migrate --noinput

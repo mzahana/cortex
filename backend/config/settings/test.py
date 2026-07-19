@@ -73,7 +73,7 @@ CACHES = {
 # proven through a DIFFERENT connection (see TRAP 2 for how NOT to do that).
 #
 # TRAP 2 — transaction-isolation false-pass. Proving RLS means opening a
-# SECOND connection authenticated as the non-superuser `lms_app` role (which
+# SECOND connection authenticated as the non-superuser `cortex_app` role (which
 # IS subject to RLS) and querying through it instead. But if the row under
 # test was only written inside a transaction that gets ROLLED BACK at the end
 # of the test (which is exactly what the plain `db` fixture does to every
@@ -84,9 +84,9 @@ CACHES = {
 # of this fixture and is just as fatal as Trap 1.
 #
 # THE FIX: a same-committed-row, GUC-driven visibility DIFFERENTIAL, done
-# entirely through the `lms_app` connection: commit a real row (via
+# entirely through the `cortex_app` connection: commit a real row (via
 # `transactional_db`, never the rolled-back `db` fixture), then on the
-# `lms_app` connection show the SAME row is visible with the GUC set to its
+# `cortex_app` connection show the SAME row is visible with the GUC set to its
 # own tenant and invisible with the GUC set to a different tenant (or
 # unset). Only a visibility change caused SOLELY by flipping the GUC isolates
 # RLS as the cause.

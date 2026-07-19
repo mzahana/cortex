@@ -57,7 +57,7 @@ isolation is enforced at two independent layers and proven by tests in CI.
   derived only from the server-side session, never from client input. Every
   tenant-owned query passes through the fail-closed tenant-scoped manager, and
   **PostgreSQL Row-Level Security** is the backstop: the runtime connects as a
-  dedicated non-superuser, `NOBYPASSRLS` role (`lms_app`) so policies actually
+  dedicated non-superuser, `NOBYPASSRLS` role (`cortex_app`) so policies actually
   fire, while migrations run as the owner. A missing tenant context yields zero
   rows rather than leaking across tenants.
 - Argon2 password hashing; production `SECURE_*` headers, HSTS, and secure

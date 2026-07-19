@@ -9,7 +9,7 @@ looks up by email alone and would raise `MultipleObjectsReturned` the moment
 two tenants share an email (exactly the cross-tenant scenario this endpoint
 must handle safely). Instead `LoginView` resolves the tenant FIRST from the
 login payload's `tenant` slug, enters `apps.tenancy.context.tenant_context`
-(this is what lets the RLS-subject `lms_app` connection see that tenant's
+(this is what lets the RLS-subject `cortex_app` connection see that tenant's
 `User` rows at all — see `apps.tenancy.db` module docstring), looks the user
 up by `(tenant, email)` via the deliberately unscoped `User.all_objects`, and
 verifies the Argon2 password manually with `user.check_password`. Errors are
@@ -42,7 +42,7 @@ from . import lockout
 from .models import User
 from .serializers import LoginSerializer
 
-PROBLEM_BASE = "https://lms.example.com/problems"
+PROBLEM_BASE = "https://cortex.example.com/problems"
 
 
 def _client_ip(request) -> str:

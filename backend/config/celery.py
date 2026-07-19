@@ -15,7 +15,7 @@ from celery.schedules import crontab
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
 
-app = Celery("lms")
+app = Celery("cortex")
 # CELERY_* keys in Django settings configure the app (broker, result backend,
 # serializers, time limits — see config/settings/base.py).
 app.config_from_object("django.conf:settings", namespace="CELERY")

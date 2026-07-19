@@ -19,7 +19,7 @@ Postgres session GUC `app.current_tenant` (read by RLS, see `apps.tenancy.db`).
 This is what makes the app-filter scope and the RLS scope agree on *every*
 path, not just HTTP requests: Celery tasks, management commands and seeds that
 scope with `tenant_context()` now hit RLS with the correct tenant instead of an
-unset GUC (which, once the worker connects as the RLS-subject `lms_app` role,
+unset GUC (which, once the worker connects as the RLS-subject `cortex_app` role,
 would otherwise be fail-closed to zero rows and silently break the task). The
 HTTP middleware simply enters `tenant_context()` and inherits the same
 behavior. The GUC is restored to the *outer* scope's tenant on exit (not blanket

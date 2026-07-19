@@ -1,4 +1,4 @@
-# LMS — Lab Asset & Inventory Management Platform
+# Cortex — Lab Asset & Inventory Management Platform
 
 A mobile-first, multi-tenant platform to track a robotics lab's physical assets
 (compute/GPUs, edge devices, drones, components, tools, instruments): what we own,

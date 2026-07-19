@@ -4,14 +4,14 @@
 
 Postgres RLS is bypassed unconditionally by superusers and by ``BYPASSRLS``
 roles, and by a table's **owner** unless ``FORCE ROW LEVEL SECURITY`` is set.
-The official ``postgres`` docker image creates ``POSTGRES_USER`` (here ``lms``)
+The official ``postgres`` docker image creates ``POSTGRES_USER`` (here ``cortex``)
 as a **superuser** and it owns every table (it runs the migrations). If the
-running app connects as ``lms``, the RLS policies in ``0004`` would never fire —
+running app connects as ``cortex``, the RLS policies in ``0004`` would never fire —
 the R4 backstop would be inert.
 
 So this migration provisions a dedicated **non-superuser, NOBYPASSRLS** login
-role (default ``lms_app``) that:
-  - owns nothing (tables stay owned by the migration role ``lms``), and is
+role (default ``cortex_app``) that:
+  - owns nothing (tables stay owned by the migration role ``cortex``), and is
     therefore fully subject to RLS — no ``FORCE ROW LEVEL SECURITY`` needed
     (and none is used, because forcing RLS on the owner would break
     owner-run data migrations/seeds on managed Postgres where the migration
@@ -27,21 +27,21 @@ the role's privileges and drops it.
 
 ## Runtime wiring (WIRED — do not revert)
 
-Migrations must keep running as the owner ``lms`` (they create tables and the
+Migrations must keep running as the owner ``cortex`` (they create tables and the
 seed inserts cross-tenant rows — both rely on bypassing RLS). The **web/worker
 runtime** connection connects as this role so RLS is enforced at runtime. This
 is already wired in ``docker-compose.yml``: a one-off ``migrate`` service runs
-as the owner ``lms`` (default ``DATABASE_URL``), and ``web``/``worker``/``beat``
-override ``DATABASE_URL`` to ``APP_DATABASE_URL`` (the ``lms_app`` role):
+as the owner ``cortex`` (default ``DATABASE_URL``), and ``web``/``worker``/``beat``
+override ``DATABASE_URL`` to ``APP_DATABASE_URL`` (the ``cortex_app`` role):
 
-    APP_DATABASE_URL=postgres://lms_app:<APP_DB_PASSWORD>@postgres:5432/lms
+    APP_DATABASE_URL=postgres://cortex_app:<APP_DB_PASSWORD>@postgres:5432/cortex
 
-**WARNING:** do NOT point the runtime services back at the owner ``lms`` role —
+**WARNING:** do NOT point the runtime services back at the owner ``cortex`` role —
 a superuser bypasses RLS unconditionally, which would silently make the R4
 tenant-isolation backstop inert while every app-level check still appears to
 work. The GUC the middleware sets only matters because the runtime role is
-``lms_app``. Verified: ``SELECT current_user`` on web/worker/beat returns
-``lms_app``, and the RLS psql/pytest proofs pass against that role.
+``cortex_app``. Verified: ``SELECT current_user`` on web/worker/beat returns
+``cortex_app``, and the RLS psql/pytest proofs pass against that role.
 """
 from __future__ import annotations
 
@@ -63,8 +63,8 @@ def _ident(name: str) -> str:
 
 
 def _config():
-    app_user = _ident(os.environ.get("APP_DB_USER", "lms_app"))
-    owner = _ident(os.environ.get("POSTGRES_USER", "lms"))
+    app_user = _ident(os.environ.get("APP_DB_USER", "cortex_app"))
+    owner = _ident(os.environ.get("POSTGRES_USER", "cortex"))
     password = os.environ.get("APP_DB_PASSWORD", "changeme-app-db-password")
     # Escape single quotes for the password string literal.
     password_lit = "'" + password.replace("'", "''") + "'"
@@ -114,10 +114,10 @@ def drop_role(apps, schema_editor):
 
     Deliberately does NOT ``DROP ROLE``: a login role is a *cluster-global*
     object that may hold grants in other databases of the same cluster (e.g.
-    the real ``lms`` DB while a scratch DB is being torn down), and Postgres
+    the real ``cortex`` DB while a scratch DB is being torn down), and Postgres
     refuses to drop a role while any such dependency exists. The reversible
     unit of this migration is the per-database grant/RLS wiring; fully removing
-    the shared role is an infra step (``DROP ROLE lms_app`` once no database
+    the shared role is an infra step (``DROP ROLE cortex_app`` once no database
     references it). Revokes are guarded by ``IF EXISTS`` so reversing is
     idempotent even if the role was never created."""
     app_user, owner, _ = _config()
