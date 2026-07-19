@@ -1,0 +1,180 @@
+name: lms
+
+# Seven-service topology per docs/architecture.md §1 and docs/deployment.md §1.
+# mem_limits below sum to the documented ~3.25 GB budget (see report/notes):
+#   postgres 1024 + redis 320 + web 768 + worker 768 + beat 192 + nginx 96
+#   + cloudflared 96 = 3264 MB.
+# All secrets/config via the mounted, read-only .env (never baked into images).
+
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: lms-app:local
+  env_file:
+    - .env
+  environment:
+    DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+    # RLS backstop (T0.5) only fires for a non-superuser role. web/worker/beat
+    # run at RUNTIME as the app role `lms_app`, overriding the owner
+    # `DATABASE_URL` (`lms`) that `.env` sets by default and that migrations
+    # still use (see the `migrate` one-off service below).
+    DATABASE_URL: ${APP_DATABASE_URL}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  # One-off migration/seed step. Runs as the OWNER role (`DATABASE_URL` from
+  # `.env`, i.e. `lms`) because migrations create tables/roles/RLS policies and
+  # the seed inserts cross-tenant rows — all of which rely on owner/superuser
+  # RLS bypass (see apps/tenancy/migrations/0003_app_db_role.py). Exits after
+  # `migrate` completes; `web`/`worker`/`beat` wait on
+  # `service_completed_successfully` before starting. Short-lived (not a
+  # steady-state service), so it does NOT count against the ~3.25 GB running
+  # budget — it reuses the same image (no extra build/disk) and holds no RAM
+  # once exited. A conservative mem_limit is still set as a safety cap while
+  # it runs.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: lms-app:local
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.dev}
+      # Owner credentials — NOT overridden to APP_DATABASE_URL. lms_app lacks
+      # the privilege to create tables/roles/RLS policies.
+    command: >
+      python manage.py migrate --noinput
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 256m
+
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    mem_limit: 1024m
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Tuned small per docs/deployment.md (shared_buffers ~256 MB on a 1024 MB limit).
+    command: >
+      postgres -c shared_buffers=256MB -c max_connections=50
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    mem_limit: 320m
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./docker/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  web:
+    <<: *app-image
+    mem_limit: 768m
+    command: >
+      gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 60
+    volumes:
+      - media:/app/media
+      - static:/app/staticfiles
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    <<: *app-image
+    mem_limit: 768m
+    command: >
+      celery -A config worker --loglevel=info --concurrency=2
+    volumes:
+      - media:/app/media
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  beat:
+    <<: *app-image
+    mem_limit: 192m
+    command: >
+      celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid
+    # No practical process-level healthcheck for beat (scheduler, no server
+    # socket); `worker`'s healthcheck + `restart: unless-stopped` cover it.
+
+  nginx:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    restart: unless-stopped
+    mem_limit: 96m
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # T0.7: real built PWA bundle (`npm run build` in frontend/ → frontend/dist).
+      # nginx config was written to expect this mount point unchanged (see
+      # docker/nginx/default.conf's `location /` comment).
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - static:/usr/share/nginx/static:ro
+      - media:/usr/share/nginx/media:ro
+    # No published host port: nginx is internal-only (http://nginx:80), per
+    # docs/deployment.md — the only exposure path is the cloudflared tunnel.
+    # Verify locally via `docker compose exec nginx wget -qO- http://localhost/healthz`.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.2@sha256:4f6655284ab3d252b7f28fedb19fe6c8fc82ee5b1295c20ac74d475e5398a52d
+    restart: unless-stopped
+    mem_limit: 96m
+    depends_on:
+      - nginx
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    # No healthcheck: without a real TUNNEL_TOKEN (e.g. local dev) this
+    # container will exit/retry per `restart: unless-stopped` rather than
+    # crash the rest of the stack. The other six services are independent of
+    # it coming up. In production a real token yields a stable connection.
+
+volumes:
+  pgdata:
+  redis-data:
+  media:
+  static:
