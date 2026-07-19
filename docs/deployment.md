@@ -131,6 +131,13 @@ You chose **app login only** for MVP. Access is documented as a **toggle**:
   on `/api/v1/auth/login`.
 - App: DRF throttling, account lockout/backoff on failed logins, Argon2 hashing,
   Secure/HttpOnly/SameSite cookies, CSP + security headers at nginx.
+- Media: nginx `/media/` forces downloads (`Content-Disposition: attachment`) with
+  its own strict `Content-Security-Policy: default-src 'none'; sandbox` and
+  `X-Content-Type-Options: nosniff`, so any renderable file that ever slipped past
+  the backend's attachment allowlist still can't execute inline (stored-XSS
+  defense-in-depth). `client_max_body_size` (26m) is set slightly above the app's
+  `MAX_ATTACHMENT_UPLOAD_BYTES` (25 MB) so near-boundary uploads get the app's
+  friendly RFC-7807 400 instead of a raw nginx 413.
 - Least-privilege RBAC + tenant isolation + Postgres RLS backstop.
 - No inbound router ports; NAS admin (DSM) **not** exposed via the tunnel.
 - Regular image updates; pinned base image digests; minimal Alpine images.
