@@ -36,6 +36,15 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # T1.4: registers the postgres-specific lookups (`__trigram_similar`,
+    # used by `apps.assets.api.AssetSearchFilter` for the `pg_trgm` fuzzy
+    # match) via `PostgresConfig.ready()`. `SearchVectorField`/`SearchQuery`/
+    # `SearchRank` (also used there) work without this app registered, but
+    # the trigram LOOKUP class only self-registers onto `CharField`/
+    # `TextField` when this app's `ready()` runs — without it, `django.
+    # contrib.postgres.search` imports fine but `name__trigram_similar=...`
+    # raises `FieldError: Unsupported lookup 'trigram_similar'` at query time.
+    "django.contrib.postgres",
     "rest_framework",
     "django_filters",
     # Tenant/RBAC/asset apps (T0.4). Order matters only for migration
@@ -45,6 +54,9 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.projects",
     "apps.rbac",
+    "apps.catalog",
+    "apps.audit",
+    "apps.assets",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -197,6 +209,38 @@ STATIC_URL = env.str("STATIC_URL", default="/static/")
 STATIC_ROOT = env.str("STATIC_ROOT", default="/app/staticfiles")
 MEDIA_URL = env.str("MEDIA_URL", default="/media/")
 MEDIA_ROOT = env.str("MEDIA_ROOT", default="/app/media")
+
+# `django-storages` (docs/architecture.md §2/§4, CLAUDE.md stack) backs
+# Attachment uploads (T1.2): binary bytes are written to the mounted `media`
+# volume by the storage backend, never persisted in the DB — only the
+# resulting storage key/path is stored (`apps.assets.models.Attachment.
+# storage_key`). Default backend is the plain filesystem (the NAS volume);
+# swapping to S3-compatible object storage at a later deployment tier is a
+# pure env-var change (`DJANGO_DEFAULT_FILE_STORAGE=storages.backends.s3.
+# S3Storage` + the matching `AWS_*`/`STORAGES["default"]["OPTIONS"]` env vars),
+# no code change, per docs/architecture.md §5's "config, not rewrite" path.
+STORAGES = {
+    "default": {
+        "BACKEND": env.str(
+            "DJANGO_DEFAULT_FILE_STORAGE",
+            default="django.core.files.storage.FileSystemStorage",
+        ),
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+# Attachment upload hardening (code-review finding, T1.2 follow-up): a size
+# cap enforced in `apps.assets.services.validate_attachment_upload` BEFORE
+# any bytes are written to the volume. The content-type/extension allowlist
+# lives alongside it (not env-configurable — a fixed, reviewed list, not
+# something an operator should be able to loosen via `.env`). Note this is
+# one of two defense-in-depth layers for inline-rendering/stored-XSS: the
+# other is nginx serving `/media/` with `Content-Disposition: attachment`
+# (queued for devops-engineer) — this allowlist does not by itself guarantee
+# a browser never renders an accepted file inline.
+MAX_ATTACHMENT_UPLOAD_BYTES = env.int("MAX_ATTACHMENT_UPLOAD_BYTES", default=25 * 1024 * 1024)
 
 # --- Email (Brevo goes behind EmailProvider; wired in a later milestone) -----
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="Cortex <cortex@example.com>")

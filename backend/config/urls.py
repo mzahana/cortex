@@ -14,10 +14,15 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
+from apps.assets.api import AssetViewSet
+from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
 
 router = DefaultRouter()
-# apps/* register viewsets here, e.g.:
-#   router.register("assets", AssetViewSet, basename="asset")
+router.register("categories", CategoryViewSet, basename="category")
+router.register("locations", LocationViewSet, basename="location")
+router.register("projects", ProjectViewSet, basename="project")
+router.register("tags", TagViewSet, basename="tag")
+router.register("assets", AssetViewSet, basename="asset")
 
 
 def healthz(request):
@@ -26,7 +31,13 @@ def healthz(request):
 
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
-    path("admin/", admin.site.urls),
+    # Mounted at `django-admin/` (not `admin/`) so the SPA owns the `/admin/*`
+    # namespace for product-admin screens (categories, locations); see
+    # docker/nginx/default.conf. Kept mounted for a future admin strategy even
+    # though no ModelAdmins are registered and the app DB role (`cortex_app`)
+    # is a non-superuser subject to RLS, so Django admin login is currently
+    # non-functional at runtime.
+    path("django-admin/", admin.site.urls),
     # T0.6 auth endpoints (docs/api-and-ui.md "Auth & identity").
     path("api/v1/auth/csrf", CsrfView.as_view(), name="auth-csrf"),
     path("api/v1/auth/login", LoginView.as_view(), name="auth-login"),

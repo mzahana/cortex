@@ -54,7 +54,29 @@ from typing import Any
 
 import psycopg
 import pytest
+from django.core.cache import cache as django_cache
 from django.db import connection
+
+
+@pytest.fixture(autouse=True)
+def _clear_default_cache() -> Iterator[None]:
+    """T1.1 finding: `config/settings/test.py` swaps `CACHES["default"]` to an
+    in-process `LocMemCache` (so tests don't need a real Redis), but that
+    cache is process-global and NOT reset between tests by pytest-django —
+    unlike the DB, which each test gets a fresh transaction for. Sessions
+    (`SESSION_ENGINE = "...backends.cache"`) and `ScopedRateThrottle` (the
+    login endpoint's rate limit, T0.6) both read/write through this same
+    cache, so without a reset, throttle counters accumulate ACROSS
+    unrelated test modules that each perform a few real logins — e.g. this
+    surfaced as spurious `429 Too Many Requests` once T1.1's catalog tests
+    (each logging in several times per test) ran in the same session as the
+    pre-existing tenancy/accounts login tests, pushing the shared "login:
+    10/min" counter over its limit for tests that never intended to exercise
+    throttling at all. Clearing before every test isolates each test's cache
+    state exactly like the DB transaction already isolates its rows.
+    """
+    django_cache.clear()
+    yield
 
 
 def _app_role_dsn() -> str:
