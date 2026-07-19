@@ -13,6 +13,7 @@ import type {
   CategoryWritePayload,
   CustomFieldDef,
   CustomFieldDefCreatePayload,
+  CustomFieldDefUpdatePayload,
   ListParams,
   Location,
   LocationWritePayload,
@@ -220,9 +221,7 @@ export const api = {
     return request<CustomFieldDef[]>(`/categories/${categoryId}/fields/`, { method: "GET" });
   },
 
-  /** `POST /api/v1/categories/{id}/fields/` — requires `category.manage`.
-   * NOTE (flagged for backend-engineer): there is no documented endpoint to
-   * edit/reorder/delete an existing field def — only create. */
+  /** `POST /api/v1/categories/{id}/fields/` — requires `category.manage`. */
   async createCategoryField(
     categoryId: number,
     payload: CustomFieldDefCreatePayload,
@@ -230,6 +229,45 @@ export const api = {
     return request<CustomFieldDef>(`/categories/${categoryId}/fields/`, {
       method: "POST",
       body: payload,
+    });
+  },
+
+  /** `PATCH /api/v1/categories/{cat_id}/fields/{field_id}/` — requires
+   * `category.manage`. `fieldId` is re-scoped server-side under `catId` (a
+   * field from another category/tenant 404s). See
+   * `CustomFieldDefUpdatePayload` doc comment for the data-type-change and
+   * uniqueness policies enforced server-side. */
+  async updateCategoryField(
+    catId: number,
+    fieldId: number,
+    payload: CustomFieldDefUpdatePayload,
+  ): Promise<CustomFieldDef> {
+    return request<CustomFieldDef>(`/categories/${catId}/fields/${fieldId}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  /** `DELETE /api/v1/categories/{cat_id}/fields/{field_id}/` — requires
+   * `category.manage`, `204`. **Destructive**: cascades — deletes every
+   * `AssetFieldValue` row referencing this field def on every asset in the
+   * category (DB `on_delete=CASCADE`), with no "block if in use" guard. The
+   * UI must confirm before calling this (see `CategoryFieldsPanel`'s
+   * `ConfirmDeleteModal` usage). */
+  async deleteCategoryField(catId: number, fieldId: number): Promise<void> {
+    await request<void>(`/categories/${catId}/fields/${fieldId}/`, { method: "DELETE" });
+  },
+
+  /** `POST /api/v1/categories/{id}/fields/reorder/` — requires
+   * `category.manage`. `orderedIds` must be *exactly* the category's current
+   * field def ids (no more, no fewer, no duplicates) — position becomes the
+   * new 0-indexed `order`. A partial/mismatched set is rejected whole with a
+   * `400` (single atomic call, never a per-field `PATCH .../order`). Returns
+   * the reordered list (same shape as `listCategoryFields`). */
+  async reorderCategoryFields(catId: number, orderedIds: number[]): Promise<CustomFieldDef[]> {
+    return request<CustomFieldDef[]>(`/categories/${catId}/fields/reorder/`, {
+      method: "POST",
+      body: { order: orderedIds },
     });
   },
 

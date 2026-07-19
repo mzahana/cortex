@@ -90,6 +90,33 @@ class CustomFieldDefSerializer(serializers.ModelSerializer):
                 {"enum_options": "enum_options is required when data_type='enum'."}
             )
 
+        # Edit policy (M1 follow-up, docs/api-and-ui.md "Custom field def
+        # edit/delete policy"): changing `data_type` on a field def that
+        # already has stored `AssetFieldValue` rows could orphan/invalidate
+        # those values (an int-coerced value is nonsensical once the field
+        # becomes `date`), so `data_type` changes are BLOCKED once ANY value
+        # exists for this field. Every other attribute (`label`, `unit`,
+        # `enum_options`, `required`, `order`) stays freely editable at any
+        # time -- purely cosmetic/soft constraints that never invalidate
+        # already-stored JSON. Local import: `apps.assets` imports
+        # `apps.catalog.models.CustomFieldDef`, so importing `apps.assets` at
+        # module level here would be a circular import.
+        if (
+            self.instance is not None
+            and "data_type" in attrs
+            and attrs["data_type"] != getattr(self.instance, "data_type", None)
+        ):
+            from apps.assets.models import AssetFieldValue
+
+            if AssetFieldValue.objects.filter(field_def=self.instance).exists():
+                raise serializers.ValidationError(
+                    {
+                        "data_type": "Cannot change data_type: this field already has stored "
+                        "values on one or more assets. Delete the field (which removes those "
+                        "values) or clear them first."
+                    }
+                )
+
         # Code-review finding: `(tenant, category, key)` is a DB
         # `UniqueConstraint` with no serializer-level check, so a duplicate
         # key under the same category previously hit `IntegrityError` -> an

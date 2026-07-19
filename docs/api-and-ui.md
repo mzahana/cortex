@@ -96,10 +96,48 @@
 | Method | Path | Purpose |
 |---|---|---|
 | GET/POST/PATCH/DELETE | `/api/v1/categories` `/{id}` | Category tree + `requires_approval` etc. |
-| GET/POST | `/api/v1/categories/{id}/fields` | Custom field defs |
+| GET/POST | `/api/v1/categories/{id}/fields` | Custom field defs (list / create) |
+| PATCH/DELETE | `/api/v1/categories/{cat_id}/fields/{field_id}` | Edit / delete a single custom field def |
+| POST | `/api/v1/categories/{id}/fields/reorder` | Bulk-reorder a category's field defs |
 | CRUD | `/api/v1/locations` | Location tree |
 | CRUD | `/api/v1/projects` | Projects |
 | GET | `/api/v1/tags` | Tags |
+
+**Custom field def edit/delete/reorder (M1 follow-up — contract):**
+
+- `PATCH /api/v1/categories/{cat_id}/fields/{field_id}` — partial update.
+  Requires `category.manage`, same as create. Editable: `key`, `label`,
+  `data_type`, `unit`, `enum_options`, `required`, `order`. `category` and
+  `tenant` are never client-writable (derived from the URL / session only —
+  a `category` in the body is ignored the same way `POST .../fields`
+  already ignores it). `(category, key)` uniqueness is re-checked on edit
+  the same way it is on create (`400`, not a DB `IntegrityError`/`500`).
+  `field_id` is resolved from the tenant-scoped manager AND filtered by the
+  URL's `{cat_id}` — a field id from another tenant, or one that belongs to
+  a *different* category than `{cat_id}` (even in the same tenant), is a
+  `404`.
+  - **Data-type-change policy:** changing `data_type` is **blocked with a
+    `400`** once the field already has one or more stored
+    `AssetFieldValue` rows (an existing value coerced under the old type is
+    not guaranteed to make sense under the new one). Every other attribute
+    (`label`, `unit`, `enum_options`, `required`, `order`) stays freely
+    editable at any time, in use or not.
+- `DELETE /api/v1/categories/{cat_id}/fields/{field_id}` — `204`. Requires
+  `category.manage`. Same tenant + category re-scoping as `PATCH` above (404
+  on cross-tenant/cross-category). **Delete policy: cascades** — deleting a
+  field def deletes every `AssetFieldValue` row that references it (enforced
+  at the DB layer, `AssetFieldValue.field_def` is `on_delete=CASCADE`); there
+  is no "block if in use" guard, so this is a genuinely destructive action
+  and the UI must confirm before calling it.
+- `POST /api/v1/categories/{id}/fields/reorder` — body
+  `{"order": [<field_id>, <field_id>, ...]}`, an ordered list of the
+  category's field def ids (position in the list becomes the new `order`,
+  0-indexed). Requires `category.manage`. The submitted id set must be
+  *exactly* the category's current field def ids (no more, no fewer, no
+  duplicates, none from another category/tenant) or the whole request is
+  rejected with `400` — a single bulk call, not one `PATCH .../order` per
+  field, so a partial failure can never leave a half-applied ordering.
+  Returns the reordered list (same shape as `GET .../fields`).
 
 ### Assets
 | Method | Path | Purpose |

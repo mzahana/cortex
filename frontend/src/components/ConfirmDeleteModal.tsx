@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { Alert, Button, Group, Modal, Text } from "@mantine/core";
 import { ApiError } from "../api/client";
@@ -9,6 +10,11 @@ interface ConfirmDeleteModalProps {
   onClose: () => void;
   onConfirm: () => Promise<void>;
   onDeleted: () => void;
+  /** Optional extra content rendered above the standard confirm text — e.g.
+   * a stronger destructive/cascade warning for deletes that remove more
+   * than just the one row (see `CategoryFieldsPanel`'s field-delete, which
+   * cascades to every stored `AssetFieldValue`). */
+  children?: ReactNode;
 }
 
 /**
@@ -25,6 +31,7 @@ export function ConfirmDeleteModal({
   onClose,
   onConfirm,
   onDeleted,
+  children,
 }: ConfirmDeleteModalProps) {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +66,7 @@ export function ConfirmDeleteModal({
           {error}
         </Alert>
       )}
+      {children}
       <Text size="sm" mb="md">
         Delete <strong>{itemLabel}</strong>? This can&apos;t be undone.
       </Text>

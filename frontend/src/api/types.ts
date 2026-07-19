@@ -93,15 +93,30 @@ export interface CustomFieldDef {
 
 /** `POST /api/v1/categories/{id}/fields` request body. `category` is derived
  * from the URL server-side (`apps.catalog.api.CategoryViewSet.fields`) —
- * never send it in the body. NOTE: the backend contract only exposes
- * `GET`/`POST` on this sub-resource — there is no documented endpoint to
- * edit/reorder/delete an existing field def once created (flagged for
- * backend-engineer; see `CategoryFieldsPanel` for how the UI handles this
- * gap). */
+ * never send it in the body. */
 export interface CustomFieldDefCreatePayload {
   key: string;
   label: string;
   data_type: CustomFieldDataType;
+  unit?: string;
+  enum_options?: string[];
+  required?: boolean;
+  order?: number;
+}
+
+/** `PATCH /api/v1/categories/{cat_id}/fields/{field_id}` request body
+ * (M1 follow-up, `docs/api-and-ui.md` "Custom field def edit/delete/reorder").
+ * Partial update — every key optional. `category`/`tenant` are never
+ * client-writable (derived from the URL/session), same as create.
+ * **Policy:** changing `data_type` once the field has one or more stored
+ * `AssetFieldValue` rows is rejected with a `400` (`errors.data_type`) —
+ * every other attribute stays freely editable at any time. `(category, key)`
+ * uniqueness is re-checked the same way as on create (`400` on `errors.key`,
+ * never a raw `IntegrityError`/500). */
+export interface CustomFieldDefUpdatePayload {
+  key?: string;
+  label?: string;
+  data_type?: CustomFieldDataType;
   unit?: string;
   enum_options?: string[];
   required?: boolean;

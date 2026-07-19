@@ -21,8 +21,9 @@ resource. `Tag` is read-only.
 
 from __future__ import annotations
 
+from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import mixins, viewsets
+from rest_framework import mixins, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
@@ -30,7 +31,7 @@ from rest_framework.response import Response
 from apps.projects.models import Project
 from apps.rbac.permission_keys import CATEGORY_MANAGE, LOCATION_MANAGE, TENANT_MANAGE
 
-from .models import Category, Location, Tag
+from .models import Category, CustomFieldDef, Location, Tag
 from .permissions import TenantWideReadOrManage, TenantWideView
 from .serializers import (
     CategorySerializer,
@@ -89,6 +90,96 @@ class CategoryViewSet(viewsets.ModelViewSet):
             serializer.is_valid(raise_exception=True)
             serializer.save(tenant=request.user.tenant, category=category)
             return Response(serializer.data, status=201)
+
+        field_defs = category.field_defs.order_by("order", "id")
+        serializer = CustomFieldDefSerializer(field_defs, many=True)
+        return Response(serializer.data)
+
+    def _get_field_def_or_404(self, category: Category, field_id) -> CustomFieldDef:
+        """Resolve `field_id` tenant-scoped AND under `category` (R4). Built
+        from `CustomFieldDef.objects` (the tenant-scoped manager, never
+        `.all_objects`) and additionally filtered by `category=category` (the
+        URL's `{cat_id}`, itself already re-scoped by `get_object()` above) —
+        a field id that belongs to another tenant OR to a DIFFERENT category
+        than the URL's `{cat_id}` 404s here, never leaks/edits cross-tenant or
+        cross-category. Never trusts the client-supplied `field_id` beyond
+        using it as a lookup key.
+        """
+        return get_object_or_404(CustomFieldDef.objects.filter(category=category), pk=field_id)
+
+    @action(
+        detail=True,
+        methods=["patch", "delete"],
+        url_path=r"fields/(?P<field_id>\d+)",
+    )
+    def field_detail(self, request, pk=None, field_id=None):
+        """`PATCH/DELETE /api/v1/categories/{id}/fields/{field_id}`
+        (docs/api-and-ui.md). Permission: same `TenantWideReadOrManage`
+        class-level check as `fields` above -- both methods here are writes,
+        so both require `category.manage`. `category` is re-scoped via
+        `get_object()` (tenant + object-level RBAC already enforced there);
+        `field_id` is then re-scoped a second time, under that SAME category,
+        by `_get_field_def_or_404` (R4).
+        """
+        category = self.get_object()
+        field_def = self._get_field_def_or_404(category, field_id)
+
+        if request.method.upper() == "DELETE":
+            # Delete policy (documented in docs/api-and-ui.md): cascades to
+            # `AssetFieldValue` rows for this field def -- already enforced at
+            # the DB layer (`AssetFieldValue.field_def` is `on_delete=CASCADE`,
+            # apps.assets.models), so no extra application logic is needed
+            # here; this simply triggers that FK cascade.
+            field_def.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        serializer = CustomFieldDefSerializer(
+            field_def,
+            data=request.data,
+            partial=True,
+            context={"request": request, "category": category},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="fields/reorder")
+    def fields_reorder(self, request, pk=None):
+        """`POST /api/v1/categories/{id}/fields/reorder` (docs/api-and-ui.md):
+        body `{"order": [<field_id>, ...]}`, an ordered list of THIS
+        category's field def ids (order in the list = new `order` value,
+        0-indexed). Chosen over per-field `PATCH ... {"order": n}` calls
+        because a full reorder is a single atomic operation -- doing it as N
+        separate PATCHes risks a half-applied ordering if one fails partway,
+        and needs a full list read-back anyway to compute each new value.
+        """
+        category = self.get_object()
+        ordered_ids = request.data.get("order")
+        if not isinstance(ordered_ids, list) or not ordered_ids:
+            raise serializers.ValidationError({"order": "order must be a non-empty list of ids."})
+
+        existing_ids = set(category.field_defs.values_list("id", flat=True))
+        try:
+            requested_ids = [int(i) for i in ordered_ids]
+        except (TypeError, ValueError) as exc:
+            raise serializers.ValidationError(
+                {"order": "order must be a list of integer ids."}
+            ) from exc
+
+        # The submitted id set must be EXACTLY this category's field defs --
+        # no more, no fewer, no duplicates, and (R4) no id smuggled in from
+        # another category/tenant (an id from elsewhere simply isn't a
+        # member of `existing_ids`, since that set is built from the
+        # tenant-scoped, already-re-scoped `category`).
+        if len(requested_ids) != len(set(requested_ids)) or set(requested_ids) != existing_ids:
+            raise serializers.ValidationError(
+                {"order": "order must contain exactly this category's field def ids, once each."}
+            )
+
+        field_defs_by_id = {fd.id: fd for fd in category.field_defs.all()}
+        for index, field_id in enumerate(requested_ids):
+            field_defs_by_id[field_id].order = index
+        CustomFieldDef.objects.bulk_update(field_defs_by_id.values(), ["order"])
 
         field_defs = category.field_defs.order_by("order", "id")
         serializer = CustomFieldDefSerializer(field_defs, many=True)

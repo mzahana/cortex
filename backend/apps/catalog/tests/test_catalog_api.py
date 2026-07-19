@@ -25,6 +25,7 @@ import pytest
 from apps.common.tests.factories import (
     DEFAULT_TEST_PASSWORD,
     CategoryFactory,
+    CustomFieldDefFactory,
     LocationFactory,
     TenantFactory,
     UserFactory,
@@ -555,3 +556,309 @@ class TestTreeCycleDetection:
             content_type="application/json",
         )
         assert follow_up.status_code == 200
+
+
+class TestCustomFieldDefEditDeleteReorder:
+    """M1 follow-up: `PATCH`/`DELETE /categories/{cat_id}/fields/{field_id}`
+    and `POST /categories/{id}/fields/reorder` (docs/api-and-ui.md).
+    """
+
+    def test_admin_can_edit_a_field_def(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(
+            tenant=tenant, category=category, key="vram", label="VRAM", data_type="int"
+        )
+        _login(client, tenant, admin)
+
+        response = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{field.id}/",
+            data=json.dumps({"label": "VRAM (GB)", "unit": "GB", "required": True}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200, response.content
+        body = response.json()
+        assert body["label"] == "VRAM (GB)"
+        assert body["unit"] == "GB"
+        assert body["required"] is True
+        field.refresh_from_db()
+        assert field.label == "VRAM (GB)"
+        assert field.unit == "GB"
+        assert field.required is True
+
+    def test_edit_duplicate_key_under_same_category_is_400(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        CustomFieldDefFactory(tenant=tenant, category=category, key="vram", data_type="int")
+        other = CustomFieldDefFactory(tenant=tenant, category=category, key="ram", data_type="int")
+        _login(client, tenant, admin)
+
+        response = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{other.id}/",
+            data=json.dumps({"key": "vram"}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 400
+        assert "key" in response.json()["errors"]
+
+    def test_admin_can_delete_a_field_def(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram")
+        _login(client, tenant, admin)
+
+        response = client.delete(f"/api/v1/categories/{category.id}/fields/{field.id}/")
+
+        assert response.status_code == 204
+        list_resp = client.get(f"/api/v1/categories/{category.id}/fields/")
+        assert list_resp.json() == []
+
+    def test_reorder_persists_new_order(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        first = CustomFieldDefFactory(tenant=tenant, category=category, key="a", order=0)
+        second = CustomFieldDefFactory(tenant=tenant, category=category, key="b", order=1)
+        third = CustomFieldDefFactory(tenant=tenant, category=category, key="c", order=2)
+        _login(client, tenant, admin)
+
+        response = client.post(
+            f"/api/v1/categories/{category.id}/fields/reorder/",
+            data=json.dumps({"order": [third.id, first.id, second.id]}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200, response.content
+        assert [f["key"] for f in response.json()] == ["c", "a", "b"]
+
+        list_resp = client.get(f"/api/v1/categories/{category.id}/fields/")
+        assert [f["key"] for f in list_resp.json()] == ["c", "a", "b"]
+
+    def test_reorder_rejects_id_set_mismatch(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        first = CustomFieldDefFactory(tenant=tenant, category=category, key="a", order=0)
+        CustomFieldDefFactory(tenant=tenant, category=category, key="b", order=1)
+        _login(client, tenant, admin)
+
+        # Missing the second field's id.
+        response = client.post(
+            f"/api/v1/categories/{category.id}/fields/reorder/",
+            data=json.dumps({"order": [first.id]}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 400
+        assert "order" in response.json()["errors"]
+
+    def test_reorder_rejects_id_from_another_category(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        other_category = CategoryFactory(tenant=tenant, name="Edge")
+        first = CustomFieldDefFactory(tenant=tenant, category=category, key="a", order=0)
+        foreign_field = CustomFieldDefFactory(
+            tenant=tenant, category=other_category, key="x", order=0
+        )
+        _login(client, tenant, admin)
+
+        response = client.post(
+            f"/api/v1/categories/{category.id}/fields/reorder/",
+            data=json.dumps({"order": [foreign_field.id, first.id]}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 400
+        assert "order" in response.json()["errors"]
+
+    def test_cross_tenant_field_id_404s_on_edit_and_delete(self, client):
+        tenant_a = TenantFactory()
+        tenant_b = TenantFactory()
+        admin_a = UserFactory(tenant=tenant_a)
+        upgrade_tenant_wide_role(admin_a, ROLE_ADMIN)
+        category_a = CategoryFactory(tenant=tenant_a, name="Compute")
+        category_b = CategoryFactory(tenant=tenant_b, name="Compute")
+        other_field = CustomFieldDefFactory(tenant=tenant_b, category=category_b, key="secret")
+        _login(client, tenant_a, admin_a)
+
+        edit_resp = client.patch(
+            f"/api/v1/categories/{category_a.id}/fields/{other_field.id}/",
+            data=json.dumps({"label": "Hacked"}),
+            content_type="application/json",
+        )
+        assert edit_resp.status_code == 404
+
+        delete_resp = client.delete(f"/api/v1/categories/{category_a.id}/fields/{other_field.id}/")
+        assert delete_resp.status_code == 404
+
+    def test_cross_category_field_id_404s_even_in_same_tenant(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category_a = CategoryFactory(tenant=tenant, name="Compute")
+        category_b = CategoryFactory(tenant=tenant, name="Edge")
+        field_in_b = CustomFieldDefFactory(tenant=tenant, category=category_b, key="vram")
+        _login(client, tenant, admin)
+
+        # Right tenant, but the URL's cat_id (`category_a`) is NOT this
+        # field's category (it belongs to `category_b`) -- must 404, not
+        # silently operate on a field from a sibling category.
+        response = client.patch(
+            f"/api/v1/categories/{category_a.id}/fields/{field_in_b.id}/",
+            data=json.dumps({"label": "Hacked"}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 404
+
+    def test_member_gets_403_on_edit_delete_and_reorder(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram")
+        _login(client, tenant, member)
+
+        edit_resp = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{field.id}/",
+            data=json.dumps({"label": "Hacked"}),
+            content_type="application/json",
+        )
+        assert edit_resp.status_code == 403
+
+        delete_resp = client.delete(f"/api/v1/categories/{category.id}/fields/{field.id}/")
+        assert delete_resp.status_code == 403
+
+        reorder_resp = client.post(
+            f"/api/v1/categories/{category.id}/fields/reorder/",
+            data=json.dumps({"order": [field.id]}),
+            content_type="application/json",
+        )
+        assert reorder_resp.status_code == 403
+
+    def test_viewer_gets_403_on_edit(self, client):
+        from apps.rbac.permission_keys import ROLE_VIEWER
+
+        tenant = TenantFactory()
+        viewer = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(viewer, ROLE_VIEWER)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram")
+        _login(client, tenant, viewer)
+
+        response = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{field.id}/",
+            data=json.dumps({"label": "Hacked"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 403
+
+
+class TestCustomFieldDefDataTypeChangePolicy:
+    """Data-type-change policy (docs/api-and-ui.md): blocked once the field
+    already has stored `AssetFieldValue` rows; deleting the field def cascades
+    those values away instead of being blocked.
+    """
+
+    def _create_asset_with_field_value(self, client, category, field):
+        response = client.post(
+            "/api/v1/assets/",
+            data=json.dumps(
+                {
+                    "category": category.id,
+                    "name": "GPU Box",
+                    "custom_field_values": {field.key: 32},
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        return response.json()["id"]
+
+    def test_data_type_change_blocked_once_field_is_in_use(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram", data_type="int")
+        _login(client, tenant, admin)
+        self._create_asset_with_field_value(client, category, field)
+
+        response = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{field.id}/",
+            data=json.dumps({"data_type": "text"}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 400
+        assert "data_type" in response.json()["errors"]
+        field.refresh_from_db()
+        assert field.data_type == "int"
+
+    def test_data_type_change_allowed_when_not_in_use(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram", data_type="int")
+        _login(client, tenant, admin)
+
+        response = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{field.id}/",
+            data=json.dumps({"data_type": "text"}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200, response.content
+        assert response.json()["data_type"] == "text"
+
+    def test_other_attributes_stay_editable_even_when_in_use(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram", data_type="int")
+        _login(client, tenant, admin)
+        self._create_asset_with_field_value(client, category, field)
+
+        response = client.patch(
+            f"/api/v1/categories/{category.id}/fields/{field.id}/",
+            data=json.dumps({"label": "VRAM (GB)", "unit": "GB", "order": 5}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200, response.content
+        assert response.json()["label"] == "VRAM (GB)"
+
+    def test_deleting_a_field_in_use_cascades_its_values(self, client):
+        from apps.assets.models import AssetFieldValue
+        from apps.tenancy.context import tenant_context
+
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        field = CustomFieldDefFactory(tenant=tenant, category=category, key="vram", data_type="int")
+        _login(client, tenant, admin)
+        asset_id = self._create_asset_with_field_value(client, category, field)
+
+        response = client.delete(f"/api/v1/categories/{category.id}/fields/{field.id}/")
+        assert response.status_code == 204
+
+        with tenant_context(tenant.id):
+            assert not AssetFieldValue.objects.filter(field_def_id=field.id).exists()
+
+        detail_resp = client.get(f"/api/v1/assets/{asset_id}/")
+        assert detail_resp.status_code == 200
+        assert detail_resp.json()["field_values"] == {}

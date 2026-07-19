@@ -36,7 +36,7 @@ import factory
 import factory.django
 
 from apps.accounts.models import User
-from apps.catalog.models import Category, Location, Tag
+from apps.catalog.models import Category, CustomFieldDef, Location, Tag
 from apps.projects.models import Project
 from apps.rbac.models import Membership, Role
 from apps.rbac.permission_keys import ROLE_MEMBER
@@ -117,6 +117,29 @@ class CategoryFactory(factory.django.DjangoModelFactory):
     tenant = factory.SubFactory(TenantFactory)
     name = factory.Sequence(lambda n: f"Test Category {n}")
     parent = None
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        return model_class.all_objects.create(*args, **kwargs)
+
+
+class CustomFieldDefFactory(factory.django.DjangoModelFactory):
+    """`CustomFieldDef` is a `TenantScopedModel`; see module docstring for why
+    this creates through `.all_objects` rather than the (context-requiring)
+    default manager. `tenant` must match `category.tenant` (same rule the
+    view enforces via `category` being derived from the URL) -- callers pass
+    `category=` explicitly and this factory takes `tenant` from it by
+    default."""
+
+    class Meta:
+        model = CustomFieldDef
+
+    category = factory.SubFactory(CategoryFactory)
+    tenant = factory.LazyAttribute(lambda o: o.category.tenant)
+    key = factory.Sequence(lambda n: f"field_{n}")
+    label = factory.Sequence(lambda n: f"Field {n}")
+    data_type = CustomFieldDef.DataType.TEXT
+    order = 0
 
     @classmethod
     def _create(cls, model_class, *args, **kwargs):

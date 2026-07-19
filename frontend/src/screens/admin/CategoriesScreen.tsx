@@ -206,6 +206,7 @@ export function CategoriesScreen() {
             <Grid.Col span={{ base: 12, md: 6 }}>
               {selectedCategory ? (
                 <CategoryFieldsPanel
+                  key={selectedCategory.id}
                   category={selectedCategory}
                   canManage={canManage}
                   onFieldAdded={() => void load()}
