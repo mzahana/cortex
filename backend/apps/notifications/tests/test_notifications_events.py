@@ -147,6 +147,50 @@ class TestApprovalRequestEvent:
             # never the other project's lead (docs/rbac.md §1 scope rule).
             assert recipients == {admin.email, lead.email}
 
+    def test_never_notifies_an_admin_or_lead_of_a_different_tenant(
+        self, django_capture_on_commit_callbacks
+    ):
+        """R4 regression guard: `users_with_permission_in_project_scope`
+        resolves recipients via the tenant-scoped `Membership` manager, so an
+        Admin/Lead in a DIFFERENT tenant -- even one holding an identically-
+        named role with the same permission -- must never appear as a
+        recipient for this tenant's event. Locks the resolver against a
+        future edit that swaps `Membership.objects` for `all_objects` or
+        joins `User` unscoped.
+        """
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, requires_approval=True)
+        asset = AssetFactory(tenant=tenant, category=category)
+
+        other_tenant = TenantFactory()
+        other_admin = UserFactory(tenant=other_tenant)
+        upgrade_tenant_wide_role(other_admin, ROLE_ADMIN)
+        other_project = ProjectFactory(tenant=other_tenant)
+        other_lead = UserFactory(tenant=other_tenant)
+        add_project_membership(other_lead, other_project, ROLE_PROJECT_LEAD)
+
+        with tenant_context(tenant.id):
+            with django_capture_on_commit_callbacks(execute=True):
+                create_reservation(
+                    tenant=tenant,
+                    actor=member,
+                    asset=asset,
+                    start_at=_window()[0],
+                    end_at=_window()[1],
+                )
+
+            logs = EmailLog.all_objects.filter(tenant_id=tenant.id, event_type="approval_request")
+            recipients = {log.recipient for log in logs}
+            assert recipients == {admin.email}
+            assert other_admin.email not in recipients
+            assert other_lead.email not in recipients
+            # And the other tenant gets no EmailLog rows of its own at all --
+            # this event never crossed the boundary either direction.
+            assert not EmailLog.all_objects.filter(tenant_id=other_tenant.id).exists()
+
 
 class TestApprovalDecisionEvent:
     def test_approve_notifies_the_requester(self, django_capture_on_commit_callbacks):
