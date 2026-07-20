@@ -10,7 +10,46 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-07-20
+## [0.5.0] - 2026-07-20
+
+Milestone **M5 — Notifications (Brevo) + audit + dashboard**: async email via
+the provider interface, domain events from M2/M3 wired to templates,
+throttled beat scans, a finalized audit trail with DB-level immutability, and
+the live dashboard. Meets F8 + F9 + F10 acceptance.
+
+### Added
+
+- **`EmailProvider` abstraction** — `ConsoleProvider` (dev/test default) and
+  `BrevoProvider` (transactional API, env-gated, unexercised pending Q6's
+  sender-identity confirmation) behind a protocol business logic never
+  imports directly. Every send goes through a Celery task with retry/
+  backoff, logged to `EmailLog` (`queued`/`sent`/`failed`/`bounced`);
+  `NotificationPref` gates optional events per user x event type.
+  `GET/PATCH /api/v1/notification-prefs`.
+- **Domain events wired to email** — `reservation_confirmed`,
+  `approval_request` (union-of-memberships recipient resolution: tenant-wide
+  Admin + the asset's project lead), `approval_decision`, and
+  `low_stock_alert` all route through the enqueue pipeline. Overdue and
+  low-stock reminders are hourly Celery beat scans, each throttled
+  independently per item via a Redis guard.
+- **Audit finalized** — added the `user.manage`/`role.assign` endpoint that
+  was missing entirely (`POST/PATCH/DELETE /api/v1/memberships`: Admin
+  tenant-wide; ProjectLead may add/remove members and assign only Member
+  within their own project, never a co-lead or Admin). `GET /api/v1/audit`
+  (Admin tenant-wide, ProjectLead scoped to their project's assets). A
+  database-level append-only trigger now backs the app-layer guard —
+  rejects any UPDATE/DELETE on `audit_log`, even from the table owner.
+- **`GET /api/v1/dashboard/summary`** — six scope-aware tiles (totals by
+  category, currently-out, overdue, low-stock, upcoming reservations,
+  per-project allocation), Redis-cached (30s TTL + event-based invalidation
+  on the highest-value mutations), proven under an 800ms budget at 10k-asset
+  scale.
+- **Dashboard/Home, My Notifications, and Audit Log screens** — the
+  dashboard is now the post-login landing route; notifications lists all
+  five event types with a per-event email toggle; the audit log is
+  filterable, paginated, and read-only.
+
+
 
 Milestone **M3 — Reservations & check-in/out**: durable-asset reservations
 with DB-enforced conflict rejection, per-category approval, check-in/out with
