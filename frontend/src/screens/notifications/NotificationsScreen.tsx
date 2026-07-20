@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
   Alert,
@@ -51,8 +51,13 @@ export function NotificationsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [savingEvent, setSavingEvent] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Discards a stale response if `load` is called again (e.g. a fast
+  // Retry click) before the first request lands — same pattern as
+  // `useDashboardSummary`/`useAuditLog`.
+  const requestIdRef = useRef(0);
 
   const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -61,15 +66,17 @@ export function NotificationsScreen() {
       // never be needed at this size, but if it ever grew this would need
       // `fetchAllPages`-style pagination like the catalog screens.
       const body = await api.listNotificationPrefs();
+      if (requestId !== requestIdRef.current) return;
       setPrefsByEvent(new Map(body.results.map((pref) => [pref.event_type, pref])));
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setError(
         err instanceof ApiError
           ? err.problem.detail ?? err.problem.title
           : "Unable to reach the server. Please try again.",
       );
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, []);
 

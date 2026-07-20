@@ -22,8 +22,10 @@ import { useDashboardSummary } from "./useDashboardSummary";
  * category, currently-out, overdue, low-stock, upcoming reservations,
  * per-project allocation"). This is the post-login landing route (`/`),
  * replacing the T0.7 placeholder shell — it keeps that shell's chrome
- * (header, logout, quick-nav buttons, membership/permission summary) and
- * adds the six live tiles above them. Mobile-first: tiles are the first
+ * (header, logout, quick-nav buttons, membership summary) and drops the
+ * raw permission-key badge dump (developer scaffolding, not a documented
+ * user feature), adding the six live tiles above them. Mobile-first: tiles
+ * are the first
  * thing seen, nav buttons are large and thumb-reachable below.
  */
 export function DashboardScreen() {
