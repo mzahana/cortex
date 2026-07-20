@@ -90,6 +90,16 @@ export function HomeShell() {
             Browse Assets
           </Button>
 
+          <Button
+            size="lg"
+            fullWidth
+            variant="light"
+            onClick={() => navigate("/stock")}
+            data-testid="nav-stock"
+          >
+            Stock &amp; Consumables
+          </Button>
+
           <Stack gap="xs">
             <Text fw={600}>Memberships</Text>
             {me.memberships.length === 0 && (

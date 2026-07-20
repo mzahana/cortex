@@ -323,6 +323,129 @@ export interface AssetListParams extends ListParams {
   include_retired?: boolean;
 }
 
+// --- Stock / consumables (T2.4; `apps.stock.serializers`/`apps.stock.api`) ---
+// `docs/api-and-ui.md` "Stock" table: `GET /stock` (paginated, `?low_stock=`),
+// `POST /stock/{id}/txn` (ledger-backed), `GET/POST/PATCH /reorder-requests`.
+
+/** `StockTxn.Reason` choices (`backend/apps/stock/models.py::StockTxn.Reason`). */
+export type StockTxnReason = "receive" | "consume" | "adjust" | "correction";
+
+/** `ReorderRequest.Status` choices (`backend/apps/stock/models.py::
+ * ReorderRequest.Status`) — valid forward transitions are
+ * open -> approved -> ordered -> received, with cancelled reachable from any
+ * non-terminal state (server-enforced; see `ReorderRequest.VALID_TRANSITIONS`). */
+export type ReorderRequestStatus = "open" | "approved" | "ordered" | "received" | "cancelled";
+
+/** `GET /api/v1/stock` (list row) / `GET /api/v1/stock/{id}` (detail) —
+ * `apps.stock.serializers.StockItemSerializer`. `asset` is a plain id (not
+ * nested) — the screen resolves the asset's name/project separately via
+ * `api.getAsset`. `quantity_on_hand` is server-derived/reconciled against the
+ * `StockTxn` ledger — never client-writable. */
+export interface StockItem {
+  id: number;
+  asset: number;
+  unit_of_measure: string;
+  quantity_on_hand: number;
+  reorder_threshold: number;
+  reorder_target: number;
+  bin_location: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /api/v1/stock` query params (`apps.stock.api.StockItemViewSet`).
+ * `low_stock=true` filters to `quantity_on_hand <= reorder_threshold`
+ * (the T2.3 partial-index scan). `ordering` whitelist matches
+ * `StockItemViewSet.ordering_fields`. **`search` is inherited from
+ * `ListParams` but NOT implemented server-side** — `StockItemViewSet` only
+ * wires `DjangoFilterBackend`/`OrderingFilter` (no `SearchFilter`), and
+ * `docs/api-and-ui.md`'s Stock endpoint documents only the low-stock filter
+ * (code-review finding, T2.4). Do not send `search` here until a backend
+ * task adds it; `StockScreen` deliberately has no search input. */
+export interface StockListParams extends ListParams {
+  low_stock?: boolean;
+  ordering?: "quantity_on_hand" | "-quantity_on_hand" | "reorder_threshold" | "-reorder_threshold" | "created_at" | "-created_at";
+}
+
+/** Ledger row appended by `POST /api/v1/stock/{id}/txn`
+ * (`apps.stock.serializers.StockTxnSerializer`) — append-only, never edited. */
+export interface StockTxn {
+  id: number;
+  stock_item: number;
+  delta: number;
+  reason: StockTxnReason;
+  ref: string;
+  actor: number | null;
+  created_at: string;
+}
+
+/** `POST /api/v1/stock/{id}/txn` request body. `stock_item` comes from the
+ * URL server-side and is never sent in the body (`apps.stock.api.
+ * StockItemViewSet.txn`). `delta` is signed: positive for `receive`,
+ * negative for `consume`; `adjust`/`correction` may be either sign. The
+ * server rejects a delta that would drive `quantity_on_hand` negative with a
+ * `400` (RFC-7807) — this is client-side pre-validation only. */
+export interface StockTxnPayload {
+  reason: StockTxnReason;
+  delta: number;
+  ref?: string;
+}
+
+/** `POST /api/v1/stock/{id}/txn` response body
+ * (`apps.stock.api.StockItemViewSet.txn`) — the updated `StockItem` plus the
+ * ledger row just created, and a server-computed `low_stock` flag so the UI
+ * doesn't have to re-derive the threshold comparison itself. */
+export interface StockTxnResponse {
+  stock_item: StockItem;
+  txn: StockTxn;
+  low_stock: boolean;
+}
+
+/** `GET/POST/PATCH /api/v1/reorder-requests` (`apps.stock.serializers.
+ * ReorderRequestSerializer`). `requested_by`/`approved_by` are user ids (not
+ * nested) — the screen shows "you" for the caller's own requests and falls
+ * back to the raw id otherwise (no user-directory endpoint exists yet). */
+export interface ReorderRequest {
+  id: number;
+  stock_item: number;
+  requested_by: number | null;
+  approved_by: number | null;
+  quantity: number;
+  status: ReorderRequestStatus;
+  note: string;
+  requested_at: string;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /api/v1/reorder-requests` query params
+ * (`apps.stock.api.ReorderRequestViewSet.filterset_fields = ["status"]`). */
+export interface ReorderRequestListParams extends ListParams {
+  status?: ReorderRequestStatus;
+  stock_item?: number;
+}
+
+/** `POST /api/v1/reorder-requests` request body. `stock_item` targets the
+ * `StockItem` to reorder; `requested_by`/`status` are server-derived
+ * (caller/`open`) and never client-writable on create. */
+export interface ReorderRequestCreatePayload {
+  stock_item: number;
+  quantity: number;
+  note?: string;
+}
+
+/** `PATCH /api/v1/reorder-requests/{id}` request body — drives status
+ * transitions (`open -> approved -> ordered -> received`, `cancelled` from
+ * any non-terminal state) or a plain field edit (`quantity`/`note`) on a
+ * still-open request. Only one of `status` or the plain fields is typically
+ * sent per call; the server validates the transition either way. */
+export interface ReorderRequestUpdatePayload {
+  status?: ReorderRequestStatus;
+  quantity?: number;
+  note?: string;
+}
+
 /** `AssetCursorPagination`'s envelope shape (`rest_framework.pagination.
  * CursorPagination`) — `next`/`previous` are opaque full URLs (no `count`,
  * unlike `Paginated<T>`'s page-number envelope) since cursor pagination

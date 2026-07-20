@@ -21,6 +21,14 @@ import type {
   Me,
   Paginated,
   Project,
+  ReorderRequest,
+  ReorderRequestCreatePayload,
+  ReorderRequestListParams,
+  ReorderRequestUpdatePayload,
+  StockItem,
+  StockListParams,
+  StockTxnPayload,
+  StockTxnResponse,
   Tag,
 } from "./types";
 import { ApiError, type ProblemDetails } from "./problem";
@@ -409,6 +417,66 @@ export const api = {
     });
     if (!response.ok) throw await toApiError(response);
     return (await response.json()) as Attachment;
+  },
+
+  // --- Stock / consumables (docs/api-and-ui.md "Stock"; apps.stock.api) ---
+  // NOTE: trailing slashes for the same `APPEND_SLASH` reason as Categories/
+  // Locations above (router-registered viewsets).
+
+  /** `GET /api/v1/stock/` — one page. Read requires `asset.view`, scope-aware
+   * server-side (same union-of-memberships rule as `listAssets`). Never
+   * walks all pages (CLAUDE.md: server-side lists) — `?low_stock=true` is the
+   * documented low-stock filter. */
+  async listStock(params?: StockListParams): Promise<Paginated<StockItem>> {
+    return request<Paginated<StockItem>>(`/stock/${buildQuery(params)}`, { method: "GET" });
+  },
+
+  /** `GET /api/v1/stock/{id}/` — detail. */
+  async getStockItem(id: number): Promise<StockItem> {
+    return request<StockItem>(`/stock/${id}/`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/stock/{id}/txn/` — apply a ledger transaction
+   * (receive/consume/adjust/correction). Requires `stock.adjust` (receive/
+   * adjust/correction) or `stock.consume` (consume), scoped to the stock
+   * item's asset's project — server re-checks regardless of UI gating.
+   * Rejects a delta that would drive `quantity_on_hand` negative with a
+   * `400` (RFC-7807, surfaced via `err.problem`). Returns the updated
+   * `StockItem` + the created ledger row + a `low_stock` flag. */
+  async postStockTxn(stockItemId: number, payload: StockTxnPayload): Promise<StockTxnResponse> {
+    return request<StockTxnResponse>(`/stock/${stockItemId}/txn/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  /** `GET /api/v1/reorder-requests/` — one page. Read requires `asset.view`,
+   * scope-aware. `?status=` filters to one lifecycle stage. */
+  async listReorderRequests(params?: ReorderRequestListParams): Promise<Paginated<ReorderRequest>> {
+    return request<Paginated<ReorderRequest>>(`/reorder-requests/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  /** `POST /api/v1/reorder-requests/` — requires `reorder.request`, scoped
+   * to the target stock item's asset's project. `requested_by`/`status`
+   * (`open`) are server-derived. */
+  async createReorderRequest(payload: ReorderRequestCreatePayload): Promise<ReorderRequest> {
+    return request<ReorderRequest>("/reorder-requests/", { method: "POST", body: payload });
+  },
+
+  /** `PATCH /api/v1/reorder-requests/{id}/` — status transitions
+   * (`open -> approved -> ordered -> received`, `cancelled` from any
+   * non-terminal state) or a plain field edit. Approval-track transitions
+   * require `reorder.approve` (scoped); `cancelled` and plain edits may also
+   * be done by the original requester on their own still-open request. An
+   * invalid transition 400s (RFC-7807) — this is the server's authority, not
+   * pre-validated here beyond basic UI gating. */
+  async updateReorderRequest(
+    id: number,
+    payload: ReorderRequestUpdatePayload,
+  ): Promise<ReorderRequest> {
+    return request<ReorderRequest>(`/reorder-requests/${id}/`, { method: "PATCH", body: payload });
   },
 };
 

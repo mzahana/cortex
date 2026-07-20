@@ -31,6 +31,16 @@ export const ASSET_EDIT = "asset.edit";
 export const ASSET_RETIRE = "asset.retire";
 export const ASSET_ATTACH = "asset.attach";
 
+// `docs/rbac.md` §3 stock/reorder action keys (T2.4: Stock screen gating).
+// Stock/reorder rows are project-scoped through their underlying `Asset`
+// (`apps.stock.permissions` module docstring) — same scope resolution as
+// asset actions, so `hasAssetPermission`/`hasAnyAssetPermission` below are
+// reused directly (not re-implemented) for these keys.
+export const STOCK_ADJUST = "stock.adjust";
+export const STOCK_CONSUME = "stock.consume";
+export const REORDER_REQUEST = "reorder.request";
+export const REORDER_APPROVE = "reorder.approve";
+
 /**
  * UI-gating helper for an action on a SPECIFIC asset (NOT a security
  * boundary — same caveat as `hasPermission` above). Mirrors the server's own
