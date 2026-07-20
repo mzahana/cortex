@@ -1,0 +1,74 @@
+# .claudeignore — keep noisy/generated/binary content out of Claude's context.
+# This does NOT affect git; it only stops Claude from reading/indexing these paths.
+
+# --- Secrets / env (never read, even though they're git-ignored too) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Python / Django ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+coverage.xml
+.coverage
+.coverage.*
+backend/staticfiles/
+backend/static_root/
+backend/media/
+backend/mediafiles/
+*.log
+
+# --- Node / Vite / frontend build & deps ---
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
+package-lock.json
+.eslintcache
+
+# --- Docker / local runtime state ---
+docker/**/pgdata/
+docker/**/media/
+docker/**/redis-data/
+
+# --- Git internals ---
+.git/
+
+# --- Editors / OS cruft ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Large/binary artifacts Claude never needs to open ---
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.woff
+*.woff2
+*.ttf
+*.zip
+*.tar
+*.tar.gz
+*.sqlite3
+*.db
