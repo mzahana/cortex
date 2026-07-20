@@ -26,6 +26,14 @@ Audit (golden-path step 5): `retire` is in `docs/rbac.md` §5's mandatory
 audit list — writes an `AuditLog` entry (before/after status, actor, ip) in
 the same request/transaction. Attachment upload is NOT in that list (only
 `asset.retire` is, among asset actions), so it is not separately audited.
+
+T4.1 — `AssetResolveView`, `GET /api/v1/resolve/{qr_token}`: the scan/label
+target. It is a thin `RetrieveAPIView` sharing `_asset_detail_queryset()`
+(the tenant-scoped base queryset also used by `AssetViewSet`) and the exact
+same `AssetPermission` object-level rule as `retrieve` — see that view for
+why an unknown OR cross-tenant token both 404 without ever distinguishing
+the two (the tenant-scoped manager silently excludes the other tenant's
+row, same as guessing another tenant's numeric id already does).
 """
 
 from __future__ import annotations
@@ -35,7 +43,7 @@ from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.db.models import F, Prefetch, Q
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import mixins, status, viewsets
+from rest_framework import generics, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import BaseFilterBackend, OrderingFilter
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -138,6 +146,21 @@ class AssetSearchFilter(BaseFilterBackend):
         return matched.order_by("-rank", "-created_at")
 
 
+def _asset_detail_queryset():
+    """Tenant-scoped (`Asset.objects...`, never `all_objects`) base queryset
+    for a single-asset detail read, shared by `AssetViewSet.get_queryset`
+    (`retrieve`/`retire`/`attachments`) and `AssetResolveView` (T4.1) so the
+    two never drift on which relations are pre-fetched.
+    """
+    return Asset.objects.select_related(
+        "category", "project", "location", "current_workload_user"
+    ).prefetch_related(
+        Prefetch("field_values", queryset=AssetFieldValue.objects.select_related("field_def")),
+        "attachments",
+        "tag_links__tag",
+    )
+
+
 class AssetViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -203,17 +226,7 @@ class AssetViewSet(
         # `?search=` term is present and no `?ordering=` was given;
         # `OrderingFilter` overrides it whenever `?ordering=` IS given; absent
         # both, this order stands untouched all the way to the response.
-        qs = (
-            Asset.objects.select_related("category", "project", "location", "current_workload_user")
-            .prefetch_related(
-                Prefetch(
-                    "field_values", queryset=AssetFieldValue.objects.select_related("field_def")
-                ),
-                "attachments",
-                "tag_links__tag",
-            )
-            .order_by("-created_at")
-        )
+        qs = _asset_detail_queryset().order_by("-created_at")
         if self.action == "list":
             # Retired assets are hidden from the default list (docs/data-model.md
             # §4: "retire hides from default lists but retains the row") — but
@@ -323,3 +336,37 @@ class AssetViewSet(
             uploaded_by=request.user,
         )
         return Response(AttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED)
+
+
+class AssetResolveView(generics.RetrieveAPIView):
+    """T4.1 — `GET /api/v1/resolve/{qr_token}`: the scan/label target.
+
+    `qr_token` is the stable, unguessable per-asset token
+    (`Asset.qr_token`, `uniq_asset_tenant_qr_token`), so this is a plain
+    unique-field lookup — no ambiguity, no ordering/pagination concerns.
+
+    Tenant isolation + RBAC (golden-path steps 2-3): `get_queryset()` is
+    `_asset_detail_queryset()`, the SAME tenant-scoped (`Asset.objects`,
+    never `all_objects`/a raw query) base queryset `AssetViewSet` uses for
+    `retrieve` — a token belonging to another tenant simply matches no row
+    under the current tenant's connection-level scope, so it 404s exactly
+    like an unknown token does; the response never distinguishes "doesn't
+    exist" from "exists in a tenant you can't see" (R4: no existence leak).
+    `permission_classes`/`action = "retrieve"` reuse `AssetPermission`
+    UNCHANGED: `has_permission()` gates on "holds `asset.view` somewhere",
+    then `has_object_permission()` (auto-invoked by `get_object()` below)
+    makes the real scope-correct call against the resolved asset's actual
+    project — identical rule to `GET /api/v1/assets/{id}/`.
+
+    No audit entry: this is a pure read, not in `docs/rbac.md` §5's
+    mandatory-audit action list.
+    """
+
+    serializer_class = AssetSerializer
+    permission_classes = [AssetPermission]
+    lookup_field = "qr_token"
+    lookup_url_kwarg = "qr_token"
+    action = "retrieve"  # AssetPermission keys off `view.action`, same as the viewset.
+
+    def get_queryset(self):
+        return _asset_detail_queryset()

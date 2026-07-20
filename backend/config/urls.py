@@ -14,7 +14,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
-from apps.assets.api import AssetViewSet
+from apps.assets.api import AssetResolveView, AssetViewSet
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
 from apps.dashboard.api import DashboardSummaryView
@@ -70,6 +70,10 @@ urlpatterns = [
     # T5.5: a single non-CRUD aggregate endpoint, a plain `path()` rather
     # than a router registration (see `apps.dashboard.api` module docstring).
     path("api/v1/dashboard/summary", DashboardSummaryView.as_view(), name="dashboard-summary"),
+    # T4.1: scan/label resolver, a plain `path()` (not router-registered —
+    # it's a single non-CRUD lookup keyed by `qr_token`, not `assets/{id}`,
+    # same reasoning as `dashboard/summary` above).
+    path("api/v1/resolve/<str:qr_token>", AssetResolveView.as_view(), name="asset-resolve"),
     path("api/v1/", include(router.urls)),
     path("api/v1/", include(checkout_router.urls)),
 ]
