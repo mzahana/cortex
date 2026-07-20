@@ -17,6 +17,7 @@ from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
 from apps.assets.api import AssetViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
 from apps.reservations.api import ReservationViewSet
+from apps.reservations.checkout import CheckoutViewSet
 from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
 
 router = DefaultRouter()
@@ -28,6 +29,13 @@ router.register("assets", AssetViewSet, basename="asset")
 router.register("stock", StockItemViewSet, basename="stock-item")
 router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-request")
 router.register("reservations", ReservationViewSet, basename="reservation")
+
+# T3.3: registered on its OWN router (not the shared `router` above) so this
+# edit stays additive and doesn't touch the same lines the parallel T3.2 task
+# (Reservation create/approve/reject/cancel endpoints) is registering on —
+# reduces merge-conflict risk between the two tasks (task instructions).
+checkout_router = DefaultRouter()
+checkout_router.register("checkouts", CheckoutViewSet, basename="checkout")
 
 
 def healthz(request):
@@ -49,4 +57,5 @@ urlpatterns = [
     path("api/v1/auth/logout", LogoutView.as_view(), name="auth-logout"),
     path("api/v1/me", MeView.as_view(), name="me"),
     path("api/v1/", include(router.urls)),
+    path("api/v1/", include(checkout_router.urls)),
 ]
