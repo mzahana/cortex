@@ -2,7 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { Alert, Button, Center, Loader, Stack, Text, Title } from "@mantine/core";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { LoginScreen } from "./screens/LoginScreen";
-import { HomeShell } from "./screens/HomeShell";
+import { DashboardScreen } from "./screens/dashboard/DashboardScreen";
 import { CategoriesScreen } from "./screens/admin/CategoriesScreen";
 import { LocationsScreen } from "./screens/admin/LocationsScreen";
 import { AssetListScreen } from "./screens/assets/AssetListScreen";
@@ -12,6 +12,8 @@ import { StockScreen } from "./screens/stock/StockScreen";
 import { ReservationsCalendarScreen } from "./screens/reservations/ReservationsCalendarScreen";
 import { ApprovalsScreen } from "./screens/approvals/ApprovalsScreen";
 import { MyItemsScreen } from "./screens/myitems/MyItemsScreen";
+import { NotificationsScreen } from "./screens/notifications/NotificationsScreen";
+import { AuditLogScreen } from "./screens/audit/AuditLogScreen";
 
 /** Distinct "backend unreachable" full-screen state (T1.5 note 6, carried
  * from M0): a network failure / 5xx on the initial `/me` call is not the
@@ -93,7 +95,7 @@ function AppRoutes() {
         path="/"
         element={
           <RequireAuth>
-            <HomeShell />
+            <DashboardScreen />
           </RequireAuth>
         }
       />
@@ -158,6 +160,22 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <MyItemsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/notifications"
+        element={
+          <RequireAuth>
+            <NotificationsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/audit"
+        element={
+          <RequireAuth>
+            <AuditLogScreen />
           </RequireAuth>
         }
       />

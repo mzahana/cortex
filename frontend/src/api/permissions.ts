@@ -62,6 +62,28 @@ export const RESERVATION_APPROVE = "reservation.approve";
 export const CHECKOUT_MANAGE = "checkout.manage";
 export const CHECKOUT_OVERRIDE = "checkout.override";
 
+// `docs/rbac.md` §3 audit/notification action keys (T5.6: Audit Log + My
+// Notifications screen gating). `audit.view` is tenant-wide-only for the
+// purpose of the nav-link gate below — a pure ProjectLead's grant IS
+// project-scoped (docs/rbac.md footnote 4: "their project's assets only"),
+// but there is no single "asset" to scope the nav link against here, so this
+// checks tenant-wide OR any project scope (`hasAnyAssetPermission`-style),
+// same presentation-only caveat as every other helper in this module — the
+// server's `AuditLogViewSet.get_queryset` is the real per-row authority.
+export const AUDIT_VIEW = "audit.view";
+// `notify.self` is granted tenant-wide to every role (docs/rbac.md §3) — a
+// plain `hasPermission` check against the tenant-wide pool is sufficient,
+// there is no scoped variant.
+export const NOTIFY_SELF = "notify.self";
+
+/** UI-gating helper for the Audit Log nav link (presentation only, same
+ * caveat as `hasAssetPermission`): true if the caller holds `audit.view`
+ * tenant-wide OR scoped to at least one project (a ProjectLead should still
+ * see the entry point — the server narrows what they actually see inside). */
+export function hasAuditViewPermission(me: Me | null | undefined): boolean {
+  return hasAnyAssetPermission(me, AUDIT_VIEW);
+}
+
 /**
  * UI-gating helper for an action on a SPECIFIC asset (NOT a security
  * boundary — same caveat as `hasPermission` above). Mirrors the server's own

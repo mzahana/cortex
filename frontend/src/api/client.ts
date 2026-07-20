@@ -9,6 +9,8 @@ import type {
   AssetListParams,
   AssetWritePayload,
   Attachment,
+  AuditLogEntry,
+  AuditLogListParams,
   Category,
   CategoryWritePayload,
   Checkout,
@@ -18,11 +20,14 @@ import type {
   CustomFieldDef,
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
+  DashboardSummary,
   ListParams,
   Location,
   LocationWritePayload,
   LoginRequest,
   Me,
+  NotificationPref,
+  NotificationPrefUpdatePayload,
   Paginated,
   Project,
   ReorderRequest,
@@ -592,6 +597,60 @@ export const api = {
       method: "POST",
       body: payload ?? {},
     });
+  },
+
+  // --- Dashboard (docs/api-and-ui.md "Maintenance, labels, import/export,
+  // dashboard"; apps.dashboard.api.DashboardSummaryView) ---
+  // NOTE: no trailing slash — a plain `path()` route, not a router-registered
+  // viewset (see `DashboardSummary` type doc comment / `apps.dashboard.api`
+  // module docstring), so the `APPEND_SLASH` reasoning above doesn't apply.
+
+  /** `GET /api/v1/dashboard/summary` — requires `asset.view` in any scope;
+   * every tile is already scoped server-side to the caller's viewable
+   * projects. Cached server-side (30s TTL) — call fresh on every screen
+   * mount, no client-side caching needed. */
+  async getDashboardSummary(): Promise<DashboardSummary> {
+    return request<DashboardSummary>("/dashboard/summary", { method: "GET" });
+  },
+
+  // --- Notification preferences (docs/api-and-ui.md "Per-user prefs";
+  // apps.notifications.api.NotificationPrefViewSet) ---
+  // Trailing slashes, same `APPEND_SLASH` reason as Categories/Locations/Stock.
+
+  /** `GET /api/v1/notification-prefs/` — the caller's OWN rows only
+   * (`get_queryset` filters to `request.user`); requires `notify.self` (every
+   * role). Paginated envelope per the default `PageNumberPagination`, though
+   * in practice there are only a handful of known event types. */
+  async listNotificationPrefs(): Promise<Paginated<NotificationPref>> {
+    return request<Paginated<NotificationPref>>("/notification-prefs/", { method: "GET" });
+  },
+
+  /** `PATCH /api/v1/notification-prefs/{event_type}/` — upserts: a user with
+   * no explicit row yet for `event_type` gets one created here (defaulting
+   * from enabled), rather than 404ing (`apps.notifications.api` module
+   * docstring). `event_type` is the lookup key, not a numeric id. */
+  async updateNotificationPref(
+    eventType: string,
+    payload: NotificationPrefUpdatePayload,
+  ): Promise<NotificationPref> {
+    return request<NotificationPref>(`/notification-prefs/${eventType}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  // --- Audit log (docs/api-and-ui.md "Audit log (scoped)";
+  // apps.audit.api.AuditLogViewSet) ---
+  // Trailing slash, same `APPEND_SLASH` reason as above. Read-only — no
+  // create/update/destroy call exists (append-only log).
+
+  /** `GET /api/v1/audit/` — one page. Requires `audit.view`: tenant-wide for
+   * Admin, own-project-scoped only for a ProjectLead (server-enforced,
+   * `apps.audit.api.AuditLogViewSet.get_queryset`) — anyone else gets a 403,
+   * handled as a normal outcome (CLAUDE.md), never assumed to be a bug.
+   * Never walks all pages (CLAUDE.md: server-side lists). */
+  async listAuditLog(params?: AuditLogListParams): Promise<Paginated<AuditLogEntry>> {
+    return request<Paginated<AuditLogEntry>>(`/audit/${buildQuery(params)}`, { method: "GET" });
   },
 };
 

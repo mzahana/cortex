@@ -583,6 +583,125 @@ export interface CheckoutListParams extends ListParams {
     | "-created_at";
 }
 
+// --- Dashboard (T5.5/T5.6; `apps.dashboard.api`/`apps.dashboard.serializers`)
+// -- `docs/api-and-ui.md` "Maintenance, labels, import/export, dashboard":
+// `GET /dashboard/summary` (aggregates, cached server-side). Plain `path()`
+// route (no trailing slash, not router-registered — see
+// `apps.dashboard.api` module docstring), unlike every other endpoint below.
+
+/** One row of `DashboardSummary.totals_by_category`
+ * (`apps.dashboard.serializers.CategoryTotalSerializer`). `category_id`/
+ * `category_name` are `null` for assets with no category set. */
+export interface CategoryTotal {
+  category_id: number | null;
+  category_name: string | null;
+  count: number;
+}
+
+/** One row of `DashboardSummary.per_project_allocation`
+ * (`apps.dashboard.serializers.ProjectAllocationSerializer`).
+ * `project_id === null` represents the general (unassigned) pool. */
+export interface ProjectAllocation {
+  project_id: number | null;
+  project_name: string;
+  count: number;
+}
+
+/** `GET /api/v1/dashboard/summary` response
+ * (`apps.dashboard.serializers.DashboardSummarySerializer`). Every count is
+ * already scoped server-side to the caller's viewable projects (tenant-wide
+ * for Admin, own project(s) only for a pure ProjectLead) — render as-is,
+ * never re-filter client-side. Cached server-side (30s TTL) — no client
+ * caching needed, just fetch on screen mount. */
+export interface DashboardSummary {
+  totals_by_category: CategoryTotal[];
+  currently_out: number;
+  overdue: number;
+  low_stock: number;
+  upcoming_reservations: number;
+  upcoming_reservations_window_days: number;
+  per_project_allocation: ProjectAllocation[];
+  generated_at: string;
+}
+
+// --- Notification preferences (T5.1/T5.6; `apps.notifications.api`/
+// `apps.notifications.serializers`) — `docs/api-and-ui.md`:
+// `GET/PATCH /api/v1/notification-prefs` ("Per-user prefs").
+
+/** The `event_type` keys actually emitted server-side
+ * (`apps.notifications.receivers.EVENT_*` constants) — used to seed the "My
+ * Notifications" screen's fixed row list even before the user has an
+ * explicit `NotificationPref` row for every one of them (a user with no
+ * explicit preference yet defaults to enabled — see
+ * `apps.notifications.api` module docstring). */
+export const NOTIFICATION_EVENT_TYPES = [
+  "reservation_confirmed",
+  "approval_request",
+  "approval_decision",
+  "overdue_reminder",
+  "low_stock_alert",
+] as const;
+
+export type NotificationEventType = (typeof NOTIFICATION_EVENT_TYPES)[number];
+
+/** `GET/PATCH /api/v1/notification-prefs/{event_type}` row shape
+ * (`apps.notifications.serializers.NotificationPrefSerializer`). Always the
+ * CALLER's own row (`apps.notifications.api.NotificationPrefViewSet.
+ * get_queryset`/`get_object` never resolve another user's) — there is no
+ * `user` field on the wire because of that. */
+export interface NotificationPref {
+  id: number;
+  event_type: string;
+  email_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `PATCH /api/v1/notification-prefs/{event_type}` request body — the only
+ * client-writable field. */
+export interface NotificationPrefUpdatePayload {
+  email_enabled: boolean;
+}
+
+// --- Audit log (T5.3/T5.6; `apps.audit.api`/`apps.audit.serializers`) —
+// `docs/api-and-ui.md`: `GET /api/v1/audit` ("Audit log (scoped)"),
+// "Audit Log" screen: "Filterable immutable history".
+
+/** `GET /api/v1/audit` (list row / detail) —
+ * `apps.audit.serializers.AuditLogSerializer`. Read-only (append-only log,
+ * no write endpoint at all — see `apps.audit.api` module docstring).
+ * `before`/`after` are opaque JSON snapshots (shape varies per
+ * `entity_type`/`action`) — rendered as raw JSON in the UI, not parsed
+ * per-entity-type. `actor`/`actor_email`/`actor_name` are all `null` for a
+ * system-initiated entry with no acting user. */
+export interface AuditLogEntry {
+  id: number;
+  actor: number | null;
+  actor_email: string | null;
+  actor_name: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  before: unknown;
+  after: unknown;
+  ip: string | null;
+  created_at: string;
+}
+
+/** `GET /api/v1/audit` query params (`apps.audit.api.AuditLogFilterSet`/
+ * `AuditLogViewSet`). All plain equality/range filters — `actor` is a bare
+ * user-id match, not a search. `ordering` is restricted to `created_at`
+ * server-side (`ordering_fields = ["created_at"]`). */
+export interface AuditLogListParams extends ListParams {
+  entity_type?: string;
+  entity_id?: string;
+  action?: string;
+  actor?: number;
+  created_after?: string;
+  created_before?: string;
+  ordering?: "created_at" | "-created_at";
+}
+
 /** `AssetCursorPagination`'s envelope shape (`rest_framework.pagination.
  * CursorPagination`) — `next`/`previous` are opaque full URLs (no `count`,
  * unlike `Paginated<T>`'s page-number envelope) since cursor pagination

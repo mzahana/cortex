@@ -12,17 +12,25 @@ import {
   Tooltip,
 } from "@mantine/core";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../hooks/useAuth";
+import { useAuth } from "../../hooks/useAuth";
+import { hasAuditViewPermission } from "../../api/permissions";
+import { DashboardTiles, DashboardTilesError, DashboardTilesSkeleton } from "./DashboardTiles";
+import { useDashboardSummary } from "./useDashboardSummary";
 
 /**
- * Placeholder authenticated shell (T0.7). Real screens (Home w/ Scan FAB,
- * Assets, Stock, Reservations, ...) land in later milestones; this proves
- * the `/me` round-trip and gives every future screen a place to live.
+ * Dashboard / Home screen (T5.6, `docs/api-and-ui.md`: "Tiles: totals by
+ * category, currently-out, overdue, low-stock, upcoming reservations,
+ * per-project allocation"). This is the post-login landing route (`/`),
+ * replacing the T0.7 placeholder shell — it keeps that shell's chrome
+ * (header, logout, quick-nav buttons, membership/permission summary) and
+ * adds the six live tiles above them. Mobile-first: tiles are the first
+ * thing seen, nav buttons are large and thumb-reachable below.
  */
-export function HomeShell() {
+export function DashboardScreen() {
   const { me, logout } = useAuth();
   const navigate = useNavigate();
   const [loggingOut, setLoggingOut] = useState(false);
+  const { summary, loading, error, reload } = useDashboardSummary();
 
   if (!me) {
     return (
@@ -81,6 +89,10 @@ export function HomeShell() {
             </Badge>
           </Stack>
 
+          {loading && !summary && <DashboardTilesSkeleton />}
+          {error && !summary && <DashboardTilesError message={error} onRetry={reload} />}
+          {summary && <DashboardTiles summary={summary} />}
+
           <Button
             size="lg"
             fullWidth
@@ -130,6 +142,25 @@ export function HomeShell() {
             My Items
           </Button>
 
+          <Group grow>
+            <Button
+              variant="light"
+              onClick={() => navigate("/notifications")}
+              data-testid="nav-notifications"
+            >
+              Notifications
+            </Button>
+            {hasAuditViewPermission(me) && (
+              <Button
+                variant="light"
+                onClick={() => navigate("/audit")}
+                data-testid="nav-audit"
+              >
+                Audit Log
+              </Button>
+            )}
+          </Group>
+
           <Stack gap="xs">
             <Text fw={600}>Memberships</Text>
             {me.memberships.length === 0 && (
@@ -148,42 +179,6 @@ export function HomeShell() {
           </Stack>
 
           <Stack gap="xs">
-            <Text fw={600}>General permissions</Text>
-            <Group gap={4} wrap="wrap">
-              {me.permissions.length === 0 && (
-                <Text c="dimmed" size="sm">
-                  None.
-                </Text>
-              )}
-              {me.permissions.map((perm) => (
-                <Badge key={perm} size="sm" variant="dot">
-                  {perm}
-                </Badge>
-              ))}
-            </Group>
-          </Stack>
-
-          {Object.keys(me.project_permissions).length > 0 && (
-            <Stack gap="xs">
-              <Text fw={600}>Project-scoped permissions</Text>
-              {Object.entries(me.project_permissions).map(([projectId, perms]) => (
-                <Stack key={projectId} gap={4}>
-                  <Text size="sm" c="dimmed">
-                    Project {projectId}
-                  </Text>
-                  <Group gap={4} wrap="wrap">
-                    {perms.map((perm) => (
-                      <Badge key={perm} size="sm" variant="dot" color="grape">
-                        {perm}
-                      </Badge>
-                    ))}
-                  </Group>
-                </Stack>
-              ))}
-            </Stack>
-          )}
-
-          <Stack gap="xs">
             <Text fw={600}>Admin</Text>
             <Group gap="xs" wrap="wrap">
               <Button variant="light" size="xs" onClick={() => navigate("/admin/categories")}>
@@ -200,11 +195,6 @@ export function HomeShell() {
               the real authority).
             </Text>
           </Stack>
-
-          <Text size="xs" c="dimmed">
-            Home (Scan FAB, asset lists, etc.) lands in later milestones — this
-            is the T0.7 authenticated-shell placeholder.
-          </Text>
         </Stack>
       </AppShell.Main>
     </AppShell>
