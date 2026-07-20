@@ -1,11 +1,35 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { VitePWA } from "vite-plugin-pwa";
 
 // Same-origin `/api/v1` in production (nginx proxies it to `web`). In local
 // `vite dev` (outside docker), proxy `/api` to the backend so the typed
 // client's relative base path works unchanged in both modes.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // T4.2: installable PWA shell + offline app-shell cache. `manifest:
+    // false` because the manifest is a hand-authored static file
+    // (`public/manifest.webmanifest`, linked from `index.html`) rather than
+    // plugin-generated — keeps the single source of truth explicit. This is
+    // deliberately the *shell* cache only: no runtimeCaching entries, so API
+    // responses (`/api/**`) are never intercepted/cached by the service
+    // worker. Offline write-queueing is out of scope (Phase 3).
+    VitePWA({
+      manifest: false,
+      registerType: "autoUpdate",
+      injectRegister: "auto",
+      includeAssets: ["icons/icon.svg"],
+      workbox: {
+        // Precache the built shell only (JS/CSS/HTML/icons). No
+        // runtimeCaching config is added on purpose: API calls under
+        // `/api/**` must always hit the network, never the SW cache.
+        globPatterns: ["**/*.{js,css,html,svg,webmanifest}"],
+        navigateFallback: "/index.html",
+        navigateFallbackDenylist: [/^\/api\//],
+      },
+    }),
+  ],
   server: {
     proxy: {
       "/api": {
