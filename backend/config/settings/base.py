@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "apps.stock",
     "apps.reservations",
     "apps.notifications",
+    "apps.dashboard",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

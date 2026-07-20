@@ -17,6 +17,7 @@ from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
 from apps.assets.api import AssetViewSet
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
+from apps.dashboard.api import DashboardSummaryView
 from apps.notifications.api import NotificationPrefViewSet
 from apps.rbac.api import MembershipViewSet
 from apps.reservations.api import ReservationViewSet
@@ -66,6 +67,9 @@ urlpatterns = [
     path("api/v1/auth/login", LoginView.as_view(), name="auth-login"),
     path("api/v1/auth/logout", LogoutView.as_view(), name="auth-logout"),
     path("api/v1/me", MeView.as_view(), name="me"),
+    # T5.5: a single non-CRUD aggregate endpoint, a plain `path()` rather
+    # than a router registration (see `apps.dashboard.api` module docstring).
+    path("api/v1/dashboard/summary", DashboardSummaryView.as_view(), name="dashboard-summary"),
     path("api/v1/", include(router.urls)),
     path("api/v1/", include(checkout_router.urls)),
 ]

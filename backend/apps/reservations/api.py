@@ -35,6 +35,7 @@ from rest_framework.response import Response
 
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.pagination import BoundedPageNumberPagination
+from apps.dashboard.cache import invalidate_tenant_dashboard
 from apps.rbac.permission_keys import ASSET_VIEW, RESERVATION_APPROVE, RESERVATION_CREATE
 from apps.rbac.services import get_viewable_project_scope
 
@@ -125,6 +126,10 @@ class ReservationViewSet(
             after=_reservation_snapshot(reservation),
             ip=client_ip(request),
         )
+        # T5.5: a new reservation may fall inside the "upcoming reservations"
+        # window -- invalidate so the dashboard reflects it without waiting
+        # out the TTL (see `apps.dashboard.cache` module docstring).
+        invalidate_tenant_dashboard(reservation.tenant_id)
 
         out = self.get_serializer(reservation)
         return Response(out.data, status=status.HTTP_201_CREATED)
@@ -147,6 +152,7 @@ class ReservationViewSet(
             after=_reservation_snapshot(updated),
             ip=client_ip(request),
         )
+        invalidate_tenant_dashboard(updated.tenant_id)
 
         return Response(self.get_serializer(updated).data)
 
@@ -172,6 +178,7 @@ class ReservationViewSet(
             after=_reservation_snapshot(updated),
             ip=client_ip(request),
         )
+        invalidate_tenant_dashboard(updated.tenant_id)
 
         return Response(self.get_serializer(updated).data)
 
@@ -192,5 +199,6 @@ class ReservationViewSet(
             after=_reservation_snapshot(updated),
             ip=client_ip(request),
         )
+        invalidate_tenant_dashboard(updated.tenant_id)
 
         return Response(self.get_serializer(updated).data)

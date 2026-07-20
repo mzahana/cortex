@@ -44,6 +44,7 @@ from rest_framework.response import Response
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
 from apps.common.pagination import AssetCursorPagination, BoundedPageNumberPagination
+from apps.dashboard.cache import invalidate_tenant_dashboard
 from apps.rbac.permission_keys import ASSET_RETIRE, ASSET_VIEW
 from apps.rbac.services import get_viewable_project_scope
 
@@ -265,6 +266,10 @@ class AssetViewSet(
             after=after,
             ip=client_ip(request),
         )
+        # T5.5: retiring removes the asset from the default totals/
+        # per-project tiles -- invalidate immediately (see
+        # `apps.dashboard.cache` module docstring).
+        invalidate_tenant_dashboard(asset.tenant_id)
 
         return Response(self.get_serializer(asset).data, status=status.HTTP_200_OK)
 

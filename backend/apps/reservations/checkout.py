@@ -46,6 +46,7 @@ from rest_framework.response import Response
 from apps.assets.models import Asset
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.pagination import BoundedPageNumberPagination
+from apps.dashboard.cache import invalidate_tenant_dashboard
 from apps.rbac.permission_keys import CHECKOUT_MANAGE, CHECKOUT_OVERRIDE, RESERVATION_APPROVE
 from apps.rbac.services import (
     get_viewable_project_scope,
@@ -458,6 +459,10 @@ class CheckoutViewSet(
             },
             ip=client_ip(self.request),
         )
+        # T5.5: a new checkout moves an asset out of the pool -- bump the
+        # dashboard cache so `currently_out` reflects it without waiting out
+        # the TTL (see `apps.dashboard.cache` module docstring).
+        invalidate_tenant_dashboard(checkout.tenant_id)
 
     @action(detail=True, methods=["post"])
     def checkin(self, request, pk=None):
@@ -485,6 +490,10 @@ class CheckoutViewSet(
                 },
                 ip=client_ip(request),
             )
+            # T5.5: `currently_out`/`overdue` are the most visibly stale
+            # tiles (CLAUDE.md's own example) -- invalidate on every actual
+            # state change, not just audited ones.
+            invalidate_tenant_dashboard(updated.tenant_id)
 
         return Response(self.get_serializer(updated).data, status=status.HTTP_200_OK)
 
@@ -519,5 +528,6 @@ class CheckoutViewSet(
                 },
                 ip=client_ip(request),
             )
+            invalidate_tenant_dashboard(updated.tenant_id)
 
         return Response(self.get_serializer(updated).data, status=status.HTTP_200_OK)

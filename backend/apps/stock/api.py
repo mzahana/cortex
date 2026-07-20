@@ -31,6 +31,7 @@ from rest_framework.response import Response
 
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.pagination import BoundedPageNumberPagination
+from apps.dashboard.cache import invalidate_tenant_dashboard
 from apps.rbac.permission_keys import ASSET_VIEW, REORDER_APPROVE, STOCK_ADJUST
 from apps.rbac.services import get_viewable_project_scope
 
@@ -121,6 +122,10 @@ class StockItemViewSet(
                 },
                 ip=client_ip(request),
             )
+            # T5.5: an audited txn changes `quantity_on_hand`, which the
+            # `low_stock` tile aggregates over -- invalidate immediately
+            # (see `apps.dashboard.cache` module docstring).
+            invalidate_tenant_dashboard(result.stock_item.tenant_id)
 
         return Response(
             {
