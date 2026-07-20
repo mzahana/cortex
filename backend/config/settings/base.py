@@ -244,6 +244,18 @@ STORAGES = {
 # a browser never renders an accepted file inline.
 MAX_ATTACHMENT_UPLOAD_BYTES = env.int("MAX_ATTACHMENT_UPLOAD_BYTES", default=25 * 1024 * 1024)
 
+# --- Reservations (T3.2, docs/tasks/M3-reservations-checkout.md Q10) --------
+# No confirmed product answer for the reservation caps yet (Q10 is an open
+# question in docs/risks.md §3) -> documented defaults, using the SAME
+# 12-factor env-configurable-constant mechanism as `MAX_ATTACHMENT_UPLOAD_BYTES`
+# above (not a new per-tenant `Tenant.settings` jsonb knob -- no prior M0-M2
+# config actually keys a business rule off that field, so this follows the
+# established precedent rather than inventing a second mechanism).
+# `apps.reservations.services` is the single place these are read from.
+RESERVATION_MAX_ACTIVE_PER_USER = env.int("RESERVATION_MAX_ACTIVE_PER_USER", default=3)
+RESERVATION_MAX_LEAD_DAYS = env.int("RESERVATION_MAX_LEAD_DAYS", default=90)
+RESERVATION_MAX_DURATION_DAYS = env.int("RESERVATION_MAX_DURATION_DAYS", default=30)
+
 # --- Email (Brevo goes behind EmailProvider; wired in a later milestone) -----
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="Cortex <cortex@example.com>")
 EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
