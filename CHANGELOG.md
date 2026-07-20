@@ -10,7 +10,46 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
-_M2 (consumables & stock) next — see `docs/tasks/M2-consumables-stock.md`._
+_M3 (reservations & checkout) next — see `docs/tasks/M3-reservations-checkout.md`._
+
+## [0.3.0] - 2026-07-20
+
+Milestone **M2 — Consumables & stock**: immutable ledger-backed quantity
+tracking, low-stock detection, and the reorder workflow, with UI. Meets F3
+acceptance.
+
+### Added
+
+- **Stock models** — `StockItem` (a 1:1 extension of a consumable Asset:
+  unit of measure, quantity on hand, reorder threshold/target, bin location),
+  an immutable `StockTxn` ledger (receive/consume/adjust/correction), and
+  `ReorderRequest` with a validated status lifecycle
+  (open → approved → ordered → received → cancelled).
+- **Stock endpoints** — `GET /stock` (server-side paginated, low-stock
+  filterable, scope-aware) and `POST /stock/{id}/txn`, which applies a ledger
+  transaction and reconciles quantity atomically under a row lock; quantity is
+  always derived from the ledger, never set directly, and a transaction that
+  would go negative is rejected. Reorder-request create, approve, and status
+  transitions, enforcing the project-scoped `stock.adjust`/`stock.consume`/
+  `reorder.request`/`reorder.approve` permissions.
+- **`low_stock` domain event** — emitted once on the threshold-crossing edge
+  (idempotent, transactional) for M5's email notification to consume.
+- **Stock / Consumables screen** — quantities with live updates and low-stock
+  highlighting, receive/consume/adjust actions, and the reorder-request and
+  approval flow, gated by the user's effective permissions.
+
+### Security
+
+- The ledger invariant — `quantity_on_hand` always equals the sum of the
+  ledger — is enforced at the database level, independent of the application:
+  a reconciliation trigger, a validating trigger that rejects any write that
+  would desync the two, and a trigger that makes the ledger append-only
+  (an update or delete is rejected; a correction is always a new row). Row-Level
+  Security backs all three new tenant-owned tables, and a `StockItem` can only
+  be created for a consumable asset, enforced at both the application and the
+  database layer.
+- Every `stock.adjust` transaction and reorder approval writes an immutable
+  audit-log entry.
 
 ## [0.2.0] - 2026-07-19
 
