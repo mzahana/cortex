@@ -446,6 +446,69 @@ export interface ReorderRequestUpdatePayload {
   note?: string;
 }
 
+// --- Reservations & checkout (T3.4; `apps.reservations.serializers`/
+// `apps.reservations.api`) — `docs/api-and-ui.md` "Reservations & checkout"
+// table: `GET /reservations` (list/calendar feed, `?from&to`),
+// `POST /reservations` (create), `POST /reservations/{id}/approve|reject|
+// cancel`. Checkout endpoints (`POST /checkouts`, etc.) are T3.3/T3.5 — not
+// added here (out of scope for this task, see T3.4 boundary note).
+
+/** `Reservation.Status` choices (`backend/apps/reservations/models.py::
+ * Reservation.Status`). `ACTIVE_STATUSES` (the ones that participate in the
+ * F4 no-overlap exclusion constraint) are `pending`/`approved`/`fulfilled`. */
+export type ReservationStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "cancelled"
+  | "fulfilled"
+  | "expired";
+
+/** `GET /api/v1/reservations` (list row / calendar feed item) / detail —
+ * `apps.reservations.serializers.ReservationSerializer`. `asset`/`user`/
+ * `project`/`approver` are plain ids (not nested) — the screen resolves
+ * asset/user names separately, same "id, not nested" convention as
+ * `StockItem.asset`. */
+export interface Reservation {
+  id: number;
+  asset: number;
+  user: number;
+  project: number | null;
+  start_at: string;
+  end_at: string;
+  status: ReservationStatus;
+  approver: number | null;
+  approval_note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /api/v1/reservations` request body. `user`/`status`/`approver`/
+ * `approval_note` are never client-writable (server-derived — see
+ * `ReservationSerializer` doc comment: requester is always the caller,
+ * status is auto-approve-vs-pending per `Category.requires_approval`). */
+export interface ReservationCreatePayload {
+  asset: number;
+  start_at: string;
+  end_at: string;
+  project?: number | null;
+}
+
+/** `GET /api/v1/reservations` query params
+ * (`apps.reservations.api.ReservationViewSet`: `filterset_fields =
+ * ["status", "asset", "user"]`, `ordering_fields = ["start_at", "end_at",
+ * "created_at"]`). `from`/`to` are the calendar-feed window (ISO-8601
+ * datetimes) — restricts to reservations whose `[start_at, end_at)` window
+ * overlaps `[from, to)`; either bound may be supplied alone. */
+export interface ReservationListParams extends ListParams {
+  from?: string;
+  to?: string;
+  status?: ReservationStatus;
+  asset?: number;
+  user?: number;
+  ordering?: "start_at" | "-start_at" | "end_at" | "-end_at" | "created_at" | "-created_at";
+}
+
 /** `AssetCursorPagination`'s envelope shape (`rest_framework.pagination.
  * CursorPagination`) — `next`/`previous` are opaque full URLs (no `count`,
  * unlike `Paginated<T>`'s page-number envelope) since cursor pagination

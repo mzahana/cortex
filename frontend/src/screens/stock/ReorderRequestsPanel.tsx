@@ -36,6 +36,10 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
 
 interface ReorderRequestsPanelProps {
   me: Me;
+  /** Initial `?status=` filter (T3.4 Approvals screen reuses this panel
+   * defaulted to `"open"` — the only status an approver can act on). Still
+   * user-changeable via the status `Select` below. */
+  defaultStatus?: string;
 }
 
 /**
@@ -47,8 +51,8 @@ interface ReorderRequestsPanelProps {
  * may also be done by the original requester. An invalid transition (400,
  * RFC-7807) is surfaced inline on that row, never thrown unhandled.
  */
-export function ReorderRequestsPanel({ me }: ReorderRequestsPanelProps) {
-  const [statusFilter, setStatusFilter] = useState<string>("");
+export function ReorderRequestsPanel({ me, defaultStatus = "" }: ReorderRequestsPanelProps) {
+  const [statusFilter, setStatusFilter] = useState<string>(defaultStatus);
   const filters = useMemo(
     () => ({ status: (statusFilter || undefined) as ReorderRequestStatus | undefined }),
     [statusFilter],

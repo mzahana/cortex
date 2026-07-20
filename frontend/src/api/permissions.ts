@@ -41,6 +41,14 @@ export const STOCK_CONSUME = "stock.consume";
 export const REORDER_REQUEST = "reorder.request";
 export const REORDER_APPROVE = "reorder.approve";
 
+// `docs/rbac.md` §3/§4 reservation action keys (T3.4: Reservations Calendar +
+// Approvals screen gating). Reservations are project-scoped through their
+// underlying `Asset` (`apps.reservations.permissions` module docstring) —
+// same scope resolution as asset/stock actions, so `hasAssetPermission`/
+// `hasAnyAssetPermission` are reused directly (not re-implemented).
+export const RESERVATION_CREATE = "reservation.create";
+export const RESERVATION_APPROVE = "reservation.approve";
+
 /**
  * UI-gating helper for an action on a SPECIFIC asset (NOT a security
  * boundary — same caveat as `hasPermission` above). Mirrors the server's own

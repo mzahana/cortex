@@ -25,6 +25,9 @@ import type {
   ReorderRequestCreatePayload,
   ReorderRequestListParams,
   ReorderRequestUpdatePayload,
+  Reservation,
+  ReservationCreatePayload,
+  ReservationListParams,
   StockItem,
   StockListParams,
   StockTxnPayload,
@@ -477,6 +480,64 @@ export const api = {
     payload: ReorderRequestUpdatePayload,
   ): Promise<ReorderRequest> {
     return request<ReorderRequest>(`/reorder-requests/${id}/`, { method: "PATCH", body: payload });
+  },
+
+  // --- Reservations (docs/api-and-ui.md "Reservations & checkout";
+  // apps.reservations.api.ReservationViewSet) ---
+  // Trailing slashes, same `APPEND_SLASH` reason as Categories/Locations/Stock.
+
+  /** `GET /api/v1/reservations/` — one page. Read requires `asset.view`,
+   * scope-aware server-side (same union-of-memberships rule as `listAssets`/
+   * `listStock`). `?from&to` is the calendar-feed window; `?status=` filters
+   * to one lifecycle stage (used by both the Calendar and the Approvals
+   * screen — approvals passes `status=pending`). Never walks all pages
+   * (CLAUDE.md: server-side lists). */
+  async listReservations(params?: ReservationListParams): Promise<Paginated<Reservation>> {
+    return request<Paginated<Reservation>>(`/reservations/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  /** `GET /api/v1/reservations/{id}/` — detail. */
+  async getReservation(id: number): Promise<Reservation> {
+    return request<Reservation>(`/reservations/${id}/`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/reservations/` — requires `reservation.create`, scoped to
+   * the target asset's project. The conflict pre-check (F4) and the
+   * per-user-cap/window checks live server-side
+   * (`apps.reservations.services.create_reservation`); an overlapping window
+   * 409s (`ReservationConflict`, `err.status === 409`) — surface that inline
+   * as a conflict message, not a generic error. */
+  async createReservation(payload: ReservationCreatePayload): Promise<Reservation> {
+    return request<Reservation>("/reservations/", { method: "POST", body: payload });
+  },
+
+  /** `POST /api/v1/reservations/{id}/approve/` — requires `reservation.approve`,
+   * scoped to the reservation's asset's project (general-pool assets:
+   * Admins only). Only a `pending` reservation can be approved — the server
+   * 400s otherwise (`err.problem.errors.status`). */
+  async approveReservation(id: number, note?: string): Promise<Reservation> {
+    return request<Reservation>(`/reservations/${id}/approve/`, {
+      method: "POST",
+      body: note ? { approval_note: note } : {},
+    });
+  },
+
+  /** `POST /api/v1/reservations/{id}/reject/` — same scope/permission as
+   * `approveReservation`. */
+  async rejectReservation(id: number, note?: string): Promise<Reservation> {
+    return request<Reservation>(`/reservations/${id}/reject/`, {
+      method: "POST",
+      body: note ? { approval_note: note } : {},
+    });
+  },
+
+  /** `POST /api/v1/reservations/{id}/cancel/` — the requester (own booking)
+   * or a scoped approver. Only `pending`/`approved` reservations are
+   * cancellable — the server 400s otherwise. */
+  async cancelReservation(id: number): Promise<Reservation> {
+    return request<Reservation>(`/reservations/${id}/cancel/`, { method: "POST" });
   },
 };
 

@@ -100,6 +100,26 @@ export function HomeShell() {
             Stock &amp; Consumables
           </Button>
 
+          <Button
+            size="lg"
+            fullWidth
+            variant="light"
+            onClick={() => navigate("/reservations")}
+            data-testid="nav-reservations"
+          >
+            Reservations
+          </Button>
+
+          <Button
+            size="lg"
+            fullWidth
+            variant="light"
+            onClick={() => navigate("/approvals")}
+            data-testid="nav-approvals"
+          >
+            Approvals
+          </Button>
+
           <Stack gap="xs">
             <Text fw={600}>Memberships</Text>
             {me.memberships.length === 0 && (
