@@ -15,8 +15,10 @@ from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
 from apps.assets.api import AssetViewSet
+from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
 from apps.notifications.api import NotificationPrefViewSet
+from apps.rbac.api import MembershipViewSet
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
 from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
@@ -31,6 +33,12 @@ router.register("stock", StockItemViewSet, basename="stock-item")
 router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-request")
 router.register("reservations", ReservationViewSet, basename="reservation")
 router.register("notification-prefs", NotificationPrefViewSet, basename="notification-pref")
+router.register("memberships", MembershipViewSet, basename="membership")
+# T5.3: read-only, no create/update/destroy route exists (see
+# apps.audit.api module docstring) -- registered on the same shared router
+# regardless since it's a plain additive registration, not a parallel-task
+# merge-conflict risk like `checkout_router` was for T3.2/T3.3.
+router.register("audit", AuditLogViewSet, basename="audit-log")
 
 # T3.3: registered on its OWN router (not the shared `router` above) so this
 # edit stays additive and doesn't touch the same lines the parallel T3.2 task
