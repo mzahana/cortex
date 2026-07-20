@@ -16,6 +16,7 @@ from rest_framework.routers import DefaultRouter
 from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
 from apps.assets.api import AssetViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
+from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
 
 router = DefaultRouter()
 router.register("categories", CategoryViewSet, basename="category")
@@ -23,6 +24,8 @@ router.register("locations", LocationViewSet, basename="location")
 router.register("projects", ProjectViewSet, basename="project")
 router.register("tags", TagViewSet, basename="tag")
 router.register("assets", AssetViewSet, basename="asset")
+router.register("stock", StockItemViewSet, basename="stock-item")
+router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-request")
 
 
 def healthz(request):

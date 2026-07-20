@@ -36,10 +36,12 @@ import factory
 import factory.django
 
 from apps.accounts.models import User
+from apps.assets.models import Asset
 from apps.catalog.models import Category, CustomFieldDef, Location, Tag
 from apps.projects.models import Project
 from apps.rbac.models import Membership, Role
 from apps.rbac.permission_keys import ROLE_MEMBER
+from apps.stock.models import StockItem
 from apps.tenancy.models import Tenant
 
 DEFAULT_TEST_PASSWORD = "TestPass123!"
@@ -165,6 +167,51 @@ class TagFactory(factory.django.DjangoModelFactory):
 
     tenant = factory.SubFactory(TenantFactory)
     name = factory.Sequence(lambda n: f"tag-{n}")
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        return model_class.all_objects.create(*args, **kwargs)
+
+
+class AssetFactory(factory.django.DjangoModelFactory):
+    """`Asset` is a `TenantScopedModel`; see module docstring for why this
+    creates through `.all_objects` rather than the (context-requiring)
+    default manager. `tenant` defaults from `category.tenant` (same rule the
+    API enforces) -- callers that pass an explicit `category=` should also
+    match its `tenant=`, mirroring `CustomFieldDefFactory`.
+    """
+
+    class Meta:
+        model = Asset
+
+    tenant = factory.SubFactory(TenantFactory)
+    category = factory.SubFactory(CategoryFactory)
+    name = factory.Sequence(lambda n: f"Test Asset {n}")
+    is_consumable = False
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        return model_class.all_objects.create(*args, **kwargs)
+
+
+class StockItemFactory(factory.django.DjangoModelFactory):
+    """`StockItem` is a `TenantScopedModel`; see module docstring for why
+    this creates through `.all_objects` rather than the (context-requiring)
+    default manager. Defaults to a fresh CONSUMABLE `Asset` in the SAME
+    tenant (`StockItem.asset` must be consumable — `apps.stock.models`'
+    invariant — a caller passing a durable `asset=` explicitly gets the
+    same `ValidationError` the model itself raises)."""
+
+    class Meta:
+        model = StockItem
+
+    tenant = factory.SubFactory(TenantFactory)
+    asset = factory.SubFactory(
+        AssetFactory, tenant=factory.SelfAttribute("..tenant"), is_consumable=True
+    )
+    unit_of_measure = "unit"
+    reorder_threshold = 5
+    reorder_target = 20
 
     @classmethod
     def _create(cls, model_class, *args, **kwargs):
