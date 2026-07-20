@@ -49,6 +49,19 @@ export const REORDER_APPROVE = "reorder.approve";
 export const RESERVATION_CREATE = "reservation.create";
 export const RESERVATION_APPROVE = "reservation.approve";
 
+// `docs/rbac.md` §3 checkout action keys (T3.5: My Items + Asset Detail
+// check-out/check-in gating). Checkouts are project-scoped through their
+// underlying `Asset` (`apps.reservations.checkout.CheckoutPermission`
+// docstring) — same scope resolution as asset/stock/reservation actions, so
+// `hasAssetPermission`/`hasAnyAssetPermission` are reused directly (not
+// re-implemented). Note: `checkout.manage` gates BOTH check-out and
+// self-service check-in (the server additionally requires the caller be the
+// checkout's holder for check-in specifically — a client-side check this
+// module can't express without knowing which checkout is "mine", which the
+// caller resolves itself); `checkout.override` gates force-return only.
+export const CHECKOUT_MANAGE = "checkout.manage";
+export const CHECKOUT_OVERRIDE = "checkout.override";
+
 /**
  * UI-gating helper for an action on a SPECIFIC asset (NOT a security
  * boundary — same caveat as `hasPermission` above). Mirrors the server's own

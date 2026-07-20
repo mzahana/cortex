@@ -11,6 +11,7 @@ import { AssetFormScreen } from "./screens/assets/AssetForm";
 import { StockScreen } from "./screens/stock/StockScreen";
 import { ReservationsCalendarScreen } from "./screens/reservations/ReservationsCalendarScreen";
 import { ApprovalsScreen } from "./screens/approvals/ApprovalsScreen";
+import { MyItemsScreen } from "./screens/myitems/MyItemsScreen";
 
 /** Distinct "backend unreachable" full-screen state (T1.5 note 6, carried
  * from M0): a network failure / 5xx on the initial `/me` call is not the
@@ -149,6 +150,14 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <ApprovalsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/my-items"
+        element={
+          <RequireAuth>
+            <MyItemsScreen />
           </RequireAuth>
         }
       />

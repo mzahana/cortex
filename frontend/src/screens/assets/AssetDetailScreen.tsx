@@ -24,12 +24,16 @@ import {
   ASSET_ATTACH,
   ASSET_EDIT,
   ASSET_RETIRE,
+  CHECKOUT_MANAGE,
   hasAssetPermission,
+  RESERVATION_CREATE,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
-import type { Asset, Category, CustomFieldDef, Location, Project } from "../../api/types";
+import type { Asset, Category, Checkout, CustomFieldDef, Location, Project, Reservation } from "../../api/types";
 import { orderedFieldEntries, formatFieldValue } from "./assetFieldFormat";
 import { STATUS_COLORS, STATUS_LABELS } from "./assetConstants";
+import { CreateReservationModal } from "../reservations/CreateReservationModal";
+import { CheckoutModal } from "./CheckoutModal";
 
 /**
  * Asset Detail (T1.6, docs/api-and-ui.md "Asset Detail": "Specs (custom
@@ -43,8 +47,18 @@ import { STATUS_COLORS, STATUS_LABELS } from "./assetConstants";
  *
  * Action buttons are gated by `hasAssetPermission` (presentation-only,
  * CLAUDE.md/rbac.md §1 — a server 403 is still a normal, handled outcome):
- * edit/retire/attach are THIS milestone's actions; reserve/checkout/label/
- * report-issue belong to later milestones and render as disabled stubs.
+ * edit/retire/attach/reserve/check-out/check-in are wired; label/report-issue
+ * still belong to later milestones and render as disabled stubs.
+ *
+ * Reserve reuses T3.4's `CreateReservationModal` pre-filled with this asset
+ * (`initialAsset`). Check-out/check-in call the T3.3 checkout endpoints
+ * directly (`POST /checkouts`, `POST /checkouts/{id}/checkin`) — no
+ * `?asset=`/`?user=` server-side filter exists on `GET /checkouts` (flagged
+ * for backend-engineer as a follow-up), so this screen resolves "do I have
+ * this asset checked out right now" by scanning the caller's own bounded
+ * open-checkouts page (same page size as the My Items screen) for a row
+ * matching this asset id — acceptable here because it only runs once per
+ * asset-detail view, not as a recurring list.
  */
 export function AssetDetailScreen() {
   const { id } = useParams<{ id: string }>();
@@ -67,6 +81,13 @@ export function AssetDetailScreen() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const resetFileRef = useRef<() => void>(null);
 
+  const [reserveOpen, setReserveOpen] = useState(false);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [myOpenCheckout, setMyOpenCheckout] = useState<Checkout | null>(null);
+  const [checkinBusy, setCheckinBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -86,6 +107,24 @@ export function AssetDetailScreen() {
       setFieldDefs(defs);
       setLocation(fetchedLocation);
       setProject(fetchedProject);
+
+      // Resolve "do I currently hold this durable asset checked out" from my
+      // own bounded open-checkouts page — see the module doc comment above
+      // for why (no `?asset=` server-side filter exists yet).
+      if (!fetchedAsset.is_consumable) {
+        try {
+          const openCheckouts = await api.listCheckouts({ open: true, page_size: 100 });
+          const mine =
+            openCheckouts.results.find(
+              (c) => c.asset === fetchedAsset.id && c.user === me?.id,
+            ) ?? null;
+          setMyOpenCheckout(mine);
+        } catch {
+          setMyOpenCheckout(null);
+        }
+      } else {
+        setMyOpenCheckout(null);
+      }
     } catch (err) {
       setAsset(null);
       setError(
@@ -96,7 +135,7 @@ export function AssetDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, me?.id]);
 
   useEffect(() => {
     void load();
@@ -126,7 +165,46 @@ export function AssetDetailScreen() {
   const canEdit = hasAssetPermission(me, ASSET_EDIT, asset.project);
   const canRetire = hasAssetPermission(me, ASSET_RETIRE, asset.project);
   const canAttach = hasAssetPermission(me, ASSET_ATTACH, asset.project);
+  const canReserve = hasAssetPermission(me, RESERVATION_CREATE, asset.project);
+  const canCheckout = hasAssetPermission(me, CHECKOUT_MANAGE, asset.project);
   const isRetired = asset.status === "retired";
+  const isCheckoutEligible = !asset.is_consumable && ["available", "reserved"].includes(asset.status);
+  const isCheckedOutByMe = !!myOpenCheckout;
+
+  const handleReservationCreated = (reservation: Reservation) => {
+    void reservation;
+    setBanner("Reservation requested.");
+    void load();
+  };
+
+  const handleCheckedOut = (checkout: Checkout) => {
+    setMyOpenCheckout(checkout);
+    setBanner("Checked out.");
+    void load();
+  };
+
+  const handleCheckIn = async () => {
+    if (!myOpenCheckout) return;
+    setCheckinBusy(true);
+    setActionError(null);
+    try {
+      const updated = await api.checkinCheckout(myOpenCheckout.id);
+      setMyOpenCheckout(null);
+      setBanner("Checked in.");
+      void updated;
+      void load();
+    } catch (err) {
+      // A server 403/409 here is a normal, handled outcome (CLAUDE.md) — the
+      // client gate above can drift from the server's own scoped/holder check.
+      setActionError(
+        err instanceof ApiError
+          ? err.problem.detail ?? err.problem.title
+          : "Unable to reach the server. Please try again.",
+      );
+    } finally {
+      setCheckinBusy(false);
+    }
+  };
 
   const handleRetire = async () => {
     setRetiring(true);
@@ -189,6 +267,12 @@ export function AssetDetailScreen() {
 
       <AppShell.Main>
         <Stack gap="md" pb="xl">
+          {banner && (
+            <Alert color="teal" withCloseButton onClose={() => setBanner(null)}>
+              {banner}
+            </Alert>
+          )}
+
           <Card withBorder>
             <Stack gap={4}>
               <Text size="xs" c="dimmed">
@@ -321,6 +405,11 @@ export function AssetDetailScreen() {
             <Title order={6} mb="xs">
               Actions
             </Title>
+            {actionError && (
+              <Alert color="red" mb="xs" data-testid="asset-action-error">
+                {actionError}
+              </Alert>
+            )}
             <Group gap="xs" wrap="wrap">
               {canEdit ? (
                 <Button size="sm" variant="default" onClick={() => navigate(`/assets/${asset.id}/edit`)}>
@@ -352,8 +441,63 @@ export function AssetDetailScreen() {
                 </Tooltip>
               )}
 
-              <StubAction label="Reserve" />
-              <StubAction label="Check out" />
+              {!asset.is_consumable && canReserve ? (
+                <Button size="sm" variant="default" onClick={() => setReserveOpen(true)} data-testid="reserve-action">
+                  Reserve
+                </Button>
+              ) : (
+                <Tooltip
+                  label={
+                    asset.is_consumable
+                      ? "Consumable assets can't be reserved"
+                      : "You don't have permission to reserve this asset"
+                  }
+                >
+                  <Button size="sm" variant="default" disabled>
+                    Reserve
+                  </Button>
+                </Tooltip>
+              )}
+
+              {isCheckedOutByMe ? (
+                canCheckout ? (
+                  <Button
+                    size="sm"
+                    variant="filled"
+                    color="teal"
+                    loading={checkinBusy}
+                    onClick={() => void handleCheckIn()}
+                    data-testid="checkin-action"
+                  >
+                    Check in
+                  </Button>
+                ) : (
+                  <Tooltip label="You don't have permission to check in this asset">
+                    <Button size="sm" variant="filled" color="teal" disabled>
+                      Check in
+                    </Button>
+                  </Tooltip>
+                )
+              ) : canCheckout && isCheckoutEligible ? (
+                <Button size="sm" variant="default" onClick={() => setCheckoutOpen(true)} data-testid="checkout-action">
+                  Check out
+                </Button>
+              ) : (
+                <Tooltip
+                  label={
+                    asset.is_consumable
+                      ? "Consumable assets can't be checked out"
+                      : !isCheckoutEligible
+                        ? `Asset is '${asset.status}' and can't be checked out right now`
+                        : "You don't have permission to check out this asset"
+                  }
+                >
+                  <Button size="sm" variant="default" disabled>
+                    Check out
+                  </Button>
+                </Tooltip>
+              )}
+
               <StubAction label="Generate label" />
               <StubAction label="Report issue" />
             </Group>
@@ -380,6 +524,20 @@ export function AssetDetailScreen() {
           </Button>
         </Group>
       </Modal>
+
+      <CreateReservationModal
+        opened={reserveOpen}
+        onClose={() => setReserveOpen(false)}
+        onCreated={handleReservationCreated}
+        initialAsset={asset}
+      />
+
+      <CheckoutModal
+        opened={checkoutOpen}
+        onClose={() => setCheckoutOpen(false)}
+        onCheckedOut={handleCheckedOut}
+        asset={asset}
+      />
     </AppShell>
   );
 }

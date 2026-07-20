@@ -11,6 +11,10 @@ import type {
   Attachment,
   Category,
   CategoryWritePayload,
+  Checkout,
+  CheckoutCreatePayload,
+  CheckoutListParams,
+  CheckinPayload,
   CustomFieldDef,
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
@@ -538,6 +542,56 @@ export const api = {
    * cancellable — the server 400s otherwise. */
   async cancelReservation(id: number): Promise<Reservation> {
     return request<Reservation>(`/reservations/${id}/cancel/`, { method: "POST" });
+  },
+
+  // --- Checkouts (docs/api-and-ui.md "Reservations & checkout";
+  // apps.reservations.checkout.CheckoutViewSet) ---
+  // Trailing slashes, same `APPEND_SLASH` reason as Categories/Locations/Stock.
+
+  /** `GET /api/v1/checkouts/` — one page. Read requires `checkout.manage` OR
+   * `checkout.override` in any scope, further row-scoped server-side to the
+   * caller's own checkouts UNION their scope (docs/rbac.md §1) — see
+   * `CheckoutListParams` doc comment: there is no `?user=me` param, the
+   * server already includes "my own" regardless of scope. `?open=true`/
+   * `?overdue=true` are the documented filters (T3.5 My Items screen). */
+  async listCheckouts(params?: CheckoutListParams): Promise<Paginated<Checkout>> {
+    return request<Paginated<Checkout>>(`/checkouts/${buildQuery(params)}`, { method: "GET" });
+  },
+
+  /** `GET /api/v1/checkouts/{id}/` — detail. */
+  async getCheckout(id: number): Promise<Checkout> {
+    return request<Checkout>(`/checkouts/${id}/`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/checkouts/` — requires `checkout.manage`, scoped to the
+   * target asset's project. Rejects a consumable asset or one not currently
+   * `available`/`reserved` with a `400` (RFC-7807) — this is UX-only
+   * pre-validation, the server re-checks under a row lock regardless. */
+  async createCheckout(payload: CheckoutCreatePayload): Promise<Checkout> {
+    return request<Checkout>("/checkouts/", { method: "POST", body: payload });
+  },
+
+  /** `POST /api/v1/checkouts/{id}/checkin/` — self-service only: the caller
+   * must be the checkout's holder (object-level RBAC, `apps.reservations.
+   * checkout.CheckoutPermission.has_object_permission`) — someone else must
+   * use `overrideReturnCheckout` (`checkout.override`) instead. Idempotent:
+   * calling this twice is a documented no-op, not an error. */
+  async checkinCheckout(id: number, payload?: CheckinPayload): Promise<Checkout> {
+    return request<Checkout>(`/checkouts/${id}/checkin/`, {
+      method: "POST",
+      body: payload ?? {},
+    });
+  },
+
+  /** `POST /api/v1/checkouts/{id}/override-return/` — requires
+   * `checkout.override`, scoped to the checkout's asset's project. Force-
+   * return by someone other than the holder; audited under the
+   * `checkout.override` key. Idempotent, same no-op rule as `checkinCheckout`. */
+  async overrideReturnCheckout(id: number, payload?: CheckinPayload): Promise<Checkout> {
+    return request<Checkout>(`/checkouts/${id}/override-return/`, {
+      method: "POST",
+      body: payload ?? {},
+    });
   },
 };
 

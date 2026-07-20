@@ -509,6 +509,80 @@ export interface ReservationListParams extends ListParams {
   ordering?: "start_at" | "-start_at" | "end_at" | "-end_at" | "created_at" | "-created_at";
 }
 
+// --- Checkouts (T3.5; `apps.reservations.checkout.CheckoutViewSet`/
+// `CheckoutSerializer`) — `docs/api-and-ui.md` "Reservations & checkout"
+// table: `POST /checkouts` (optionally from a reservation),
+// `POST /checkouts/{id}/checkin`, `POST /checkouts/{id}/override-return`,
+// `GET /checkouts?open=true&overdue=true`.
+
+/** `GET/POST /api/v1/checkouts` (`apps.reservations.checkout.
+ * CheckoutSerializer`). `asset`/`user`/`reservation` are plain ids (not
+ * nested) — same "id, not nested" convention as `Reservation`/`StockItem`.
+ * `is_open`/`is_overdue` are server-computed read-only flags — CLAUDE.md/task
+ * note: never recompute the overdue logic client-side, always trust these. */
+export interface Checkout {
+  id: number;
+  asset: number;
+  user: number;
+  reservation: number | null;
+  checked_out_at: string;
+  due_at: string;
+  checked_in_at: string | null;
+  checkout_condition: string;
+  checkin_condition: string;
+  is_open: boolean;
+  is_overdue: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /api/v1/checkouts` request body. `user`/`checked_out_at`/
+ * `checked_in_at`/`checkin_condition` are never client-writable (server-
+ * derived — `apps.reservations.checkout.CheckoutSerializer.create`).
+ * `reservation` is optional: link an approved/fulfilled reservation
+ * belonging to the caller for the same asset, or omit for a direct walk-up
+ * checkout — rejected with a `400` if the asset's category
+ * `requires_approval` and no reservation is supplied (unless the caller also
+ * holds `reservation.approve` in scope). */
+export interface CheckoutCreatePayload {
+  asset: number;
+  due_at: string;
+  reservation?: number;
+  checkout_condition?: string;
+}
+
+/** Body for `POST /api/v1/checkouts/{id}/checkin` and
+ * `POST /api/v1/checkouts/{id}/override-return` — the only client-writable
+ * field is the returned condition note. Both are idempotent server-side
+ * (`apps.reservations.checkout.perform_checkin`): calling either on an
+ * already-checked-in checkout is a documented no-op, not an error. */
+export interface CheckinPayload {
+  checkin_condition?: string;
+}
+
+/** `GET /api/v1/checkouts` query params (`apps.reservations.checkout.
+ * CheckoutViewSet.get_queryset`). **No `asset`/`user` query filter is wired
+ * server-side** — only `open`/`overdue` are recognized (expressed directly
+ * as queryset predicates, not `django_filter` `filterset_fields`); `search`
+ * is inherited from `ListParams` but similarly unimplemented. Do not send
+ * either until a backend task adds them (flagged, same as `StockListParams`'s
+ * missing `search`). Listing is already scoped server-side to the caller's
+ * own checkouts UNION their `checkout.manage`/`checkout.override` project
+ * scope — there is no `?user=me` param to pass (nor is one needed). */
+export interface CheckoutListParams extends ListParams {
+  open?: boolean;
+  overdue?: boolean;
+  ordering?:
+    | "due_at"
+    | "-due_at"
+    | "checked_out_at"
+    | "-checked_out_at"
+    | "checked_in_at"
+    | "-checked_in_at"
+    | "created_at"
+    | "-created_at";
+}
+
 /** `AssetCursorPagination`'s envelope shape (`rest_framework.pagination.
  * CursorPagination`) — `next`/`previous` are opaque full URLs (no `count`,
  * unlike `Paginated<T>`'s page-number envelope) since cursor pagination

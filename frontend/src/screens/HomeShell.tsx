@@ -120,6 +120,16 @@ export function HomeShell() {
             Approvals
           </Button>
 
+          <Button
+            size="lg"
+            fullWidth
+            variant="light"
+            onClick={() => navigate("/my-items")}
+            data-testid="nav-my-items"
+          >
+            My Items
+          </Button>
+
           <Stack gap="xs">
             <Text fw={600}>Memberships</Text>
             {me.memberships.length === 0 && (
