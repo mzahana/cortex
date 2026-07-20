@@ -101,9 +101,7 @@ class Reservation(TenantScopedModel):
     )
     start_at = models.DateTimeField()
     end_at = models.DateTimeField()
-    status = models.CharField(
-        max_length=16, choices=Status.choices, default=Status.PENDING
-    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     approver = models.ForeignKey(
         "accounts.User",
         null=True,
@@ -160,8 +158,7 @@ class Checkout(TenantScopedModel):
         "accounts.User",
         on_delete=models.PROTECT,
         related_name="checkouts",
-        help_text="The holder. PROTECT — ownership, not an audit actor (see "
-        "Reservation.user).",
+        help_text="The holder. PROTECT — ownership, not an audit actor (see " "Reservation.user).",
     )
     reservation = models.ForeignKey(
         Reservation,
