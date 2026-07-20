@@ -22,11 +22,24 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
 app.conf.beat_schedule = {
-    # Placeholder heartbeat proving beat -> broker -> worker end-to-end; M2+
-    # replaces/augments this with the real overdue/low-stock scan schedules.
+    # Placeholder heartbeat proving beat -> broker -> worker end-to-end.
     "celery-ping-heartbeat": {
         "task": "config.celery.ping",
         "schedule": crontab(minute="*/15"),
+    },
+    # T5.2 (docs/tasks/M5-notifications-audit-dashboard.md, docs/features.md
+    # F9): hourly re-checks. Each scan is itself throttled per-item to at
+    # most one reminder per `NOTIFICATION_*_REMINDER_THROTTLE_SECONDS` window
+    # (`apps.notifications.tasks`), so running the scan more often than that
+    # window merely re-checks sooner -- it never means more email is sent
+    # than the throttle allows.
+    "notifications-scan-overdue-checkouts": {
+        "task": "apps.notifications.scan_overdue_checkouts",
+        "schedule": crontab(minute=0),
+    },
+    "notifications-scan-low-stock": {
+        "task": "apps.notifications.scan_low_stock",
+        "schedule": crontab(minute=0),
     },
 }
 

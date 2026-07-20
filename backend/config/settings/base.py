@@ -281,6 +281,24 @@ NOTIFICATION_EMAIL_PROVIDER = env.str(
 BREVO_API_KEY = env.str("BREVO_API_KEY", default="")
 BREVO_SENDER_EMAIL = env.str("BREVO_SENDER_EMAIL", default="")
 
+# --- Notification beat scans (T5.2, docs/tasks/M5-notifications-audit-dashboard.md) --
+# ASSUMPTION (flagged, no confirmed Brevo tier -- Q6 is unanswered,
+# docs/risks.md §3): each beat scan (overdue checkouts / low stock) re-checks
+# frequently (see `config/celery.py`'s `beat_schedule`) but only actually
+# ENQUEUES a reminder for a given item once per throttle window, via a Redis
+# cache guard (`cache.add(...)`, same Redis instance sessions/cache already
+# use -- no new infra, no schema change). Default: one reminder per item per
+# 24h, a conservative pace that comfortably fits under any Brevo free/paid
+# transactional tier's daily cap even with a few hundred overdue/low-stock
+# items outstanding. Same 12-factor env-configurable-constant mechanism as
+# `RESERVATION_MAX_ACTIVE_PER_USER` above -- not a new knob-storage mechanism.
+NOTIFICATION_OVERDUE_REMINDER_THROTTLE_SECONDS = env.int(
+    "NOTIFICATION_OVERDUE_REMINDER_THROTTLE_SECONDS", default=24 * 60 * 60
+)
+NOTIFICATION_LOW_STOCK_REMINDER_THROTTLE_SECONDS = env.int(
+    "NOTIFICATION_LOW_STOCK_REMINDER_THROTTLE_SECONDS", default=24 * 60 * 60
+)
+
 # --- Logging -------------------------------------------------------------------
 LOGGING = {
     "version": 1,
