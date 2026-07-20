@@ -246,6 +246,73 @@ class TestMembershipProjectLeadScope:
         )
         assert ids.isdisjoint(tenant_wide_ids)
 
+    def test_project_lead_cannot_remove_a_co_lead_of_the_same_project(self, client):
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        add_project_membership(lead, project, ROLE_PROJECT_LEAD)
+        co_lead = UserFactory(tenant=tenant)
+        co_membership = add_project_membership(co_lead, project, ROLE_PROJECT_LEAD)
+
+        _login(client, tenant, lead)
+        response = client.delete(f"/api/v1/memberships/{co_membership.id}/")
+        assert response.status_code == 403
+        with tenant_context(tenant.id):
+            assert Membership.objects.filter(pk=co_membership.id).exists()
+
+    def test_project_lead_cannot_demote_a_co_lead_to_member(self, client):
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        add_project_membership(lead, project, ROLE_PROJECT_LEAD)
+        co_lead = UserFactory(tenant=tenant)
+        co_membership = add_project_membership(co_lead, project, ROLE_PROJECT_LEAD)
+        with tenant_context(tenant.id):
+            member_role = get_role(tenant, ROLE_MEMBER)
+
+        _login(client, tenant, lead)
+        response = client.patch(
+            f"/api/v1/memberships/{co_membership.id}/",
+            data=json.dumps({"role": member_role.id}),
+            content_type="application/json",
+        )
+        assert response.status_code == 403
+
+    def test_project_lead_cannot_escalate_an_existing_member_to_admin(self, client):
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        add_project_membership(lead, project, ROLE_PROJECT_LEAD)
+        target = UserFactory(tenant=tenant)
+        membership = add_project_membership(target, project, ROLE_MEMBER)
+        with tenant_context(tenant.id):
+            admin_role = get_role(tenant, ROLE_ADMIN)
+
+        _login(client, tenant, lead)
+        response = client.patch(
+            f"/api/v1/memberships/{membership.id}/",
+            data=json.dumps({"role": admin_role.id}),
+            content_type="application/json",
+        )
+        assert response.status_code == 403
+        with tenant_context(tenant.id):
+            membership.refresh_from_db()
+            assert membership.role.key == ROLE_MEMBER
+
+    def test_project_lead_cannot_modify_a_tenant_wide_membership(self, client):
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        add_project_membership(lead, project, ROLE_PROJECT_LEAD)
+        other_user = UserFactory(tenant=tenant)
+        tenant_wide_membership = upgrade_tenant_wide_role(other_user, ROLE_MEMBER)
+
+        _login(client, tenant, lead)
+        response = client.delete(f"/api/v1/memberships/{tenant_wide_membership.id}/")
+        assert response.status_code == 403
+        with tenant_context(tenant.id):
+            assert Membership.objects.filter(pk=tenant_wide_membership.id).exists()
+
 
 class TestMembershipCrossTenant:
     def test_cross_tenant_membership_id_404(self, client):

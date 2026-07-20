@@ -14,7 +14,7 @@ from rest_framework.permissions import BasePermission
 from apps.projects.models import Project
 
 from .models import Membership
-from .permission_keys import ROLE_ADMIN, ROLE_ASSIGN, ROLE_MEMBER, USER_MANAGE
+from .permission_keys import ROLE_ADMIN, ROLE_ASSIGN, ROLE_MEMBER, ROLE_PROJECT_LEAD, USER_MANAGE
 from .services import (
     get_viewable_project_scope,
     user_has_permission,
@@ -171,11 +171,14 @@ class MembershipPermission(BasePermission):
             return True  # Admin: full control (docs/rbac.md §3, ✅ row)
 
         # Project Lead (project-scoped grant only, footnote 3): never a
-        # tenant-wide membership (Admin-only territory), never an Admin
-        # membership, and any role CHANGE they make must land on Member.
+        # tenant-wide membership (Admin-only territory), never an Admin OR
+        # a fellow Project Lead's membership (footnote 3 grants add/remove
+        # of MEMBERS only -- a lead demoting/removing a co-lead is outside
+        # that grant, even within their own project), and any role CHANGE
+        # they make must land on Member.
         if project_id is None:
             return False
-        if obj.role.key == ROLE_ADMIN:
+        if obj.role.key in (ROLE_ADMIN, ROLE_PROJECT_LEAD):
             return False
         if action in ("update", "partial_update"):
             new_role_key = _resolve_role_key(request)
