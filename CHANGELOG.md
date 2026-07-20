@@ -10,7 +10,39 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
-_M3 (reservations & checkout) next — see `docs/tasks/M3-reservations-checkout.md`._
+## [0.4.0] - 2026-07-20
+
+Milestone **M3 — Reservations & check-in/out**: durable-asset reservations
+with DB-enforced conflict rejection, per-category approval, check-in/out with
+overdue detection, and the calendar/My-Items/Approvals UI. Meets F4 + F5
+acceptance.
+
+### Added
+
+- **Reservation & Checkout models** — a GiST exclusion constraint
+  (`reservation_no_overlap_active`) rejects overlapping active reservations
+  (pending/approved/fulfilled) per asset at the database level; RLS on both
+  new tables; partial indexes for the open/overdue checkout scan.
+- **Reservation endpoints** — create (conflict + configurable per-user cap,
+  routed to `pending` or auto-`approved` per `Category.requires_approval`),
+  approve/reject (scoped `reservation.approve`, general-pool assets
+  Admin-only), cancel, and the calendar feed (`GET /reservations?from&to`). A
+  DB-level conflict surfaces as a clean `409`, never a raw error. Every
+  mutating action is audited; `reservation_confirmed`/`approval_request`/
+  `approval_decision` domain events are emitted for M5.
+- **Checkout endpoints** — check out (optionally from an approved
+  reservation, which now transitions to `fulfilled` so its window keeps
+  blocking new bookings while the asset is out), idempotent check-in with
+  condition notes, scoped `checkout.override` force-return, and an
+  open/overdue list filter backed by the partial indexes.
+- **Reservations Calendar** — month/week/day view with live conflict
+  feedback on create and in-place approve/reject for scoped approvers.
+- **Approvals screen** — pending reservation and reorder-request approvals
+  in the user's scope.
+- **My Items screen** — the user's open checkouts with due dates, overdue
+  highlighting (trusting the server's computed `is_overdue`), and one-tap
+  check-in; Asset Detail's reserve/check-out/check-in actions are now wired
+  to the real API.
 
 ## [0.3.0] - 2026-07-20
 
