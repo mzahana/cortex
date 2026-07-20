@@ -396,6 +396,18 @@ export const api = {
     return request<Asset>(`/assets/${id}/`, { method: "PATCH", body: payload });
   },
 
+  /** `GET /api/v1/resolve/{qr_token}` — the scan/label target (T4.1,
+   * `apps.assets.api.AssetResolveView`). `qr_token` is the stable per-asset
+   * token embedded in the printed/scanned QR (`Asset.qr_token`); this is
+   * also the manual-entry fallback's path (risk R5) when a user types/pastes
+   * a token instead of scanning. Tenant-scoped: an unknown OR cross-tenant
+   * token both 404 identically (R4: no existence leak) — same shape as
+   * `getAsset`'s 404. NOTE: no trailing slash — a plain `path()` route, not
+   * router-registered (matches `dashboard/summary`'s reasoning). */
+  async resolveQrToken(token: string): Promise<Asset> {
+    return request<Asset>(`/resolve/${encodeURIComponent(token)}`, { method: "GET" });
+  },
+
   /** `POST /api/v1/assets/{id}/retire/` — requires `asset.retire` (scoped).
    * Idempotent: retiring an already-retired asset 200s as a no-op rather
    * than erroring (`apps.assets.api.AssetViewSet.retire`). Audited
