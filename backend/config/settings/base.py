@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     "apps.assets",
     "apps.stock",
     "apps.reservations",
+    "apps.notifications",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -256,9 +257,29 @@ RESERVATION_MAX_ACTIVE_PER_USER = env.int("RESERVATION_MAX_ACTIVE_PER_USER", def
 RESERVATION_MAX_LEAD_DAYS = env.int("RESERVATION_MAX_LEAD_DAYS", default=90)
 RESERVATION_MAX_DURATION_DAYS = env.int("RESERVATION_MAX_DURATION_DAYS", default=30)
 
-# --- Email (Brevo goes behind EmailProvider; wired in a later milestone) -----
+# --- Email (Brevo goes behind EmailProvider) --------------------------------
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="Cortex <cortex@example.com>")
 EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
+
+# --- Notifications (T5.1, docs/architecture.md §6) --------------------------
+# Provider selection is a dotted-class-path env var, resolved via
+# `django.utils.module_loading.import_string` in
+# `apps.notifications.providers.get_email_provider` -- the SAME mechanism
+# `STORAGES["default"]["BACKEND"]` above already uses for the storage
+# backend (`DJANGO_DEFAULT_FILE_STORAGE`), not a new one invented for this.
+# `ConsoleProvider` is the default in EVERY environment (including prod)
+# until an operator explicitly opts into `BrevoProvider` via env, once Q6
+# (Brevo sender identity/account/tier, docs/risks.md §3) is answered --
+# a fail-safe default, not something `DEBUG` flips automatically.
+NOTIFICATION_EMAIL_PROVIDER = env.str(
+    "NOTIFICATION_EMAIL_PROVIDER",
+    default="apps.notifications.providers.ConsoleProvider",
+)
+# `BrevoProvider` reads these two ONLY from settings (itself env-only,
+# 12-factor) -- never hardcoded, never logged. Empty by default; `.env` is
+# never committed (docs/deployment.md).
+BREVO_API_KEY = env.str("BREVO_API_KEY", default="")
+BREVO_SENDER_EMAIL = env.str("BREVO_SENDER_EMAIL", default="")
 
 # --- Logging -------------------------------------------------------------------
 LOGGING = {
