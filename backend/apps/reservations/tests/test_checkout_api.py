@@ -332,6 +332,93 @@ class TestReservationLinkedCheckout:
         assert response.status_code == 201, response.content
         assert response.json()["reservation"] == reservation.id
 
+        # Code-review finding: the linked reservation must flip to
+        # `fulfilled` in the same atomic block as the checkout create, so
+        # `cancel_reservation` can never later free this window while the
+        # asset is still physically checked out (F4/T3.3 seam).
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.FULFILLED
+
+    def test_fulfilled_reservation_cannot_be_cancelled(self, client):
+        """Once a checkout has been created against a reservation (-> now
+        `fulfilled`), `POST /reservations/{id}/cancel` must reject it (400)
+        rather than silently accepting and freeing the exclusion-constraint
+        window for a still-checked-out asset."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        checkout_response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert checkout_response.status_code == 201, checkout_response.content
+
+        cancel_response = client.post(f"/api/v1/reservations/{reservation.id}/cancel/")
+        assert cancel_response.status_code == 400, cancel_response.content
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.FULFILLED  # unchanged
+
+    def test_fulfilled_reservation_window_still_blocks_a_new_overlapping_reservation(self, client):
+        """`FULFILLED` deliberately stays in `Reservation.ACTIVE_STATUSES`
+        (unlike `cancelled`/`rejected`/`expired`): the asset is physically
+        checked out for this window, so a second overlapping reservation
+        must still be rejected exactly as it would be against an `approved`
+        one — the difference from those terminal statuses is that a
+        fulfilled reservation is only ever ended by the T3.3 checkout
+        lifecycle (checkin/override-return), never by `cancel`."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        other_member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        start = timezone.now() - timedelta(minutes=5)
+        end = timezone.now() + timedelta(hours=2)
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=start,
+                end_at=end,
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        checkout_response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert checkout_response.status_code == 201, checkout_response.content
+
+        _login(client, tenant, other_member)
+        overlap_response = client.post(
+            "/api/v1/reservations/",
+            data=json.dumps(
+                {
+                    "asset": asset.id,
+                    "start_at": _iso(start + timedelta(minutes=30)),
+                    "end_at": _iso(end + timedelta(minutes=30)),
+                }
+            ),
+            content_type="application/json",
+        )
+        assert overlap_response.status_code == 409, overlap_response.content
+
     def test_reservation_cannot_be_hijacked_by_another_user(self, client):
         """R4/F5-adjacent guard: `attrs["reservation"]` must belong to the
         REQUESTING user — another user cannot check out an asset by citing

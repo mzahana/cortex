@@ -24,6 +24,7 @@ from datetime import timedelta
 
 import psycopg
 import pytest
+from django.db import IntegrityError
 from django.utils import timezone
 
 from apps.common.tests.factories import AssetFactory, TenantFactory, UserFactory
@@ -128,6 +129,42 @@ class TestAppLayerConflictRejection:
             )
             assert first.id != second.id
             assert Reservation.objects.filter(asset=asset).count() == 2
+
+
+class TestIntegrityErrorDiscrimination:
+    def test_unrelated_integrity_error_is_not_mislabeled_as_a_conflict(self):
+        """Code-review finding: `create_reservation`'s `except IntegrityError`
+        block must only translate the SPECIFIC
+        `reservation_no_overlap_active` exclusion-constraint violation to
+        `ReservationConflict` (409, "overlapping window"). Any other
+        `IntegrityError` -- here, the `reservation_end_after_start`
+        `CheckConstraint` firing because `end_at <= start_at` slipped past
+        this service (that field-shape check normally lives in the
+        serializer, `apps.reservations.serializers.ReservationSerializer.
+        validate`, not here) -- must propagate untouched to the global
+        RFC-7807 `IntegrityError` -> 409 fallback instead of being
+        mislabeled as a booking conflict.
+        """
+        tenant = TenantFactory()
+        asset = AssetFactory(tenant=tenant)
+        user = UserFactory(tenant=tenant)
+        start = timezone.now() + timedelta(hours=1)
+        backwards_end = start - timedelta(hours=1)  # end before start
+
+        with tenant_context(tenant.id):
+            with pytest.raises(Exception) as exc_info:
+                create_reservation(
+                    tenant=tenant,
+                    actor=user,
+                    asset=asset,
+                    start_at=start,
+                    end_at=backwards_end,
+                )
+            # Specifically NOT translated to the reservation-conflict 409.
+            assert not isinstance(exc_info.value, ReservationConflict)
+            assert isinstance(exc_info.value, IntegrityError)
+
+            assert Reservation.objects.filter(asset=asset).count() == 0
 
 
 @pytest.mark.django_db(transaction=True)

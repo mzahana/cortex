@@ -73,6 +73,28 @@ def get_reservation_limits() -> ReservationLimits:
     )
 
 
+#: The `0002` GiST EXCLUDE constraint's name -- the ONLY `IntegrityError` this
+#: module's `except IntegrityError` block may translate to `ReservationConflict`.
+#: Any other constraint violation (e.g. a future `CheckConstraint`) must
+#: propagate untouched to the global `apps.common.errors.rfc7807_exception_handler`
+#: `IntegrityError` -> 409 fallback instead of being mislabeled as a booking
+#: conflict (code-review finding).
+RESERVATION_NO_OVERLAP_CONSTRAINT = "reservation_no_overlap_active"
+
+
+def _violated_constraint_name(exc: IntegrityError) -> str | None:
+    """Best-effort extraction of the violated constraint's name from a
+    psycopg-raised `IntegrityError` (Django wraps the driver exception as
+    `exc.__cause__`; psycopg3 exposes `.diag.constraint_name` on it). Returns
+    `None` if it can't be determined (e.g. a non-Postgres backend in tests),
+    so callers fail closed to "not this specific constraint" rather than
+    guessing.
+    """
+    cause = exc.__cause__
+    diag = getattr(cause, "diag", None)
+    return getattr(diag, "constraint_name", None)
+
+
 def _check_conflict(*, asset, start_at, end_at, exclude_pk=None) -> None:
     """App-layer pre-check mirroring the DB's `0002` GiST EXCLUDE exactly:
     same `Reservation.ACTIVE_STATUSES` tuple, same `[start_at, end_at)`
@@ -171,8 +193,18 @@ def create_reservation(
         # The DB-level backstop firing (see `ReservationConflict` docstring,
         # case 2): the exclusion constraint's WHERE clause mirrors
         # `Reservation.ACTIVE_STATUSES` exactly, so any race the pre-check
-        # above missed lands here, never as a raw 500.
-        raise ReservationConflict() from exc
+        # above missed lands here, never as a raw 500. Only translate THIS
+        # specific constraint's violation to `ReservationConflict` --
+        # anything else (e.g. an unrelated check constraint) is a genuinely
+        # different failure and must propagate to the global RFC-7807
+        # `IntegrityError` -> 409 fallback with its own generic detail
+        # instead of being mislabeled as a booking conflict (code-review
+        # finding; same constraint-name discrimination the exclusion
+        # constraint's WHERE clause and `Reservation.ACTIVE_STATUSES` are
+        # already required to agree on).
+        if _violated_constraint_name(exc) == RESERVATION_NO_OVERLAP_CONSTRAINT:
+            raise ReservationConflict() from exc
+        raise
 
     if initial_status == Reservation.Status.APPROVED:
         _emit_reservation_confirmed_on_commit(reservation)

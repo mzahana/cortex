@@ -295,17 +295,39 @@ class CheckoutSerializer(serializers.ModelSerializer):
                 )
 
             checked_out_at = timezone.now()
+            reservation: Reservation | None = validated_data.get("reservation")
             checkout = Checkout.objects.create(
                 tenant=locked_asset.tenant,
                 asset=locked_asset,
                 user=user,
-                reservation=validated_data.get("reservation"),
+                reservation=reservation,
                 checked_out_at=checked_out_at,
                 due_at=validated_data["due_at"],
                 checkout_condition=validated_data.get("checkout_condition", ""),
             )
             locked_asset.status = Asset.Status.IN_USE
             locked_asset.save(update_fields=["status", "updated_at"])
+
+            if reservation is not None:
+                # Code-review finding (T3.3/T3.2 seam): a reservation-backed
+                # checkout must transition the reservation to `fulfilled` in
+                # the SAME atomic block, so `cancel_reservation`
+                # (`apps.reservations.services`) can never race a checkout
+                # into cancelling the window out from under a physically
+                # checked-out asset (which would free the `0002` GiST
+                # exclusion constraint for a second, overlapping booking
+                # while the asset is still out). `FULFILLED` stays in
+                # `Reservation.ACTIVE_STATUSES` on purpose: the asset really
+                # is unavailable for this window until checked back in, so
+                # the window must keep blocking new reservations exactly the
+                # way an `approved` one does -- only cancellation (not the
+                # exclusion constraint) is what changes once fulfilled.
+                # Lock the reservation row so a concurrent
+                # cancel-in-flight sees this write (or vice versa) rather
+                # than racing past each other.
+                locked_reservation = Reservation.objects.select_for_update().get(pk=reservation.pk)
+                locked_reservation.status = Reservation.Status.FULFILLED
+                locked_reservation.save(update_fields=["status", "updated_at"])
 
         return checkout
 
