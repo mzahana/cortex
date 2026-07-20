@@ -124,6 +124,9 @@ class TestDashboardSummaryScoping:
         assert project_rows[project.id] == 1
 
     def test_project_lead_sees_only_their_project(self, client):
+        """Exercises ALL SIX tiles under the same multi-project scenario --
+        the "scope 5 of 6 aggregates and forget one" failure class is exactly
+        what a per-tile assertion here is meant to catch (code review)."""
         tenant = TenantFactory()
         category = CategoryFactory(tenant=tenant)
         project_a = ProjectFactory(tenant=tenant)
@@ -135,18 +138,46 @@ class TestDashboardSummaryScoping:
 
         asset_a = AssetFactory(tenant=tenant, category=category, project=project_a)
         asset_b = AssetFactory(tenant=tenant, category=category, project=project_b)
+        AssetFactory(tenant=tenant, category=category)  # general pool, not project A's
 
-        _make_checkout(tenant, asset_a, lead)
-        _make_checkout(tenant, asset_b, lead)
+        _make_checkout(tenant, asset_a, lead, due_in_hours=-1)  # open + overdue, project A
+        _make_checkout(tenant, asset_b, lead, due_in_hours=-1)  # open + overdue, project B
+
+        StockItemFactory(
+            tenant=tenant,
+            asset__tenant=tenant,
+            asset__category=category,
+            asset__project=project_a,
+            reorder_threshold=10,
+            quantity_on_hand=1,
+        )
+        StockItemFactory(
+            tenant=tenant,
+            asset__tenant=tenant,
+            asset__category=category,
+            asset__project=project_b,
+            reorder_threshold=10,
+            quantity_on_hand=1,
+        )
+
+        _make_reservation(tenant, asset_a, lead, status=Reservation.Status.APPROVED)
+        _make_reservation(tenant, asset_b, lead, status=Reservation.Status.APPROVED)
 
         _login(client, tenant, lead)
         response = client.get(URL)
         assert response.status_code == 200, response.content
         body = response.json()
 
+        # Only project A's rows in every tile -- project B's are invisible.
+        # (asset_a + the StockItemFactory's own consumable asset, both in
+        # project A; project B's identical pair must not be counted.)
+        assert sum(row["count"] for row in body["totals_by_category"]) == 2
         assert body["currently_out"] == 1
+        assert body["overdue"] == 1
+        assert body["low_stock"] == 1
+        assert body["upcoming_reservations"] == 1
         project_rows = {row["project_id"]: row["count"] for row in body["per_project_allocation"]}
-        assert project_rows == {project_a.id: 1}
+        assert project_rows == {project_a.id: 2}
         assert None not in project_rows
         assert project_b.id not in project_rows
 

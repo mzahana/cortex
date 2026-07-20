@@ -122,10 +122,14 @@ class StockItemViewSet(
                 },
                 ip=client_ip(request),
             )
-            # T5.5: an audited txn changes `quantity_on_hand`, which the
-            # `low_stock` tile aggregates over -- invalidate immediately
-            # (see `apps.dashboard.cache` module docstring).
-            invalidate_tenant_dashboard(result.stock_item.tenant_id)
+
+        # T5.5: EVERY txn (including `consume`, which isn't itself audited)
+        # changes `quantity_on_hand`, which the `low_stock` tile aggregates
+        # over -- invalidate immediately regardless of reason (see
+        # `apps.dashboard.cache` module docstring). Deliberately outside the
+        # audited-reasons branch above: audit gating and dashboard staleness
+        # are separate concerns.
+        invalidate_tenant_dashboard(result.stock_item.tenant_id)
 
         return Response(
             {
