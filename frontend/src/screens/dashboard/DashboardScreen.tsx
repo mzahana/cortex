@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   ActionIcon,
+  Affix,
   AppShell,
   Badge,
   Button,
@@ -199,6 +200,26 @@ export function DashboardScreen() {
           </Stack>
         </Stack>
       </AppShell.Main>
+
+      {/* T4.3: primary mobile action — thumb-reachable FAB, always on top of
+          the dashboard content, opening the QR scan screen (camera scan +
+          manual token/asset-ID fallback). */}
+      <Affix position={{ bottom: 24, right: 24 }}>
+        <Tooltip label="Scan asset QR code">
+          <ActionIcon
+            size={56}
+            radius="xl"
+            variant="filled"
+            aria-label="Scan asset QR code"
+            onClick={() => navigate("/scan")}
+            data-testid="scan-fab"
+          >
+            <span aria-hidden="true" style={{ fontSize: 24 }}>
+              &#128247;
+            </span>
+          </ActionIcon>
+        </Tooltip>
+      </Affix>
     </AppShell>
   );
 }

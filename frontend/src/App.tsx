@@ -8,6 +8,7 @@ import { LocationsScreen } from "./screens/admin/LocationsScreen";
 import { AssetListScreen } from "./screens/assets/AssetListScreen";
 import { AssetDetailScreen } from "./screens/assets/AssetDetailScreen";
 import { AssetFormScreen } from "./screens/assets/AssetForm";
+import { ScanScreen } from "./screens/scan/ScanScreen";
 import { StockScreen } from "./screens/stock/StockScreen";
 import { ReservationsCalendarScreen } from "./screens/reservations/ReservationsCalendarScreen";
 import { ApprovalsScreen } from "./screens/approvals/ApprovalsScreen";
@@ -128,6 +129,14 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <AssetDetailScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/scan"
+        element={
+          <RequireAuth>
+            <ScanScreen />
           </RequireAuth>
         }
       />
