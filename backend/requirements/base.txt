@@ -18,3 +18,22 @@ redis==5.0.8
 gunicorn==22.0.0
 argon2-cffi==23.1.0
 django-storages==1.14.4
+
+# T4.5 — label PDF generation (docs/tasks/M4-mobile-scan-labels.md): `segno`
+# renders the per-asset QR (encoding `Asset.qr_token`'s resolvable scan URL);
+# `WeasyPrint` lays those QR codes + human-readable text out on the Avery
+# sheet HTML/CSS template and rasterizes to PDF. WeasyPrint itself needs
+# system Pango/Cairo/GDK-Pixbuf libraries present in the runtime image —
+# `docker/Dockerfile`'s `apk add` line now includes them (pango cairo
+# gdk-pixbuf fontconfig shared-mime-info ttf-freefont).
+# NOTE: weasyprint==61.2 (the version originally picked here) is broken
+# against current `pydyf` releases (`pydyf>=0.11` changed `pydyf.PDF`'s
+# constructor signature and dropped `PDFObject.set_matrix`, both of which
+# 61.2's own `weasyprint/pdf/*` code calls with the old signature -- verified
+# by hand while building this app: `HTML(...).write_pdf()` raises
+# `TypeError`/`AttributeError` immediately). weasyprint does not cap its own
+# `pydyf` requirement, so a plain `pip install` resolves the latest
+# (currently 69.0), which IS compatible -- pinned here instead of pinning an
+# upper bound on the transitive `pydyf` dep.
+weasyprint==69.0
+segno==1.6.6

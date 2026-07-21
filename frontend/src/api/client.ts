@@ -21,6 +21,8 @@ import type {
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
   DashboardSummary,
+  Job,
+  LabelGenerateRequest,
   ListParams,
   Location,
   LocationWritePayload,
@@ -611,6 +613,28 @@ export const api = {
    * mount, no client-side caching needed. */
   async getDashboardSummary(): Promise<DashboardSummary> {
     return request<DashboardSummary>("/dashboard/summary", { method: "GET" });
+  },
+
+  // --- Labels / jobs (T4.5; `apps.labels.api.LabelGenerateView`/
+  // `apps.jobs.api.JobRetrieveView`) --- NOTE: no trailing slash — plain
+  // `path()` routes, not router-registered viewsets, same reasoning as
+  // `dashboard/summary` above.
+
+  /** `POST /api/v1/labels/generate` — requires `label.generate` (scoped;
+   * Admin tenant-wide, ProjectLead within their own project's assets).
+   * Returns immediately (`202`) with a `queued` `Job` — poll `getJob` until
+   * `status` is `succeeded`/`failed`. Any requested asset id outside the
+   * caller's tenant/scope is silently dropped server-side; if that leaves
+   * none, the request 400s (surfaced as a normal `ApiError`). */
+  async generateLabels(payload: LabelGenerateRequest): Promise<Job> {
+    return request<Job>("/labels/generate", { method: "POST", body: payload });
+  },
+
+  /** `GET /api/v1/jobs/{id}` — the caller must be the job's own creator
+   * (server-enforced, `apps.jobs.api.JobRetrieveView`); anyone else's job id
+   * 404s. Poll on an interval until `status` is `succeeded`/`failed`. */
+  async getJob(id: string): Promise<Job> {
+    return request<Job>(`/jobs/${id}`, { method: "GET" });
   },
 
   // --- Notification preferences (docs/api-and-ui.md "Per-user prefs";

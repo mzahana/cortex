@@ -61,6 +61,12 @@ INSTALLED_APPS = [
     "apps.reservations",
     "apps.notifications",
     "apps.dashboard",
+    # T4.5: generic async-job tracking (`apps.jobs.Job`) + the label-PDF
+    # generator that's its first consumer. `apps.jobs` has no dependency on
+    # `apps.labels`; `apps.labels` depends on `apps.jobs` (job rows) and
+    # `apps.assets` (the assets being labeled) — listed after both.
+    "apps.jobs",
+    "apps.labels",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

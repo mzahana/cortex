@@ -712,3 +712,43 @@ export interface CursorPaginated<T> {
   previous: string | null;
   results: T[];
 }
+
+// --- Jobs / label PDF generation (T4.5; `apps.jobs.api`/`apps.labels.api`) ---
+
+/** `Job.Status` (`backend/apps/jobs/models.py`) — polled via `GET /api/v1/
+ * jobs/{id}` until it lands on `succeeded`/`failed`. */
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+
+/** `GET /api/v1/jobs/{id}` response / the body `POST /api/v1/labels/generate`
+ * returns immediately (`202`, status `queued`). `download_url` is only
+ * non-null once `status === "succeeded"` — a plain `/media/...` path served
+ * directly by nginx (same trust model `Attachment.storage_key` already uses,
+ * see `apps.jobs.serializers.JobSerializer` doc comment), not a JSON/API
+ * response — fetch/`<a href>` it directly. */
+export interface Job {
+  id: string;
+  job_type: string;
+  status: JobStatus;
+  error: string;
+  result_filename: string;
+  download_url: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** `?template=` for `POST /api/v1/labels/generate` (`apps.labels.templates.
+ * SHEET_TEMPLATES` — the two Avery defaults documented for MVP, `docs/tasks/
+ * M4-mobile-scan-labels.md`'s Q9 default). */
+export type LabelSheetTemplate = "avery_5160" | "avery_5163";
+
+/** `POST /api/v1/labels/generate` request body (T4.5). Requires
+ * `label.generate` (scoped — Admin tenant-wide, ProjectLead within their own
+ * project's assets); any requested id outside the caller's tenant/scope is
+ * silently dropped server-side rather than erroring, UNLESS that leaves zero
+ * assets (400). */
+export interface LabelGenerateRequest {
+  asset_ids: number[];
+  template: LabelSheetTemplate;
+}

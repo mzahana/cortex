@@ -14,7 +14,14 @@ FROM python:3.12-alpine3.20@sha256:25849f9599e06dfe4d11b552e06f5ac4cc2ad342054eb
 
 # libpq: runtime lib for psycopg; tini: proper PID 1 signal handling for
 # gunicorn/celery; bash: convenience for exec/debugging only.
-RUN apk add --no-cache libpq tini \
+# pango/cairo/gdk-pixbuf/fontconfig/shared-mime-info/ttf-freefont: T4.5's
+# WeasyPrint (label PDF rendering, `apps.labels.rendering`) links against
+# these at import time -- without them `import weasyprint` raises
+# `OSError: cannot load library 'libpango-1.0.so.0'` (or similar) the first
+# time the Celery worker picks up a `label_pdf` job. Needed on BOTH `web`
+# (Django import-time app-loading pulls in `apps.labels`) and `worker`
+# (where the task actually renders) since they share this one image.
+RUN apk add --no-cache libpq tini pango cairo gdk-pixbuf fontconfig shared-mime-info ttf-freefont \
     && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
