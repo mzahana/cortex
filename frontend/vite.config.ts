@@ -26,7 +26,12 @@ export default defineConfig({
         // `/api/**` must always hit the network, never the SW cache.
         globPatterns: ["**/*.{js,css,html,svg,webmanifest}"],
         navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api\//],
+        // T4.5: an `<a download>` click for a generated PDF (label sheets,
+        // Attachments) is dispatched as a navigation request, so `/media/`
+        // must be denylisted too -- otherwise Workbox's NavigationRoute
+        // intercepts it and "downloads" the cached index.html instead of
+        // the actual file.
+        navigateFallbackDenylist: [/^\/api\//, /^\/media\//],
       },
     }),
   ],
