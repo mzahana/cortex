@@ -14,7 +14,12 @@ import {
 } from "@mantine/core";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { LABEL_GENERATE, hasAnyAssetPermission, hasAuditViewPermission } from "../../api/permissions";
+import {
+  LABEL_GENERATE,
+  hasAnyAssetPermission,
+  hasAuditViewPermission,
+  hasImportRunPermission,
+} from "../../api/permissions";
 import { DashboardTiles, DashboardTilesError, DashboardTilesSkeleton } from "./DashboardTiles";
 import { useDashboardSummary } from "./useDashboardSummary";
 
@@ -175,6 +180,18 @@ export function DashboardScreen() {
               </Button>
             )}
           </Group>
+
+          {hasImportRunPermission(me) && (
+            <Button
+              size="lg"
+              fullWidth
+              variant="light"
+              onClick={() => navigate("/import")}
+              data-testid="nav-import"
+            >
+              Bulk Import
+            </Button>
+          )}
 
           <Stack gap="xs">
             <Text fw={600}>Memberships</Text>

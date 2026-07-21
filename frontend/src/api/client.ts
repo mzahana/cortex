@@ -21,6 +21,8 @@ import type {
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
   DashboardSummary,
+  ImportJob,
+  ImportMapping,
   Job,
   LabelGenerateRequest,
   ListParams,
@@ -647,6 +649,73 @@ export const api = {
    * 404s. Poll on an interval until `status` is `succeeded`/`failed`. */
   async getJob(id: string): Promise<Job> {
     return request<Job>(`/jobs/${id}`, { method: "GET" });
+  },
+
+  // --- Bulk import / export (T6.2; `apps.imports.api`/`apps.imports.exports`) ---
+  // NOTE: no trailing slash — plain `path()` routes, same reasoning as
+  // `dashboard/summary`/`labels/generate` above.
+
+  /** `POST /api/v1/imports` — requires `import.run` (Admin, tenant-wide).
+   * Multipart (like `uploadAssetAttachment`): the file plus an optional
+   * JSON-encoded `mapping` override (`{header: target}`; omitted headers
+   * fall back to the server's auto-detected default). Kicks off a dry-run
+   * and returns immediately (`202`) with the new `ImportJob` — poll
+   * `getImport` until its `status` lands on `dry_run_succeeded`/
+   * `dry_run_failed`. */
+  async createImport(file: File, mapping?: ImportMapping): Promise<ImportJob> {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (mapping && Object.keys(mapping).length > 0) {
+      formData.append("mapping", JSON.stringify(mapping));
+    }
+
+    const headers = new Headers();
+    const token = readCookie(CSRF_COOKIE_NAME);
+    if (token) headers.set(CSRF_HEADER_NAME, token);
+
+    const response = await fetch(`${API_BASE}/imports`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: formData,
+    });
+    if (!response.ok) throw await toApiError(response);
+    return (await response.json()) as ImportJob;
+  },
+
+  /** `GET /api/v1/imports/{id}` — requires `import.run`, not narrowed to
+   * `created_by=request.user` (any tenant Admin may look up/commit a
+   * colleague's import). Poll on an interval while `status` is `pending`/
+   * `dry_run_running`/`committing`. */
+  async getImport(id: number): Promise<ImportJob> {
+    return request<ImportJob>(`/imports/${id}`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/imports/{id}/commit` — requires `import.run`. `409`s
+   * (surfaced as a normal `ApiError`) unless the import's last dry-run/
+   * commit attempt succeeded/failed-validation (`dry_run_succeeded` or
+   * `commit_failed`) — i.e. you can't commit an import that has never had a
+   * successful dry-run. `mapping` is optional: omitted re-uses the
+   * already-confirmed mapping from the last dry-run. All-or-nothing
+   * server-side: if the re-validation at commit time finds ANY invalid row,
+   * nothing is created and the job lands on `commit_failed` with the same
+   * per-row report. */
+  async commitImport(id: number, mapping?: ImportMapping): Promise<ImportJob> {
+    return request<ImportJob>(`/imports/${id}/commit`, {
+      method: "POST",
+      body: mapping && Object.keys(mapping).length > 0 ? { mapping } : {},
+    });
+  },
+
+  /** `GET /api/v1/exports/assets.csv` — requires `asset.export`, honors the
+   * SAME query params as `listAssets` (search/ordering/category/location/
+   * project/tag/status/is_consumable/include_retired). Not a `fetch()`
+   * helper: this is a plain streamed-file `GET`, so the simplest correct
+   * client is a browser navigation/`<a href>` (session cookie rides along
+   * automatically) — this just builds that URL, it never fetches the body
+   * itself. */
+  exportAssetsCsvUrl(params?: AssetListParams): string {
+    return `${API_BASE}/exports/assets.csv${buildQuery(params)}`;
   },
 
   // --- Notification preferences (docs/api-and-ui.md "Per-user prefs";
