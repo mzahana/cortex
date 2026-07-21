@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActionIcon,
   Alert,
@@ -7,9 +7,7 @@ import {
   Button,
   Card,
   Center,
-  FileButton,
   Group,
-  Image,
   Loader,
   Modal,
   SimpleGrid,
@@ -29,11 +27,21 @@ import {
   RESERVATION_CREATE,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
-import type { Asset, Category, Checkout, CustomFieldDef, Location, Project, Reservation } from "../../api/types";
+import type {
+  Asset,
+  Attachment,
+  Category,
+  Checkout,
+  CustomFieldDef,
+  Location,
+  Project,
+  Reservation,
+} from "../../api/types";
 import { orderedFieldEntries, formatFieldValue } from "./assetFieldFormat";
 import { STATUS_COLORS, STATUS_LABELS } from "./assetConstants";
 import { CreateReservationModal } from "../reservations/CreateReservationModal";
 import { CheckoutModal } from "./CheckoutModal";
+import { PhotoCapture } from "./PhotoCapture";
 
 /**
  * Asset Detail (T1.6, docs/api-and-ui.md "Asset Detail": "Specs (custom
@@ -66,6 +74,7 @@ export function AssetDetailScreen() {
   const { me } = useAuth();
 
   const [asset, setAsset] = useState<Asset | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [fieldDefs, setFieldDefs] = useState<CustomFieldDef[]>([]);
   const [category, setCategory] = useState<Category | null>(null);
   const [location, setLocation] = useState<Location | null>(null);
@@ -76,10 +85,6 @@ export function AssetDetailScreen() {
   const [retireModalOpen, setRetireModalOpen] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [retireError, setRetireError] = useState<string | null>(null);
-
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const resetFileRef = useRef<() => void>(null);
 
   const [reserveOpen, setReserveOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
@@ -96,6 +101,7 @@ export function AssetDetailScreen() {
       const assetId = Number(id);
       const fetchedAsset = await api.getAsset(assetId);
       setAsset(fetchedAsset);
+      setAttachments(fetchedAsset.attachments);
 
       const [fetchedCategory, defs, fetchedLocation, fetchedProject] = await Promise.all([
         api.getCategory(fetchedAsset.category).catch(() => null),
@@ -226,25 +232,6 @@ export function AssetDetailScreen() {
     }
   };
 
-  const handleUpload = async (file: File | null) => {
-    if (!file) return;
-    setUploading(true);
-    setUploadError(null);
-    try {
-      await api.uploadAssetAttachment(asset.id, file, "photo");
-      await load();
-    } catch (err) {
-      setUploadError(
-        err instanceof ApiError
-          ? err.problem.detail ?? err.problem.title
-          : "Upload failed. Please try again.",
-      );
-    } finally {
-      setUploading(false);
-      resetFileRef.current?.();
-    }
-  };
-
   const specs = orderedFieldEntries(fieldDefs, asset.field_values);
 
   return (
@@ -336,59 +323,12 @@ export function AssetDetailScreen() {
           </Card>
 
           <Card withBorder>
-            <Group justify="space-between" mb="xs">
-              <Title order={6}>Photos &amp; attachments</Title>
-              {canAttach ? (
-                <FileButton
-                  resetRef={resetFileRef}
-                  onChange={(file) => void handleUpload(file)}
-                  accept="image/png,image/jpeg,image/webp,application/pdf"
-                >
-                  {(props) => (
-                    <Button size="xs" variant="light" loading={uploading} {...props}>
-                      Add photo
-                    </Button>
-                  )}
-                </FileButton>
-              ) : (
-                <Tooltip label="You don't have permission to attach files to this asset">
-                  <Button size="xs" variant="light" disabled>
-                    Add photo
-                  </Button>
-                </Tooltip>
-              )}
-            </Group>
-            {uploadError && (
-              <Alert color="red" mb="xs" data-testid="attachment-upload-error">
-                {uploadError}
-              </Alert>
-            )}
-            {asset.attachments.length === 0 ? (
-              <Text size="sm" c="dimmed">
-                No photos or documents yet.
-              </Text>
-            ) : (
-              <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
-                {asset.attachments.map((att) =>
-                  att.kind === "photo" ? (
-                    <Image
-                      key={att.id}
-                      src={`/media/${att.storage_key}`}
-                      alt={att.filename}
-                      radius="sm"
-                      fit="cover"
-                      h={100}
-                    />
-                  ) : (
-                    <Card key={att.id} withBorder padding="xs">
-                      <Text size="xs" truncate>
-                        {att.filename}
-                      </Text>
-                    </Card>
-                  ),
-                )}
-              </SimpleGrid>
-            )}
+            <PhotoCapture
+              assetId={asset.id}
+              attachments={attachments}
+              canAttach={canAttach}
+              onUploaded={(attachment) => setAttachments((prev) => [attachment, ...prev])}
+            />
           </Card>
 
           <Card withBorder>
