@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ActionIcon,
   Alert,
-  AppShell,
   Badge,
   Button,
   FileInput,
@@ -13,10 +11,10 @@ import {
   Stack,
   Table,
   Text,
-  Title,
 } from "@mantine/core";
 import { useNavigate } from "react-router-dom";
 import { IMPORT_CORE_TARGETS, type ImportMapping, type ImportReportRow } from "../../api/types";
+import { AppLayout } from "../../layout/AppLayout";
 import { useImportJob } from "./useImportJob";
 
 const TARGET_OPTIONS = [
@@ -109,19 +107,7 @@ export function ImportScreen() {
     report !== null;
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Bulk Import</Title>
-          </Group>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout title="Bulk Import">
         <Stack gap="md" data-testid="import-screen">
           {error && (
             <Alert color="red" title="Something went wrong">
@@ -298,7 +284,6 @@ export function ImportScreen() {
             </Stack>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }
