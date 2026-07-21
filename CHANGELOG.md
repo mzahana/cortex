@@ -10,6 +10,53 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+Milestone **M4 — Mobile scan, photo, labels (MVP)**: installable PWA,
+camera QR scan-to-asset, camera photo capture, and server-rendered Avery
+label sheets. Meets F6 + F7 acceptance (automated coverage; on-device
+verification over the Cloudflare Tunnel is still owed once M6's deploy
+lands — see carry-forwards).
+
+### Added
+
+- **`GET /api/v1/resolve/{qr_token}`** — tenant-scoped scan resolver behind
+  the same `asset.view` RBAC as Asset Detail; an unknown or cross-tenant
+  token both 404 (never leaking existence). Under the 250ms perf budget.
+- **Installable PWA** — a manifest plus a Workbox service worker
+  (`vite-plugin-pwa`, `generateSW`) precaching only the app shell; `/api/**`
+  is never intercepted, so no stale data is ever served offline.
+- **Scan screen** — camera QR scan (`@zxing/browser`) resolves straight to
+  Asset Detail with check-in/out offered; an always-visible manual
+  token/asset-ID entry field covers camera-unavailable/denied (risk R5).
+  Reachable from a dashboard FAB.
+- **Camera photo capture** — `capture="environment"` file input uploads
+  directly to the existing attachments endpoint with an optimistic
+  in-progress tile; the photo renders on the asset within seconds, no page
+  reload.
+- **Label PDF generation** — a new generic `apps/jobs` (tenant-scoped async
+  job polling, `GET /api/v1/jobs/{id}`) backs `POST /api/v1/labels/generate`
+  (`label.generate`, scoped): a Celery task renders each selected asset's
+  `qr_token` as a `segno` QR (explicitly non-Micro, so phone cameras can
+  read it) laid out via WeasyPrint onto Avery 5160/5163 sheet templates
+  (Q9's documented default — unanswered in `docs/risks.md`). The full
+  generate → decode → scan round trip was proven end-to-end against a real
+  running stack: the rendered PDF's QR codes were decoded back to their
+  exact source tokens and resolved to the exact correct asset via the scan
+  screen's manual entry.
+
+### Fixed
+
+- The QR-decode test dependency (`opencv-python-headless`) shipped no
+  musllinux wheel, so it could never install inside the project's actual
+  Alpine-based app image — only ever worked on CI's glibc runners. Replaced
+  with `pymupdf` + the `zbarimg` CLI so `pip install -r requirements/dev.txt`
+  works in the same image the app actually runs in.
+- The service worker's navigation fallback would have intercepted `<a
+  download>` clicks on generated PDFs (label sheets, attachments) once
+  active in production, serving the cached app shell instead of the file
+  — excluded `/media/` from the fallback denylist.
+
 ## [0.5.0] - 2026-07-20
 
 Milestone **M5 — Notifications (Brevo) + audit + dashboard**: async email via
