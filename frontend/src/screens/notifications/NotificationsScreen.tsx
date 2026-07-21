@@ -1,20 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActionIcon,
-  Alert,
-  AppShell,
-  Button,
-  Card,
-  Center,
-  Group,
-  Loader,
-  Stack,
-  Switch,
-  Text,
-  Title,
-} from "@mantine/core";
-import { useNavigate } from "react-router-dom";
+import { Alert, Button, Card, Center, Group, Loader, Stack, Switch, Text } from "@mantine/core";
 import { api, ApiError } from "../../api/client";
+import { AppLayout } from "../../layout/AppLayout";
 import { NOTIFICATION_EVENT_TYPES, type NotificationPref } from "../../api/types";
 
 /** Human-readable labels for the known `event_type` keys
@@ -45,7 +32,6 @@ const EVENT_LABELS: Record<string, string> = {
  * exists.
  */
 export function NotificationsScreen() {
-  const navigate = useNavigate();
   const [prefsByEvent, setPrefsByEvent] = useState<Map<string, NotificationPref>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -117,17 +103,7 @@ export function NotificationsScreen() {
   };
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md">
-          <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-            &#8592;
-          </ActionIcon>
-          <Title order={4}>My Notifications</Title>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout title="My Notifications">
         <Stack gap="md">
           <Text c="dimmed" size="sm">
             Choose which events send you an email. These are your own
@@ -181,7 +157,6 @@ export function NotificationsScreen() {
             </Stack>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }

@@ -1,8 +1,6 @@
 import { useMemo, useState } from "react";
 import {
-  ActionIcon,
   Alert,
-  AppShell,
   Button,
   Center,
   Group,
@@ -11,10 +9,9 @@ import {
   Stack,
   Text,
   TextInput,
-  Title,
 } from "@mantine/core";
 import { DateTimePicker } from "@mantine/dates";
-import { useNavigate } from "react-router-dom";
+import { AppLayout } from "../../layout/AppLayout";
 import type { AuditLogListParams } from "../../api/types";
 import { AuditLogRow } from "./AuditLogRow";
 import { useAuditLog } from "./useAuditLog";
@@ -31,8 +28,6 @@ import { useAuditLog } from "./useAuditLog";
  * needed/possible here).
  */
 export function AuditLogScreen() {
-  const navigate = useNavigate();
-
   const [entityType, setEntityType] = useState("");
   const [action, setAction] = useState("");
   const [actor, setActor] = useState("");
@@ -55,22 +50,14 @@ export function AuditLogScreen() {
     useAuditLog({ filters });
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Audit Log</Title>
-          </Group>
-          <Text size="sm" c="dimmed">
-            {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
-          </Text>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title="Audit Log"
+      actions={
+        <Text size="sm" c="dimmed">
+          {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
+        </Text>
+      }
+    >
         <Stack gap="md">
           <Group grow wrap="wrap">
             <TextInput
@@ -151,7 +138,6 @@ export function AuditLogScreen() {
             </Center>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }

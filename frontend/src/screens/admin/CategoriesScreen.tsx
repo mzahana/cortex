@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
   Alert,
-  AppShell,
   Badge,
   Button,
   Center,
@@ -11,13 +10,12 @@ import {
   Loader,
   Stack,
   Text,
-  Title,
   Tooltip,
 } from "@mantine/core";
-import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../../api/client";
 import { hasPermission, CATEGORY_MANAGE } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import type { Category } from "../../api/types";
 import { Tree } from "../../components/Tree";
 import { buildTree, type TreeNode } from "../../components/treeUtils";
@@ -41,7 +39,6 @@ import { CategoryFieldsPanel } from "./CategoryFieldsPanel";
  */
 export function CategoriesScreen() {
   const { me } = useAuth();
-  const navigate = useNavigate();
   const canManage = hasPermission(me, CATEGORY_MANAGE);
 
   const [categories, setCategories] = useState<Category[] | null>(null);
@@ -92,24 +89,16 @@ export function CategoriesScreen() {
   };
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Categories &amp; Fields</Title>
-          </Group>
-          {!canManage && (
-            <Badge variant="light" color="gray">
-              Read-only
-            </Badge>
-          )}
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title="Categories & Fields"
+      actions={
+        !canManage ? (
+          <Badge variant="light" color="gray">
+            Read-only
+          </Badge>
+        ) : undefined
+      }
+    >
         {categories === null && !loadError && (
           <Center p="xl">
             <Loader />
@@ -219,7 +208,6 @@ export function CategoriesScreen() {
             </Grid.Col>
           </Grid>
         )}
-      </AppShell.Main>
 
       <CategoryFormModal
         opened={formOpen}
@@ -245,6 +233,6 @@ export function CategoriesScreen() {
           }}
         />
       )}
-    </AppShell>
+    </AppLayout>
   );
 }

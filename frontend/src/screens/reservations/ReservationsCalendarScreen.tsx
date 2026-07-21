@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import {
   ActionIcon,
   Alert,
-  AppShell,
   Badge,
   Button,
   Center,
@@ -11,11 +10,10 @@ import {
   SegmentedControl,
   Stack,
   Text,
-  Title,
 } from "@mantine/core";
 import { Calendar } from "@mantine/dates";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import { hasAnyAssetPermission, RESERVATION_CREATE } from "../../api/permissions";
 import type { Reservation } from "../../api/types";
 import { useReservationList } from "./useReservationList";
@@ -32,7 +30,6 @@ import { CreateReservationModal } from "./CreateReservationModal";
  * every view (never "all reservations").
  */
 export function ReservationsCalendarScreen() {
-  const navigate = useNavigate();
   const { me } = useAuth();
 
   const [mode, setMode] = useState<CalendarViewMode>("month");
@@ -104,23 +101,15 @@ export function ReservationsCalendarScreen() {
   const canCreate = hasAnyAssetPermission(me, RESERVATION_CREATE);
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Reservations</Title>
-          </Group>
-          <Text size="sm" c="dimmed">
-            {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
-          </Text>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
-        <Stack gap="sm">
+    <AppLayout
+      title="Reservations"
+      actions={
+        <Text size="sm" c="dimmed">
+          {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
+        </Text>
+      }
+    >
+        <Stack gap="sm" pb={72}>
           {banner && (
             <Alert color="teal" withCloseButton onClose={() => setBanner(null)}>
               {banner}
@@ -295,7 +284,6 @@ export function ReservationsCalendarScreen() {
             </Text>
           )}
         </Stack>
-      </AppShell.Main>
 
       {canCreate && (
         <Button
@@ -303,7 +291,15 @@ export function ReservationsCalendarScreen() {
           data-testid="reserve-fab"
           radius="xl"
           size="lg"
-          style={{ position: "fixed", right: 20, bottom: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}
+          style={{
+            position: "fixed",
+            right: 20,
+            // Clears the mobile bottom tab bar (~76px); on desktop there's
+            // no footer so the extra offset just reads as normal FAB margin.
+            bottom: "calc(20px + var(--app-bottom-nav-offset, 0px))",
+            boxShadow: "var(--mantine-shadow-lg)",
+            zIndex: 190,
+          }}
         >
           + Reserve
         </Button>
@@ -315,6 +311,6 @@ export function ReservationsCalendarScreen() {
         onCreated={handleCreated}
         initialStart={selectedDay}
       />
-    </AppShell>
+    </AppLayout>
   );
 }

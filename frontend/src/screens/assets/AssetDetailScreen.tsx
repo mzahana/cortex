@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActionIcon,
   Alert,
-  AppShell,
   Badge,
   Button,
   Card,
@@ -27,6 +25,7 @@ import {
   RESERVATION_CREATE,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import type {
   Asset,
   Attachment,
@@ -149,22 +148,26 @@ export function AssetDetailScreen() {
 
   if (loading) {
     return (
-      <Center h="100vh">
-        <Loader data-testid="asset-detail-loading" />
-      </Center>
+      <AppLayout title="Asset" backTo="/assets">
+        <Center h="60vh">
+          <Loader data-testid="asset-detail-loading" />
+        </Center>
+      </AppLayout>
     );
   }
 
   if (error || !asset) {
     return (
-      <Center h="100vh" p="md">
-        <Stack align="center" gap="sm" maw={420}>
-          <Alert color="red" title="Couldn't load this asset" data-testid="asset-detail-error" w="100%">
-            {error ?? "Not found."}
-          </Alert>
-          <Button onClick={() => navigate("/assets")}>Back to Assets</Button>
-        </Stack>
-      </Center>
+      <AppLayout title="Asset" backTo="/assets">
+        <Center h="60vh" p="md">
+          <Stack align="center" gap="sm" maw={420}>
+            <Alert color="red" title="Couldn't load this asset" data-testid="asset-detail-error" w="100%">
+              {error ?? "Not found."}
+            </Alert>
+            <Button onClick={() => navigate("/assets")}>Back to Assets</Button>
+          </Stack>
+        </Center>
+      </AppLayout>
     );
   }
 
@@ -235,24 +238,15 @@ export function AssetDetailScreen() {
   const specs = orderedFieldEntries(fieldDefs, asset.field_values);
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-          <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/assets")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4} lineClamp={1}>
-              {asset.name}
-            </Title>
-          </Group>
-          <Badge color={STATUS_COLORS[asset.status]} variant="light" style={{ flexShrink: 0 }}>
-            {STATUS_LABELS[asset.status]}
-          </Badge>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title={asset.name}
+      backTo="/assets"
+      actions={
+        <Badge color={STATUS_COLORS[asset.status]} variant="light" style={{ flexShrink: 0 }}>
+          {STATUS_LABELS[asset.status]}
+        </Badge>
+      }
+    >
         <Stack gap="md" pb="xl">
           {banner && (
             <Alert color="teal" withCloseButton onClose={() => setBanner(null)}>
@@ -443,8 +437,6 @@ export function AssetDetailScreen() {
             </Group>
           </Card>
         </Stack>
-      </AppShell.Main>
-
       <Modal opened={retireModalOpen} onClose={() => setRetireModalOpen(false)} title="Retire asset" centered>
         {retireError && (
           <Alert color="red" mb="sm">
@@ -478,7 +470,7 @@ export function AssetDetailScreen() {
         onCheckedOut={handleCheckedOut}
         asset={asset}
       />
-    </AppShell>
+    </AppLayout>
   );
 }
 

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
   Alert,
-  AppShell,
   Badge,
   Button,
   Center,
@@ -10,13 +9,12 @@ import {
   Loader,
   Stack,
   Text,
-  Title,
   Tooltip,
 } from "@mantine/core";
-import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../../api/client";
 import { hasPermission, LOCATION_MANAGE } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import type { Location } from "../../api/types";
 import { Tree } from "../../components/Tree";
 import { buildTree, type TreeNode } from "../../components/treeUtils";
@@ -30,7 +28,6 @@ import { LocationFormModal } from "./LocationFormModal";
  */
 export function LocationsScreen() {
   const { me } = useAuth();
-  const navigate = useNavigate();
   const canManage = hasPermission(me, LOCATION_MANAGE);
 
   const [locations, setLocations] = useState<Location[] | null>(null);
@@ -75,24 +72,16 @@ export function LocationsScreen() {
   };
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Locations</Title>
-          </Group>
-          {!canManage && (
-            <Badge variant="light" color="gray">
-              Read-only
-            </Badge>
-          )}
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title="Locations"
+      actions={
+        !canManage ? (
+          <Badge variant="light" color="gray">
+            Read-only
+          </Badge>
+        ) : undefined
+      }
+    >
         {locations === null && !loadError && (
           <Center p="xl">
             <Loader />
@@ -171,7 +160,6 @@ export function LocationsScreen() {
             />
           </Stack>
         )}
-      </AppShell.Main>
 
       <LocationFormModal
         opened={formOpen}
@@ -194,6 +182,6 @@ export function LocationsScreen() {
           onDeleted={() => void load()}
         />
       )}
-    </AppShell>
+    </AppLayout>
   );
 }

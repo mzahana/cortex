@@ -1,7 +1,9 @@
 import { useState } from "react";
 import {
   Alert,
+  Box,
   Button,
+  Center,
   Container,
   Paper,
   PasswordInput,
@@ -74,53 +76,83 @@ export function LoginScreen() {
   };
 
   return (
-    <Container size={420} py={80}>
-      <Title ta="center" order={2}>
-        Cortex
-      </Title>
-      <Text ta="center" c="dimmed" size="sm" mt={4}>
-        Lab Asset &amp; Inventory Management
-      </Text>
-
-      <Paper withBorder shadow="md" p={30} mt={30} radius="md">
-        <form onSubmit={form.onSubmit(handleSubmit)} noValidate>
-          <Stack>
-            {submitError && (
-              <Alert color="red" title="Sign-in failed" data-testid="login-error">
-                {submitError}
-              </Alert>
-            )}
-            <TextInput
-              label="Tenant"
-              placeholder="acme-robotics"
-              description="Your lab's tenant slug"
-              autoComplete="organization"
-              inputMode="text"
-              required
-              {...form.getInputProps("tenant")}
-            />
-            <TextInput
-              label="Email"
-              placeholder="you@example.com"
-              type="email"
-              autoComplete="username"
-              inputMode="email"
-              required
-              {...form.getInputProps("email")}
-            />
-            <PasswordInput
-              label="Password"
-              placeholder="Your password"
-              autoComplete="current-password"
-              required
-              {...form.getInputProps("password")}
-            />
-            <Button type="submit" fullWidth mt="md" loading={submitting} size="md">
-              Sign in
-            </Button>
+    <Box
+      mih="100vh"
+      style={{
+        background:
+          "radial-gradient(1200px circle at 15% -10%, var(--mantine-color-brand-1), transparent 55%)," +
+          "radial-gradient(900px circle at 100% 10%, var(--mantine-color-accent-0), transparent 45%)",
+      }}
+    >
+      <Center mih="100vh" px="md">
+        <Container size={420} w="100%" py={40}>
+          <Stack align="center" gap={4} mb="lg">
+            <Box
+              w={48}
+              h={48}
+              bg="brand.6"
+              style={{
+                borderRadius: "var(--mantine-radius-lg)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "white",
+                fontWeight: 800,
+                fontSize: 18,
+                boxShadow: "var(--mantine-shadow-md)",
+              }}
+            >
+              CX
+            </Box>
+            <Title ta="center" order={2} mt="xs">
+              Cortex
+            </Title>
+            <Text ta="center" c="dimmed" size="sm">
+              Lab Asset &amp; Inventory Management
+            </Text>
           </Stack>
-        </form>
-      </Paper>
-    </Container>
+
+          <Paper withBorder shadow="lg" p={30} radius="lg">
+            <form onSubmit={form.onSubmit(handleSubmit)} noValidate>
+              <Stack>
+                {submitError && (
+                  <Alert color="red" title="Sign-in failed" data-testid="login-error">
+                    {submitError}
+                  </Alert>
+                )}
+                <TextInput
+                  label="Tenant"
+                  placeholder="acme-robotics"
+                  description="Your lab's tenant slug"
+                  autoComplete="organization"
+                  inputMode="text"
+                  required
+                  {...form.getInputProps("tenant")}
+                />
+                <TextInput
+                  label="Email"
+                  placeholder="you@example.com"
+                  type="email"
+                  autoComplete="username"
+                  inputMode="email"
+                  required
+                  {...form.getInputProps("email")}
+                />
+                <PasswordInput
+                  label="Password"
+                  placeholder="Your password"
+                  autoComplete="current-password"
+                  required
+                  {...form.getInputProps("password")}
+                />
+                <Button type="submit" fullWidth mt="md" loading={submitting} size="md">
+                  Sign in
+                </Button>
+              </Stack>
+            </form>
+          </Paper>
+        </Container>
+      </Center>
+    </Box>
   );
 }

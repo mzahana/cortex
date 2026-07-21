@@ -1,6 +1,6 @@
-import { ActionIcon, AppShell, Center, Group, Loader, Tabs, Title } from "@mantine/core";
-import { useNavigate } from "react-router-dom";
+import { Center, Loader, Tabs } from "@mantine/core";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import { ReorderRequestsPanel } from "../stock/ReorderRequestsPanel";
 import { ReservationApprovalsPanel } from "./ReservationApprovalsPanel";
 
@@ -13,44 +13,34 @@ import { ReservationApprovalsPanel } from "./ReservationApprovalsPanel";
  * defaulted to the actionable status here instead of "all").
  */
 export function ApprovalsScreen() {
-  const navigate = useNavigate();
   const { me } = useAuth();
 
   if (!me) {
     return (
-      <Center h="100vh">
-        <Loader />
-      </Center>
+      <AppLayout title="Approvals">
+        <Center h="60vh">
+          <Loader />
+        </Center>
+      </AppLayout>
     );
   }
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md">
-          <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-            &#8592;
-          </ActionIcon>
-          <Title order={4}>Approvals</Title>
-        </Group>
-      </AppShell.Header>
+    <AppLayout title="Approvals">
+      <Tabs defaultValue="reservations">
+        <Tabs.List>
+          <Tabs.Tab value="reservations">Reservations</Tabs.Tab>
+          <Tabs.Tab value="reorders">Reorder requests</Tabs.Tab>
+        </Tabs.List>
 
-      <AppShell.Main>
-        <Tabs defaultValue="reservations">
-          <Tabs.List>
-            <Tabs.Tab value="reservations">Reservations</Tabs.Tab>
-            <Tabs.Tab value="reorders">Reorder requests</Tabs.Tab>
-          </Tabs.List>
+        <Tabs.Panel value="reservations" pt="md">
+          <ReservationApprovalsPanel me={me} />
+        </Tabs.Panel>
 
-          <Tabs.Panel value="reservations" pt="md">
-            <ReservationApprovalsPanel me={me} />
-          </Tabs.Panel>
-
-          <Tabs.Panel value="reorders" pt="md">
-            <ReorderRequestsPanel me={me} defaultStatus="open" />
-          </Tabs.Panel>
-        </Tabs>
-      </AppShell.Main>
-    </AppShell>
+        <Tabs.Panel value="reorders" pt="md">
+          <ReorderRequestsPanel me={me} defaultStatus="open" />
+        </Tabs.Panel>
+      </Tabs>
+    </AppLayout>
   );
 }

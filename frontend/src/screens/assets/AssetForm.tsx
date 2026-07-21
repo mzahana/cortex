@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActionIcon,
   Alert,
-  AppShell,
   Button,
   Card,
   Center,
@@ -33,6 +31,7 @@ import {
   hasAssetPermission,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import type {
   Asset,
   AssetStatus,
@@ -476,22 +475,26 @@ export function AssetFormScreen() {
 
   if (loading) {
     return (
-      <Center h="100vh">
-        <Loader data-testid="asset-form-loading" />
-      </Center>
+      <AppLayout title={isEdit ? "Edit asset" : "New asset"} backTo="/assets">
+        <Center h="60vh">
+          <Loader data-testid="asset-form-loading" />
+        </Center>
+      </AppLayout>
     );
   }
 
   if (loadError || (isEdit && !existingAsset)) {
     return (
-      <Center h="100vh" p="md">
-        <Stack align="center" gap="sm" maw={420}>
-          <Alert color="red" title="Couldn't load this form" data-testid="asset-form-load-error" w="100%">
-            {loadError ?? "Asset not found."}
-          </Alert>
-          <Button onClick={() => navigate("/assets")}>Back to Assets</Button>
-        </Stack>
-      </Center>
+      <AppLayout title={isEdit ? "Edit asset" : "New asset"} backTo="/assets">
+        <Center h="60vh" p="md">
+          <Stack align="center" gap="sm" maw={420}>
+            <Alert color="red" title="Couldn't load this form" data-testid="asset-form-load-error" w="100%">
+              {loadError ?? "Asset not found."}
+            </Alert>
+            <Button onClick={() => navigate("/assets")}>Back to Assets</Button>
+          </Stack>
+        </Center>
+      </AppLayout>
     );
   }
 
@@ -506,39 +509,28 @@ export function AssetFormScreen() {
 
   if (!canSubmit) {
     return (
-      <Center h="100vh" p="md">
-        <Stack align="center" gap="sm" maw={420}>
-          <Alert color="yellow" title="No permission" data-testid="asset-form-forbidden" w="100%">
-            You don&apos;t have permission to {isEdit ? "edit this asset" : "create a new asset"}.
-          </Alert>
-          <Button onClick={() => navigate(isEdit && existingAsset ? `/assets/${existingAsset.id}` : "/assets")}>
-            Back
-          </Button>
-        </Stack>
-      </Center>
+      <AppLayout title={isEdit ? "Edit asset" : "New asset"} backTo="/assets">
+        <Center h="60vh" p="md">
+          <Stack align="center" gap="sm" maw={420}>
+            <Alert color="yellow" title="No permission" data-testid="asset-form-forbidden" w="100%">
+              You don&apos;t have permission to {isEdit ? "edit this asset" : "create a new asset"}.
+            </Alert>
+            <Button onClick={() => navigate(isEdit && existingAsset ? `/assets/${existingAsset.id}` : "/assets")}>
+              Back
+            </Button>
+          </Stack>
+        </Center>
+      </AppLayout>
     );
   }
 
   const canAttach = existingAsset ? hasAssetPermission(me, ASSET_ATTACH, existingAsset.project) : false;
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" gap="xs" wrap="nowrap">
-          <ActionIcon
-            variant="subtle"
-            aria-label="Back"
-            onClick={() => navigate(isEdit && existingAsset ? `/assets/${existingAsset.id}` : "/assets")}
-          >
-            &#8592;
-          </ActionIcon>
-          <Title order={4} lineClamp={1}>
-            {isEdit ? `Edit ${existingAsset?.name ?? "asset"}` : "New asset"}
-          </Title>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title={isEdit ? `Edit ${existingAsset?.name ?? "asset"}` : "New asset"}
+      backTo={isEdit && existingAsset ? `/assets/${existingAsset.id}` : "/assets"}
+    >
         <form onSubmit={handleSubmit} noValidate>
           <Stack gap="md" pb="xl" maw={640}>
             {submitError && (
@@ -732,7 +724,6 @@ export function AssetFormScreen() {
             </Group>
           </Stack>
         </form>
-      </AppShell.Main>
 
       <Modal
         opened={pendingSwitch !== null}
@@ -766,6 +757,6 @@ export function AssetFormScreen() {
           </Button>
         </Group>
       </Modal>
-    </AppShell>
+    </AppLayout>
   );
 }

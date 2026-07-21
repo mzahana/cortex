@@ -1,23 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import {
-  ActionIcon,
-  Alert,
-  AppShell,
-  Box,
-  Button,
-  Center,
-  Group,
-  Loader,
-  Stack,
-  Text,
-  Title,
-} from "@mantine/core";
+import { Alert, Box, Button, Center, Loader, Stack, Text } from "@mantine/core";
 import { useDebouncedValue } from "@mantine/hooks";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, ApiError } from "../../api/client";
 import { ASSET_CREATE, hasAnyAssetPermission } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import type { AssetListParams, Category, Location, Project, Tag } from "../../api/types";
 import { buildTree, flattenForSelect } from "../../components/treeUtils";
 import { AssetFilters, type AssetFiltersValue } from "./AssetFilters";
@@ -186,30 +175,22 @@ export function AssetListScreen() {
   });
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Assets</Title>
-          </Group>
-          <Group gap="sm">
-            <Text size="sm" c="dimmed" data-testid="asset-count">
-              {totalCount !== null ? `${assets.length} of ${totalCount.toLocaleString()}` : ""}
-            </Text>
-            {canCreate && (
-              <Button size="xs" onClick={() => navigate("/assets/new")} data-testid="new-asset-button">
-                New asset
-              </Button>
-            )}
-          </Group>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
-        <Stack gap="sm" h="calc(100vh - 100px)">
+    <AppLayout
+      title="Assets"
+      actions={
+        <>
+          <Text size="sm" c="dimmed" data-testid="asset-count">
+            {totalCount !== null ? `${assets.length} of ${totalCount.toLocaleString()}` : ""}
+          </Text>
+          {canCreate && (
+            <Button size="xs" onClick={() => navigate("/assets/new")} data-testid="new-asset-button">
+              New asset
+            </Button>
+          )}
+        </>
+      }
+    >
+        <Stack gap="sm" h="calc(100vh - 140px)">
           {catalogError && (
             <Alert color="yellow" data-testid="catalog-filters-error">
               {catalogError}
@@ -306,7 +287,6 @@ export function AssetListScreen() {
             </Box>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }

@@ -1,17 +1,5 @@
-import {
-  ActionIcon,
-  Alert,
-  AppShell,
-  Button,
-  Center,
-  Group,
-  Loader,
-  Pagination,
-  Stack,
-  Text,
-  Title,
-} from "@mantine/core";
-import { useNavigate } from "react-router-dom";
+import { Alert, Button, Center, Loader, Pagination, Stack, Text } from "@mantine/core";
+import { AppLayout } from "../../layout/AppLayout";
 import type { Checkout } from "../../api/types";
 import { useMyItemsList } from "./useMyItemsList";
 import { CheckoutRow } from "./CheckoutRow";
@@ -25,7 +13,6 @@ import { CheckoutRow } from "./CheckoutRow";
  * exactly "what I have out" without a client-side `user` filter.
  */
 export function MyItemsScreen() {
-  const navigate = useNavigate();
   const { items, assetsById, totalCount, page, pageCount, loading, error, setPage, reload } =
     useMyItemsList();
 
@@ -35,22 +22,14 @@ export function MyItemsScreen() {
   };
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>My Items</Title>
-          </Group>
-          <Text size="sm" c="dimmed">
-            {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
-          </Text>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title="My Items"
+      actions={
+        <Text size="sm" c="dimmed">
+          {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
+        </Text>
+      }
+    >
         <Stack gap="sm">
           {error && (
             <Alert color="red" title="Couldn't load your items">
@@ -99,7 +78,6 @@ export function MyItemsScreen() {
             </Center>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }

@@ -1,23 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import {
-  Alert,
-  AppShell,
-  Box,
-  Button,
-  Card,
-  Center,
-  Group,
-  Loader,
-  Stack,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
+import { Alert, Box, Button, Card, Center, Loader, Stack, Text, TextInput } from "@mantine/core";
 import { useNavigate } from "react-router-dom";
 import { BrowserQRCodeReader } from "@zxing/browser";
 import type { IScannerControls } from "@zxing/browser";
 import { api, ApiError } from "../../api/client";
+import { AppLayout } from "../../layout/AppLayout";
 import { extractQrToken, isNumericAssetId } from "./qrToken";
 
 type CameraState = "idle" | "starting" | "scanning" | "unavailable";
@@ -156,17 +144,14 @@ export function ScanScreen() {
   };
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Title order={4}>Scan asset</Title>
-          <Button variant="subtle" onClick={() => navigate("/")} data-testid="scan-close">
-            Close
-          </Button>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title="Scan asset"
+      actions={
+        <Button variant="subtle" onClick={() => navigate("/")} data-testid="scan-close">
+          Close
+        </Button>
+      }
+    >
         <Stack gap="lg" maw={480} mx="auto">
           <Card withBorder padding="sm">
             <Stack gap="xs">
@@ -255,8 +240,7 @@ export function ScanScreen() {
             </Alert>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }
 

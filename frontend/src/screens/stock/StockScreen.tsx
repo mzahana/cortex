@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ActionIcon,
   Alert,
-  AppShell,
   Button,
   Center,
   Group,
@@ -12,9 +10,7 @@ import {
   Switch,
   Tabs,
   Text,
-  Title,
 } from "@mantine/core";
-import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import {
   hasAssetPermission,
@@ -23,6 +19,7 @@ import {
   STOCK_CONSUME,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
+import { AppLayout } from "../../layout/AppLayout";
 import type { Location, StockItem, StockTxnResponse, ReorderRequest } from "../../api/types";
 import { StockRow } from "./StockRows";
 import { StockTxnModal } from "./StockTxnModal";
@@ -41,7 +38,6 @@ type TxnMode = "receive" | "consume" | "adjust";
  * drives the create + approve/transition workflow.
  */
 export function StockScreen() {
-  const navigate = useNavigate();
   const { me } = useAuth();
 
   const [lowStockOnly, setLowStockOnly] = useState(false);
@@ -107,22 +103,14 @@ export function StockScreen() {
   }
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Stock</Title>
-          </Group>
-          <Text size="sm" c="dimmed">
-            {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
-          </Text>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout
+      title="Stock"
+      actions={
+        <Text size="sm" c="dimmed">
+          {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
+        </Text>
+      }
+    >
         <Tabs defaultValue="stock">
           <Tabs.List>
             <Tabs.Tab value="stock">Consumables</Tabs.Tab>
@@ -219,7 +207,6 @@ export function StockScreen() {
             <ReorderRequestsPanel me={me} />
           </Tabs.Panel>
         </Tabs>
-      </AppShell.Main>
 
       {txnTarget && (
         <StockTxnModal
@@ -241,6 +228,6 @@ export function StockScreen() {
           assetName={assetsById.get(reorderTarget.asset)?.name ?? `Asset #${reorderTarget.asset}`}
         />
       )}
-    </AppShell>
+    </AppLayout>
   );
 }

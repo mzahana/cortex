@@ -1,17 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
-import {
-  ActionIcon,
-  Alert,
-  AppShell,
-  Button,
-  Group,
-  Loader,
-  Select,
-  Stack,
-  Text,
-  Title,
-} from "@mantine/core";
-import { useNavigate } from "react-router-dom";
+import { Alert, Button, Loader, Select, Stack, Text } from "@mantine/core";
+import { AppLayout } from "../../layout/AppLayout";
 import type { Asset, LabelSheetTemplate } from "../../api/types";
 import { AssetPicker } from "./AssetPicker";
 import { useLabelJob } from "./useLabelJob";
@@ -37,7 +26,6 @@ const TEMPLATE_OPTIONS: { value: LabelSheetTemplate; label: string }[] = [
  * loop, T4.6).
  */
 export function LabelsScreen() {
-  const navigate = useNavigate();
   const [selected, setSelected] = useState<Map<number, Asset>>(new Map());
   const [template, setTemplate] = useState<LabelSheetTemplate>("avery_5160");
   const { job, submitting, error, generate, reset } = useLabelJob();
@@ -71,19 +59,7 @@ export function LabelsScreen() {
   const isDone = job !== null && (job.status === "succeeded" || job.status === "failed");
 
   return (
-    <AppShell header={{ height: 60 }} padding="md">
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <ActionIcon variant="subtle" aria-label="Back" onClick={() => navigate("/")}>
-              &#8592;
-            </ActionIcon>
-            <Title order={4}>Print Labels</Title>
-          </Group>
-        </Group>
-      </AppShell.Header>
-
-      <AppShell.Main>
+    <AppLayout title="Print Labels">
         <Stack gap="md" data-testid="labels-screen">
           {!isPolling && !isDone && (
             <>
@@ -159,7 +135,6 @@ export function LabelsScreen() {
             </Stack>
           )}
         </Stack>
-      </AppShell.Main>
-    </AppShell>
+    </AppLayout>
   );
 }
