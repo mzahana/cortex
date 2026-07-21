@@ -228,71 +228,123 @@ plan (see below); a 2-core NAS won't get the 2-worker parallel-scan
 assist this 20-core sandbox did, so the real device is likely to see numbers
 closer to the "before" column here, not the "after" one.
 
-### 3. Root cause of the remaining list/search gap (diagnosed, NOT fixed here — hand-off)
+### 3. Root cause of the remaining list/search gap — REFINED & PROVEN (db-migration-specialist follow-up)
 
-**This is the actual, specific finding this task exists to catch** (per the
-task's own framing: "Dry-run this against M1 early to catch index/query
-issues").
+> **Update (T6.6 db-migration-specialist follow-up).** The original hand-off
+> below called this "a genuine PostgreSQL 16 planner limitation" around an
+> RLS `Result`/"One-Time Filter" node. That framing was imprecise. A focused
+> investigation as `cortex_app` against this same seeded 50k/73k corpus pinned
+> the exact mechanism, **refuted two of the proposed fixes with EXPLAIN
+> evidence**, and identified the one fix that actually works. The corrected
+> analysis follows; the original notes are kept underneath for history.
 
-`AssetSearchFilter` (`backend/apps/assets/api.py`) combines full-text
-(`search_vector @@ ...`, GIN) and `pg_trgm` fuzzy matching (`name %`,
-`serial_number %`, both GIN) with `OR`, plus the RLS-injected tenant
-predicate. Verified via `EXPLAIN (ANALYZE, BUFFERS)` at **every** privilege
-level:
+**The mechanism (proven).** `AssetSearchFilter` runs
+`search_vector @@ q  OR  name % s  OR  serial_number % s` plus the RLS tenant
+qual `tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::bigint`.
+RLS adds its policy predicate as a **security qual** (a *security barrier*).
+PostgreSQL will only push another qual *below* a security barrier — i.e. let
+it become an index condition evaluated before the tenant check — if that qual
+is **`LEAKPROOF`**. The two search operators are not:
 
-- **As the DB owner (`cortex`, RLS bypassed — this is what
-  `apps/assets/tests/test_perf_10k.py`'s `perf_corpus` fixture and pytest-
-  django's own connection ALSO run as, per that module's own docstring):**
-  Postgres correctly picks `BitmapOr` across the 3 GIN indexes —
-  **2.4-3.1 ms**.
-- **As the real runtime role (`cortex_app`, RLS enabled — i.e. every actual
-  HTTP request in production):** Postgres instead picks a **sequential
-  scan** over the tenant's entire asset set (serially ~130 ms at 46.5k rows
-  in-tenant; parallel with 2 workers ~55 ms at the wider 2-tenant corpus) —
-  **40-50x slower**, and this is BEFORE the identical `COUNT(*)` query
-  DRF's pagination also runs.
+```
+proname        proleakproof
+similarity_op  (%  text,text)   f     <- pg_trgm fuzzy
+ts_match_vq    (@@ tsvector,tsquery) f  <- full-text
+```
 
-  Confirmed this is specifically about the RLS-injected `Result` / "One-Time
-  Filter" plan node (not row-estimate quality, not a missing index): none of
-  the following changed the outcome —
-  - `ALTER TABLE ... SET STATISTICS 500` + `ANALYZE` (better row estimates)
-  - A `btree_gin`-backed composite `(tenant_id, search_vector)` index
-  - `SET random_page_cost = 1.1` (SSD-appropriate)
-  - Rewriting the RLS policy's `current_setting()` call as a scalar
-    subquery (`(SELECT current_setting(...))`), a documented Postgres RLS
-    workaround for exactly this class of problem
+So under RLS the planner may not use `assets_asset_search_vector_gin` /
+`assets_asset_name_trgm` / `assets_asset_serial_number_trgm` at all — the
+search predicates are demoted to a post-filter and the tenant qual drives the
+scan, which for a tenant owning most of its rows means a **(parallel) Seq
+Scan**. As the owner (RLS bypassed) there is no barrier, so the same three
+indexes are chosen freely.
 
-  This looks like a genuine PostgreSQL 16 planner limitation specific to
-  the interaction between RLS's `Result`/"One-Time Filter" wrapper node and
-  choosing a `BitmapOr`-based child plan, not a schema/index gap in this
-  codebase per se — every index T1.3 built (`assets_asset_search_vector_gin`,
-  `assets_asset_name_trgm`, `assets_asset_serial_number_trgm`) is present,
-  valid, and does get used the moment RLS is out of the picture.
+**EXPLAIN evidence (as `cortex_app`, GUC `app.current_tenant`=4, 50k+ in-tenant):**
 
-**Recommendation for backend-engineer / db-migration-specialist:**
-1. Immediate, low-risk: land the `gthread` gunicorn change (tuning #1 above)
-   — real, if partial, win.
-2. Investigate restructuring `AssetSearchFilter`'s query so the 3-way OR
-   search predicate is evaluated in a sub-query/CTE the planner can commit
-   to a bitmap plan for BEFORE the RLS/tenant filter is applied as an outer
-   filter (e.g. `Asset.objects.filter(id__in=Subquery(...))` composed from
-   three separately-planned GIN lookups) — needs a `code-reviewer`-gated
-   change, not something to land from a QA pass.
-3. **Close the coverage gap this hunt exposed**: `apps/assets/tests/
-   test_perf_10k.py`'s perf assertions run on pytest-django's DB connection,
-   which (per that module's own docstring) is the OWNER/superuser role —
-   **RLS is bypassed for that entire test module**, so it structurally
-   cannot catch this exact regression class (an RLS-vs-planner interaction)
-   no matter how large its corpus gets. Recommend adding at least one
-   perf-gate test that goes through a *real* HTTP request as the RLS-subject
-   `cortex_app` role (e.g. via the Django test client against a
-   `LiveServerTestCase`, or an `EXPLAIN` assertion run through
-   `apps.tenancy.context.tenant_context` + the app role connection) so this
-   class of defect is caught in CI before the next M-milestone's perf gate,
-   not just at the M6 load-test finish line.
-4. Re-run this load suite once (2) lands to confirm list/search close under
-   target; the checkout/detail/dashboard results already meet target and
-   don't need re-verification unless the query shape there also changes.
+| Query / role | Plan | Exec time |
+|---|---|---|
+| owner, explicit `tenant_id=4` (no RLS), selective term "Jetson Orin" | **BitmapOr** over the 3 GIN/trgm indexes, tenant applied as heap filter | **~6 ms** |
+| `cortex_app` (RLS), same term, natural planner | **Parallel Seq Scan** (search predicate is a filter) | ~50 ms (20-core sandbox) |
+| `cortex_app` (RLS), same term, `enable_seqscan=off` | Bitmap Index Scan **on the tenant_id index** (returns all 50k rows), then post-filter — NOT the search GINs | ~141 ms (worse) |
+| `cortex_app` (RLS), **explicit** `tenant_id=4` regular qual *plus* the RLS qual | still **Seq Scan** | ~122 ms |
+| `cortex_app` (RLS), a **single** predicate `search_vector @@ q` (no OR) | still **Seq Scan** | (index still unusable) |
+
+The last two rows are the important refutations:
+
+- **Adding `tenant_id` to the query (or to the index) does not help** — the
+  barrier is created by the *security* qual, which is present regardless of
+  any additional regular qual. I built all three `btree_gin` composite indexes
+  `gin(tenant_id, search_vector)`, `gin(tenant_id, name gin_trgm_ops)`,
+  `gin(tenant_id, serial_number gin_trgm_ops)` and re-ran as `cortex_app`: the
+  planner used only their `tenant_id` prefix (equivalent to the plain tenant
+  index) and still post-filtered the search — **slower**, not faster. These
+  indexes were dropped; **no index migration is warranted.** (This corrects
+  the original note's "a `btree_gin`-backed composite `(tenant_id,
+  search_vector)` index" — one composite on `search_vector` alone can't even
+  be considered, because a `BitmapOr` needs *every* OR branch indexable in a
+  tenant-aware way; and even all three don't help, per above.)
+- **Query restructuring (Subquery / UNION of the OR branches) does not help
+  either** — a *single* non-OR search predicate already Seq Scans under RLS
+  (row above), so splitting the OR into three separately-planned single-
+  predicate scans just yields three Seq Scans. The original recommendation #2
+  (below) is a dead end for this reason; don't spend effort there.
+
+**The fix that actually works (verified mechanism, NOT shipped — needs an
+explicit tenant-isolation/security sign-off).** Mark the two operators
+leakproof so the planner may push them past the RLS barrier and back onto the
+GIN/trgm indexes:
+
+```sql
+ALTER FUNCTION ts_match_vq(tsvector, tsquery) LEAKPROOF;   -- FTS  @@
+ALTER FUNCTION similarity_op(text, text)      LEAKPROOF;   -- pg_trgm  %
+```
+
+This restores exactly the ~6 ms BitmapOr plan the owner already gets (the
+owner-with-explicit-tenant row above is that plan — the fix simply lets
+`cortex_app` reach it too). **Why it is not shipped from here:** it is a
+**cluster-global, superuser** change that widens the qual-evaluation ordering
+for *every* RLS table and tenant, so it is a deliberate R4 security-posture
+decision, not a routine index migration. The theoretical cost is a marginal
+side channel (these boolean operators could be evaluated on other tenants'
+rows before the RLS filter); they never emit row data and have no data-
+dependent error paths, so the practical leak risk is very low — Postgres core
+already marks many text/comparison operators `LEAKPROOF` on the same basis —
+but the call belongs to whoever owns tenant isolation, made consciously.
+When approved, ship it as a `migrations.RunSQL` (reverse:
+`ALTER FUNCTION ... NOT LEAKPROOF;`) in `apps/assets`, then delete the xfail
+marker on `test_rls_subject_uses_index_for_selective_term` (see next para) —
+its strict-xfail will otherwise turn the now-passing assertion into a hard CI
+failure, which is the intended prompt to remove it.
+
+**Coverage gap — now CLOSED.** The blind spot (the M1 perf gate's EXPLAINs run
+as the RLS-bypassing owner) is closed by
+`backend/apps/assets/tests/test_perf_rls_search_plan.py`: it seeds a ~12k +
+~4k two-tenant corpus, then runs the real search query's `EXPLAIN (ANALYZE)`
+through a raw **`cortex_app`** connection (with the tenant GUC set, and an
+assertion that the role is genuinely non-superuser/`NOBYPASSRLS`). A control
+test proves the owner uses the index at this scale; the RLS-subject test is a
+**strict `xfail`** asserting the RLS role uses the index — it currently xfails
+(documenting the defect) and will flip to a hard failure the moment the
+leakproof fix lands, forcing the marker's removal and converting it into a
+live regression guard.
+
+<details><summary>Original hand-off notes (superseded by the above)</summary>
+
+The original notes attributed the seq scan to "a genuine PostgreSQL 16 planner
+limitation specific to the interaction between RLS's `Result`/'One-Time
+Filter' wrapper node and choosing a `BitmapOr`-based child plan", and had
+tried `SET STATISTICS 500`, a single composite `(tenant_id, search_vector)`
+index, `random_page_cost = 1.1`, and the `(SELECT current_setting(...))`
+scalar-subquery RLS rewrite without effect. Those observations are consistent
+with the leakproof mechanism above (none of them changes operator
+leakproofness, so none could move the plan). Original recommendations:
+1. Land the `gthread` gunicorn change (tuning #1) — still valid, unrelated.
+2. Restructure `AssetSearchFilter` into a Subquery/CTE of the OR branches —
+   **refuted above** (single-predicate search already seq-scans under RLS).
+3. Add an RLS-subject perf test — **done** (see "Coverage gap" above).
+4. Re-run the suite once a fix lands — still the right final step.
+
+</details>
 
 ## Final numbers (30 concurrent, ~2 min per read run / 90s checkout run)
 
@@ -326,11 +378,16 @@ endpoint), `*_stats_history.csv` (time series).
   for list/search.
 - **"or documented gaps with the tuning applied"**: met. Two real,
   verified, kept tuning changes (gthread workers; representative multi-
-  tenant corpus) with before/after numbers; the remaining gap is
-  root-caused to a specific, reproducible Postgres RLS-vs-planner
-  interaction (not a vague "it's just slow"), with a concrete recommendation
-  and a named coverage gap in the existing perf-gate test suite that let it
-  ship unnoticed through M1-M5.
+  tenant corpus) with before/after numbers; the remaining gap is now
+  **root-caused to the exact mechanism** (RLS security-barrier + non-
+  leakproof `@@`/`%` operators — see §3, refined by the db-migration-
+  specialist follow-up with EXPLAIN evidence, refuting the composite-index
+  and query-restructure fixes and identifying the `LEAKPROOF` fix that works),
+  and the perf-gate coverage gap that let it ship unnoticed through M1-M5 is
+  **CLOSED** by `backend/apps/assets/tests/test_perf_rls_search_plan.py` (an
+  RLS-subject `cortex_app` EXPLAIN test with a strict-xfail regression
+  tripwire). The `LEAKPROOF` fix itself is a conscious R4 security decision
+  and is left for explicit sign-off rather than shipped from this pass.
 - Explicitly **not** re-litigated here (already proven elsewhere, out of
   this task's scope): F1 RBAC scope, F4 exclusion-constraint correctness,
   F8 audit-log immutability, F3 stock-ledger reconciliation — T6.6 is
