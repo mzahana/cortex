@@ -1,5 +1,11 @@
 # Deployment — Synology DS220+ + Cloudflare Tunnel
 
+> **Design-level overview.** This document covers topology, rationale, and
+> the hardening checklist. For the precise, copy-pasteable, numbered
+> operator steps (Cloudflare dashboard clicks, DNS record templates,
+> Container Manager shared-folder layout, first-bring-up commands,
+> verification checklist), see **`docs/deployment-runbook.md`** (T6.4).
+
 > **RAM note.** The prompt body states the DS220+ has **6 GB** (its maximum);
 > deliverable #7 said "2 GB". The DS220+ ships with 2 GB and is expandable to 6 GB.
 > We target **6 GB** and show the footprint also fits well under it. If the unit is
@@ -65,10 +71,16 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
    reference) to `docker/cortex`.
 4. In Container Manager → **Project → Create**, point at the `docker-compose.yml`,
    set the env-file path. Container Manager parses compose and manages the stack.
-5. **Start** the project. Run initial `manage.py migrate` and
-   `createsuperuser`/seed via a one-off exec into `web`.
+5. **Start** the project. `migrate` runs automatically as a one-off
+   dependency of `web`/`worker`/`beat` (see `docker-compose.yml`'s
+   `migrate` service); create the first tenant + admin user via a one-off
+   exec into `web`.
 6. **Enable auto-restart** (`restart: unless-stopped`) so the stack survives reboots.
 7. Schedule **DSM Task Scheduler** jobs for backups (see §5).
+
+> **Step-by-step version:** see `docs/deployment-runbook.md` §3 for the
+> exact shared-folder layout, `.env` path, and first-bring-up command
+> sequence (including the tenant/admin-creation snippet).
 
 ## 3. Cloudflare Tunnel (recommended exposure)
 
@@ -99,6 +111,14 @@ Tunnel wins on security **and** maintenance for a home/lab NAS.
    a **secure context** → `getUserMedia` works → **camera QR scan and photo
    capture function on phones** with no extra cert work. (This is the entire reason
    the mobile flow "just works.")
+
+> **Step-by-step version (T6.4):** see `docs/deployment-runbook.md` §1 for
+> exact dashboard click-paths (tunnel creation, public hostname route, TLS/
+> HSTS/Bot Fight settings, and the `/api/v1/auth/login` rate-limit rule),
+> `docker/cloudflared/README.md` for why this project uses the token-based
+> tunnel pattern with **no local `config.yml`**, and
+> `docs/deployment-runbook.md` §2 for the Brevo SPF/DKIM/DMARC record
+> templates (F9 deliverability).
 
 ## 4. Optional Cloudflare Access (edge auth)
 
@@ -191,7 +211,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 | Item | Status | Evidence |
 |---|---|---|
-| Cloudflare Full(strict) TLS, HSTS, Always-HTTPS, WAF/Bot Fight, login rate-limit | **Deferred — T6.4** | Requires the real Cloudflare account/tunnel/hostname (T6.4, not yet dispatched); this task does not touch `docker/cloudflared/*` or DNS per its scope. `SECURE_HSTS_*`/`SECURE_SSL_REDIRECT` are already wired app-side (`config/settings/prod.py`) and nginx duplicates HSTS as defense-in-depth (see below) so the app is ready the moment T6.4 lands the edge config. |
+| Cloudflare Full(strict) TLS, HSTS, Always-HTTPS, WAF/Bot Fight, login rate-limit | **Documented — T6.4; execution pending real account** | T6.4 produced the exact dashboard runbook (`docs/deployment-runbook.md` §1) and confirmed the token-based `cloudflared` wiring needs no local config file. Actually clicking these settings requires the operator's real Cloudflare account/domain/tunnel (no such account exists in this sandbox) — the runbook hands off precise, copy-pasteable steps for that. `SECURE_HSTS_*`/`SECURE_SSL_REDIRECT` are already wired app-side (`config/settings/prod.py`) and nginx duplicates HSTS as defense-in-depth (see below) so the app is ready the moment the operator executes the runbook. |
 | DRF throttling | **Satisfied** (pre-existing) | `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` in `backend/config/settings/base.py`: `anon 100/min`, `user 1000/min`, dedicated `login 10/min`. |
 | Account lockout/backoff on failed logins | **Satisfied** (pre-existing, T0.6) | Login endpoint's `ScopedRateThrottle` (`login` scope above). |
 | Argon2 hashing | **Satisfied** (pre-existing) | `AUTH_PASSWORD_HASHERS[0] = Argon2PasswordHasher` in `base.py`. |
