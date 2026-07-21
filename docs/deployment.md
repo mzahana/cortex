@@ -39,6 +39,16 @@ folded into `worker` (`celery -B`) to shave another container if desired.
 `web` and `worker` share **one built image** (different command) → one build, less
 disk. All app config via **environment** (12-factor); no host assumptions.
 
+`docker-compose.yml` alone is already written prod-shape (pinned digests,
+these `mem_limit`s, `restart: unless-stopped`, nginx security headers). A
+**`docker-compose.prod.yml`** overlay (T6.3) layers on top for the real deploy —
+forces `DJANGO_SETTINGS_MODULE=config.settings.prod` as defense-in-depth and
+makes the gunicorn worker count explicit (`GUNICORN_WORKERS`, default 2, see §9):
+
+```
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
 ### Volumes
 - `pgdata` → Postgres data (on a Synology shared folder).
 - `media` → asset photos + generated label PDFs (mounted into `web`, `worker`,
@@ -149,3 +159,106 @@ Still runnable but tight: drop `beat` into `worker` (`-B`), Gunicorn workers →
 Celery concurrency → 1, Redis `maxmemory 128mb`, Postgres `shared_buffers 128MB`,
 disable dashboard caching. Expect slower dashboards and less headroom for imports.
 **Recommendation: upgrade to 6 GB** — it's cheap and removes the constraint.
+
+## 9. Production hardening pass (T6.3) — verification record
+
+`docker-compose.yml` was already written prod-shape from earlier milestones
+(pinned digests, mem_limits matching §1's table, `restart: unless-stopped`,
+`web`/`worker` sharing one image, `beat` as its own service, nginx headers from
+M1's attachment-hardening work). T6.3 added **`docker-compose.prod.yml`**, a thin
+overlay that:
+
+- Forces `DJANGO_SETTINGS_MODULE=config.settings.prod` on `migrate`/`web`/
+  `worker`/`beat` as defense-in-depth (belt-and-braces alongside `.env.example`
+  already defaulting to `config.settings.prod`), so a missing/misconfigured
+  `.env` value can never silently fall back to `config.settings.dev`'s relaxed
+  `DEBUG`/cookie/SSL-redirect defaults.
+- Makes the gunicorn worker count explicit via `GUNICORN_WORKERS` (default `2`,
+  within the documented 2-3 range; see the memory arithmetic below for why `3`
+  needs the RAM-upgraded 6 GB path, not the 2 GB fallback), and pins Celery
+  worker concurrency to `2` on the same command line as a single source of
+  truth for the prod invocation (the base file already set both to these
+  values — this just makes the prod command explicit and independently
+  reviewable).
+
+**Usage:**
+```
+docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+### §7 checklist — verified item by item
+
+| Item | Status | Evidence |
+|---|---|---|
+| Cloudflare Full(strict) TLS, HSTS, Always-HTTPS, WAF/Bot Fight, login rate-limit | **Deferred — T6.4** | Requires the real Cloudflare account/tunnel/hostname (T6.4, not yet dispatched); this task does not touch `docker/cloudflared/*` or DNS per its scope. `SECURE_HSTS_*`/`SECURE_SSL_REDIRECT` are already wired app-side (`config/settings/prod.py`) and nginx duplicates HSTS as defense-in-depth (see below) so the app is ready the moment T6.4 lands the edge config. |
+| DRF throttling | **Satisfied** (pre-existing) | `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` in `backend/config/settings/base.py`: `anon 100/min`, `user 1000/min`, dedicated `login 10/min`. |
+| Account lockout/backoff on failed logins | **Satisfied** (pre-existing, T0.6) | Login endpoint's `ScopedRateThrottle` (`login` scope above). |
+| Argon2 hashing | **Satisfied** (pre-existing) | `AUTH_PASSWORD_HASHERS[0] = Argon2PasswordHasher` in `base.py`. |
+| Secure/HttpOnly/SameSite cookies | **Satisfied** — verified live | `config/settings/prod.py` sets `SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = True`, `SameSite=Lax`; `SESSION_COOKIE_HTTPONLY = True` in `base.py`. Confirmed on a running prod-profile stack: `curl -I .../django-admin/login/` returned `Set-Cookie: cortex_csrftoken=...; SameSite=Lax; Secure`. |
+| CSP + security headers at nginx | **Satisfied** — verified live | `docker/nginx/default.conf` sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Content-Security-Policy`, `Strict-Transport-Security` on every response (global `server` block + a `/media/` location repeat, since nginx doesn't inherit `add_header` once a location block defines its own). Confirmed via `curl -I` against a running prod-profile stack — see verification log below. |
+| Media forces download, own strict CSP | **Satisfied** (pre-existing, M1) | `/media/` location: `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`. Verified live (404 case still carries the headers, confirming they're set unconditionally, not only on success). |
+| Least-privilege RBAC + tenant isolation + RLS backstop | **Satisfied** (pre-existing, M0/T0.5+) | `cortex_app` is a non-superuser NOBYPASSRLS role; `web`/`worker`/`beat` connect as it at runtime (`APP_DATABASE_URL`), never as the migration owner. Out of scope to re-verify here (M0-M5 already prove this per-endpoint); this task only confirmed the compose wiring is unchanged. |
+| No inbound router ports; DSM not exposed via tunnel | **Satisfied** (pre-existing) | `docker-compose.yml`: only `cloudflared` has any outbound path; `nginx`/`web`/`worker`/`postgres`/`redis` have no `ports:` mapping (`expose:`/none only) in either the base file or the prod overlay — confirmed by reading both files; no host port is ever published, so the "no inbound router ports" property holds by construction. DSM Container Manager itself is a separate DSM-native process never touched by these files. |
+| Regular image updates; pinned base image digests; minimal Alpine images | **Satisfied** — verified | Every image in `docker-compose.yml` is `@sha256:...`-pinned: `python:3.12-alpine3.20` (Dockerfile), `postgres:16-alpine`, `redis:7-alpine`, `nginx:1.27-alpine`, `cloudflare/cloudflared:2026.7.2`. The prod overlay introduces no new images. "Regular updates" is a process, not a one-time file check — recorded here as a reminder to re-pin digests periodically, not something this task can "complete" once. |
+| Audit log monitored; email failure log reviewed | **Deferred — operational, post-M6** | These are ongoing operational practices (M5 already built the audit log and email-failure logging plumbing); monitoring cadence is for the operator runbook (T6.4), not a compose/nginx change. |
+| `DEBUG=false` in production | **Satisfied** — verified live | `config/settings/prod.py` hardcodes `DEBUG = False` (not env-toggleable, so it can't be accidentally left on). Verified live: an unmatched API URL under the prod-profile stack returned a generic production 404 page (no traceback/URL-pattern listing that `DEBUG=True` would show); `manage.py check --deploy` run *inside* the running `web` container came back clean. |
+| `manage.py check --deploy` clean | **Satisfied** — verified live + CI | Ran inside the live prod-profile `web` container: `System check identified 1 issue (1 silenced)` — the one issue (`security.W008`, `SECURE_SSL_REDIRECT` not True) is a **local-verification-only** artifact: this sandbox has no Cloudflare edge to terminate TLS, so `SECURE_SSL_REDIRECT` was deliberately overridden to `false` for this test run only (not part of `docker-compose.prod.yml`) to avoid a 301-redirect loop over plain HTTP. With the real `.env` (no override), `SECURE_SSL_REDIRECT` defaults `True` and the check is fully clean — already asserted every CI run (`.github/workflows/ci.yml`'s `manage.py check --deploy (prod settings)` step). |
+| mem_limits within 6 GB budget (§1) | **Satisfied** — verified live | See arithmetic below; live `docker stats` on the up prod-profile stack showed every service well under its `mem_limit` at idle. |
+
+### Memory-budget arithmetic (vs the 6 GB DS220+ target)
+
+| Service | `mem_limit` | Observed idle RSS (this run) |
+|---|---|---|
+| postgres | 1024 MB | 42 MB |
+| redis | 320 MB | 5 MB |
+| web (gunicorn, 2 workers) | 768 MB | 191 MB |
+| worker (celery, concurrency 2) | 768 MB | 157 MB |
+| beat | 192 MB | 89 MB |
+| nginx | 96 MB | 4 MB |
+| cloudflared | 96 MB | n/a (no real token in this sandbox) |
+| **Total limits** | **3264 MB (~3.19 GB)** | |
+
+3264 MB of `mem_limit`s leaves **~2.8 GB** of headroom under the 6 GB target for
+DSM's own OS/services and Linux page cache — matches the ~3.25 GB figure already
+in §1 (the 14 MB difference is rounding: 1024+320+768+768+192+96+96 = 3264 MB
+exactly). Idle RSS is a fraction of the limits (as expected — limits are worst-case
+caps, not steady-state usage), confirming there's no immediate pressure even
+before accounting for the gap. `GUNICORN_WORKERS=3` would add roughly one more
+gunicorn worker process (~60-90 MB observed per worker here) on top of `web`'s
+768 MB limit — bump `web`'s `mem_limit` to ~896 MB if that's used, which still
+fits (3264 - 768 + 896 = 3392 MB, still <3.5 GB). Left at the default of 2 for
+the checked-in overlay since it already satisfies the documented 2-3 range and
+keeps the budget exactly matching §1's table.
+
+The 2 GB fallback (§8) is unaffected by this task — no change here alters those
+already-documented fallback values (Gunicorn → 2 workers, Celery concurrency →
+1, Redis 128 MB, Postgres `shared_buffers 128MB`, `beat` folded into `worker`).
+
+### Verification log (commands actually run)
+
+```
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+    --env-file <local-only .env with DJANGO_SETTINGS_MODULE=config.settings.prod> \
+    -p cortex-prodtest up -d
+# all 7 services reported healthy except cloudflared (expected: no real
+# TUNNEL_TOKEN in this sandbox; restart-loops per `restart: unless-stopped`,
+# does not affect the other six)
+
+$ curl -I http://nginx/                      # 200, all 6 security headers present
+$ curl -I http://nginx/api/v1/                # 403 RFC-7807 JSON (unauthenticated), headers present
+$ curl    http://nginx/api/v1/does-not-exist-xyz/   # generic prod 404 HTML, no traceback
+$ curl -I http://nginx/media/nonexistent.txt   # 404 but still carries Content-Disposition:
+                                                # attachment + its own strict CSP
+$ curl -I http://nginx/django-admin/login/     # 200, Set-Cookie: ...; SameSite=Lax; Secure
+
+$ docker compose ... exec -T web python manage.py check --deploy
+# 1 issue: security.W008 (SECURE_SSL_REDIRECT), explained above as a
+# local-test-only artifact; clean in CI and in a real deploy
+
+$ docker stats --no-stream ...
+# all services well under their mem_limit at idle (table above)
+
+$ docker compose -f docker-compose.yml -f docker-compose.prod.yml -p cortex-prodtest down -v
+```
