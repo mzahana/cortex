@@ -18,6 +18,8 @@ from apps.assets.api import AssetResolveView, AssetViewSet
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
 from apps.dashboard.api import DashboardSummaryView
+from apps.jobs.api import JobRetrieveView
+from apps.labels.api import LabelGenerateView
 from apps.notifications.api import NotificationPrefViewSet
 from apps.rbac.api import MembershipViewSet
 from apps.reservations.api import ReservationViewSet
@@ -74,6 +76,14 @@ urlpatterns = [
     # it's a single non-CRUD lookup keyed by `qr_token`, not `assets/{id}`,
     # same reasoning as `dashboard/summary` above).
     path("api/v1/resolve/<str:qr_token>", AssetResolveView.as_view(), name="asset-resolve"),
+    # T4.5: label PDF generation + the generic job-polling endpoint it's the
+    # first consumer of. Plain `path()`s (not router-registered) — neither is
+    # a CRUD resource collection: `labels/generate` is a single write action,
+    # `jobs/{id}` is a single-id read keyed by a UUID that isn't a `Job`
+    # ModelViewSet's `list`/`create` route, same reasoning as `resolve/` and
+    # `dashboard/summary` above.
+    path("api/v1/labels/generate", LabelGenerateView.as_view(), name="label-generate"),
+    path("api/v1/jobs/<uuid:job_id>", JobRetrieveView.as_view(), name="job-detail"),
     path("api/v1/", include(router.urls)),
     path("api/v1/", include(checkout_router.urls)),
 ]

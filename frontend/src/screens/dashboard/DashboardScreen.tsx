@@ -14,7 +14,7 @@ import {
 } from "@mantine/core";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { hasAuditViewPermission } from "../../api/permissions";
+import { LABEL_GENERATE, hasAnyAssetPermission, hasAuditViewPermission } from "../../api/permissions";
 import { DashboardTiles, DashboardTilesError, DashboardTilesSkeleton } from "./DashboardTiles";
 import { useDashboardSummary } from "./useDashboardSummary";
 
@@ -144,6 +144,18 @@ export function DashboardScreen() {
           >
             My Items
           </Button>
+
+          {hasAnyAssetPermission(me, LABEL_GENERATE) && (
+            <Button
+              size="lg"
+              fullWidth
+              variant="light"
+              onClick={() => navigate("/labels")}
+              data-testid="nav-labels"
+            >
+              Print Labels
+            </Button>
+          )}
 
           <Group grow>
             <Button

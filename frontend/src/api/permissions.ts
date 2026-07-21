@@ -62,6 +62,16 @@ export const RESERVATION_APPROVE = "reservation.approve";
 export const CHECKOUT_MANAGE = "checkout.manage";
 export const CHECKOUT_OVERRIDE = "checkout.override";
 
+// `docs/rbac.md` §3 label action key (T4.5: Labels screen gating). Labels
+// are project-scoped through each requested asset's own `project`
+// (`apps.labels.permissions`/`apps.labels.api` — Admin tenant-wide,
+// ProjectLead within their own project's assets only) — same scope
+// resolution as asset/stock/reservation/checkout actions, so
+// `hasAssetPermission`/`hasAnyAssetPermission` are reused directly (not
+// re-implemented) both for the entry-point gate (any asset picked) and for
+// per-asset selection gating in the picker.
+export const LABEL_GENERATE = "label.generate";
+
 // `docs/rbac.md` §3 audit/notification action keys (T5.6: Audit Log + My
 // Notifications screen gating). `audit.view` is tenant-wide-only for the
 // purpose of the nav-link gate below — a pure ProjectLead's grant IS
