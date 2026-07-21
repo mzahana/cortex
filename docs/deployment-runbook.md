@@ -15,8 +15,9 @@ DSM and a domain you control in Cloudflare.
 - `<TUNNEL_TOKEN>`, `<SECRET_KEY>`, `<DB password>`, etc. — generate/copy
   real secrets per the instructions inline; never commit them.
 
-This task (T6.4) does **not** cover backups/restore (T6.5, next) or the load
-test (T6.6) — those are separate runbooks/artifacts.
+This task (T6.4) does not cover backups/restore — see **§5 (T6.5)** for the
+backup script, DSM Task Scheduler wiring, and the executed restore drill —
+or the load test (T6.6, a separate artifact under `tests/load/*`).
 
 ---
 
@@ -415,11 +416,242 @@ Run through all of these after §1-3 are complete:
 
 ---
 
-## 5. Cross-references
+## 5. Backups & restore (T6.5)
+
+Design-level rationale: `docs/deployment.md` §5. This section is the
+step-by-step operator wiring plus a **proven restore drill** (R7) — every
+command below was actually run against a throwaway local stack as part of
+authoring this task; see §5d for the exact transcript and what it verified.
+
+### 5a. The backup script
+
+`docker/backup/backup.sh` is what DSM Task Scheduler invokes nightly. It:
+
+1. Runs `pg_dump` **inside** the running `postgres` container (`docker
+   compose exec postgres pg_dump ...`) — no client tools need to be
+   installed on the NAS host itself, since the `postgres:16-alpine` image
+   already ships `pg_dump`/`pg_restore`.
+2. Uses **custom format** (`pg_dump -Fc`), not plain SQL. Custom format is
+   compressed, and — the reason that matters here — `pg_restore` against a
+   `-Fc` dump supports `--clean --if-exists` (drop-and-recreate existing
+   objects before restoring, so a restore into an already-migrated fresh
+   `postgres` — the normal case, since `docker-compose.yml`'s `migrate`
+   one-off always runs before `web`/`worker`/`beat` start — doesn't collide
+   with the schema `migrate` just created) and `-j` parallel restore.
+   Plain SQL (`-Fp`, `psql < dump.sql`) would be simpler to eyeball/grep but
+   loses both properties and is slower to restore once the DB has any real
+   volume of data — not worth the tradeoff since `pg_restore` is already
+   sitting in the same image at zero extra cost.
+3. Copies the dump out of the container to a host-side `backups/daily/`
+   directory (`docker compose cp`), so it survives independently of the
+   `postgres` container/volume — this is the file Hyper Backup/offsite
+   copies actually protect.
+4. On Sundays, additionally copies that day's daily dump into
+   `backups/weekly/`.
+5. Rotates: keeps the newest **7 daily** + newest **4 weekly** dumps
+   (`KEEP_DAILY`/`KEEP_WEEKLY`, overridable), deleting older ones by
+   modification time — simple to audit, no date-arithmetic edge cases.
+6. Logs every run to `backups/logs/backup-<timestamp>.log`; no interactive
+   prompts; non-zero exit on any failure (missing `.env`, `postgres` not
+   running, `pg_dump` failure, empty/missing dump after copy) so a cron
+   failure is visible in Task Scheduler's own run history/exit-code column.
+
+**DSM Task Scheduler wiring:**
+
+1. **Control Panel → Task Scheduler → Create → Scheduled Task → User-defined
+   script.**
+2. **General:** Task name `cortex-nightly-backup`; User: `root` (needed to
+   run `docker`/`docker compose` — Container Manager's Docker socket is
+   root-owned by default on DSM).
+3. **Schedule:** Daily, e.g. **02:30** (after normal usage hours, before any
+   other nightly maintenance window you run).
+4. **Task Settings → Run command:**
+   ```bash
+   cd /volume1/docker/cortex && \
+     PROJECT_DIR=/volume1/docker/cortex \
+     BACKUP_DIR=/volume1/docker/cortex/backups \
+     COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml" \
+     ENV_FILE=/volume1/docker/cortex/.env \
+     bash docker/backup/backup.sh >> /volume1/docker/cortex/backups/logs/cron.log 2>&1
+   ```
+   (Working directory: the compose project root from §3a; matches
+   `PROJECT_DIR`. Logs: `backup.sh` already writes its own per-run log file
+   under `backups/logs/`; the `>>` above additionally captures anything
+   printed directly to stdout/stderr by the wrapper invocation itself, e.g.
+   a hard failure before the script's own logging starts.)
+5. Save. **Run once manually** (task's own "Run" button) to confirm a
+   `backups/daily/cortex-<timestamp>.dump` file appears and the task's exit
+   code is `0` before trusting the schedule.
+
+### 5b. Media — Hyper Backup
+
+The `media` named volume (asset photos, generated label PDFs) is **not** a
+bind-mounted host path by default (`docker-compose.yml`'s `volumes: media:`
+is engine-managed, living under
+`/volume1/@docker/volumes/cortex_media/_data` per §3a). Two options, in
+order of operator-friendliness:
+
+- **Recommended:** rebind `media` to an explicit host path so Hyper Backup
+  can point at it directly, e.g. add `device:
+  /volume1/docker/cortex/media-data` under a `driver_opts: type: none, o:
+  bind` block for the `media` volume in a small local compose override (not
+  `docker-compose.prod.yml` — a separate, NAS-only override kept outside git
+  alongside `.env`), then point Hyper Backup at
+  `/volume1/docker/cortex/media-data` as a normal shared-folder backup task
+  target (Hyper Backup → **Backup Task → File Server/Shared Folder →**
+  select the folder, destination = external USB and/or a cloud/B2 target
+  per `docs/deployment.md` §5's tier-2 note).
+- **Simpler, no compose change:** Hyper Backup can also target Docker's own
+  volume path directly (`/volume1/@docker/volumes/cortex_media/_data`) if
+  Container Manager's storage location is the default `@docker` system
+  share — check **Control Panel → Shared Folder** for whether `@docker` is
+  visible/selectable in Hyper Backup's folder picker (some DSM versions hide
+  `@`-prefixed system shares from Hyper Backup's UI, in which case use the
+  rebind option above instead).
+
+Either way: **schedule Hyper Backup nightly**, after the `cortex-nightly-backup`
+Task Scheduler job above (e.g. 03:00), so a given night's Hyper Backup run
+also happens to pick up that night's fresh `pg_dump` file if the DB dump
+directory (`/volume1/docker/cortex/backups`) is included in the same or a
+second Hyper Backup task alongside media.
+
+### 5c. `.env`/compose — encrypted offsite copy
+
+`.env` contains every secret this stack has (`SECRET_KEY`, DB passwords,
+`BREVO_API_KEY`, `TUNNEL_TOKEN`) — it must never leave the NAS unencrypted.
+Simplest, lowest-maintenance option (no new crypto tooling introduced):
+
+1. **DSM's own encrypted shared folder:** Control Panel → Shared Folder →
+   Create → enable **Encryption** (DSM manages the AES key; you set/store
+   the encryption key/password yourself, e.g. in a password manager — DSM
+   can also save the key to a keystore file you back up separately). Copy
+   `.env` + `docker-compose.yml` + `docker-compose.prod.yml` into that
+   encrypted folder on a schedule (a second tiny Task Scheduler job, or
+   simply re-copy by hand after any `.env` change — this file changes
+   rarely). Hyper Backup can then back up *that* encrypted shared folder
+   offsite exactly like any other, without ever exposing plaintext secrets
+   to the offsite target.
+2. **Alternative (no DSM encrypted-folder feature, or want portability
+   independent of DSM): `age`** (already a static single-binary tool, no
+   new crypto invented here — just referenced): encrypt with the operator's
+   own recipient key before copying offsite:
+   ```bash
+   age -r <operator's-age-public-key> -o env-backup.age .env
+   ```
+   Store `env-backup.age` wherever the offsite copy goes; decrypt only when
+   actually restoring (`age -d -i <private-key-file> env-backup.age >
+   .env`). Never commit the private key, and never place it in the same
+   offsite location as the encrypted file.
+
+### 5d. Restore drill — executed and verified (R7)
+
+This was actually run end-to-end locally (not just designed) as part of
+this task. Commands below are the **real** ones that worked, run from the
+repo root with a throwaway drill `.env` (copied from `.env.example`, only
+`DJANGO_SETTINGS_MODULE` changed to `config.settings.dev` to avoid fighting
+HTTPS-redirect/HSTS settings that need a real Cloudflare edge — irrelevant
+to the backup/restore mechanics being verified):
+
+```bash
+# 1. Bring up a throwaway "source" stack and seed it with real data: a
+#    tenant, an admin user (Admin role), an asset, an attachment (a real
+#    file through apps.assets.services.save_attachment_file), and a label
+#    PDF (through the real apps.labels.tasks.generate_label_pdf task) — via
+#    `manage.py shell` snippets using tenant_context(...), the same
+#    prod-safe pattern §3c's tenant/admin creation uses (NOT the dev-only
+#    `seed_t0_6` management command).
+docker compose -p cortex-drill-src --env-file <drill>.env build
+docker compose -p cortex-drill-src --env-file <drill>.env up -d \
+  postgres redis migrate web worker
+# ... seed via `docker compose ... exec -T web python manage.py shell` ...
+
+# 2. Confirm real files are on the media volume before backing up:
+docker compose -p cortex-drill-src --env-file <drill>.env exec -T web \
+  sh -c "find /app/media -type f -exec sha256sum {} \;"
+#   -> attachments/1/1/..._drill-photo.jpg
+#   -> labels/1/<job-uuid>.pdf
+
+# 3. Run the real backup script against the running stack:
+PROJECT_DIR=$(pwd) BACKUP_DIR=<drill>/backups \
+  COMPOSE_FILES="-f docker-compose.yml" COMPOSE_PROJECT_NAME=cortex-drill-src \
+  ENV_FILE=<drill>.env bash docker/backup/backup.sh
+# -> backups/daily/cortex-<timestamp>.dump written (custom format, ~188 KB
+#    for this tiny drill dataset), exit code 0.
+
+# 4. Grab the media volume's contents the way Hyper Backup would (a plain
+#    tar of the named volume, via a throwaway alpine container mounting it
+#    read-only alongside the host backup dir):
+docker run --rm -v cortex-drill-src_media:/media -v <drill>:/backup alpine \
+  sh -c "cd /media && tar czf /backup/media-<date>.tar.gz ."
+
+# 5. Tear the stack down COMPLETELY, including volumes (simulates total
+#    data loss — the actual disaster this drill proves recovery from):
+docker compose -p cortex-drill-src --env-file <drill>.env down -v
+
+# 6. Bring up a BRAND NEW stack (different project name, fresh volumes;
+#    `migrate` runs and creates an empty-but-migrated schema):
+docker compose -p cortex-drill-restore --env-file <drill>.env up -d \
+  postgres redis migrate
+
+# 7. Restore the dump. Because `migrate` already created the schema/RLS
+#    policies on the fresh DB, `--clean --if-exists` is required so
+#    pg_restore drops those empty objects before recreating them from the
+#    dump (confirms the -Fc format choice above was the right call):
+docker compose -p cortex-drill-restore --env-file <drill>.env cp \
+  backups/daily/cortex-<timestamp>.dump postgres:/tmp/restore.dump
+docker compose -p cortex-drill-restore --env-file <drill>.env exec -T postgres \
+  pg_restore -U cortex -d cortex --clean --if-exists --no-owner -v /tmp/restore.dump
+
+# 8. Restore media into the fresh (empty) media volume:
+docker run --rm -v cortex-drill-restore_media:/media -v <drill>:/backup alpine \
+  sh -c "cd /media && tar xzf /backup/media-<date>.tar.gz"
+
+# 9. Bring the app up and verify:
+docker compose -p cortex-drill-restore --env-file <drill>.env up -d web worker nginx
+```
+
+**Verification — all passed:**
+
+- `psql` query against the restored DB confirmed the exact same tenant
+  (`drill-lab`), admin user, asset, attachment row, and succeeded label job
+  row were all present with their original field values.
+- Logged in as the same admin (`POST /api/v1/auth/login` with the tenant
+  slug/email/password from step 1, via Django's test `Client` inside
+  `manage.py shell` against the restored stack) — **200**, session
+  established; `GET /api/v1/me` — **200**, same email; `GET /api/v1/assets/`
+  — **200**, `["Drill Drone Alpha"]` (RLS/tenant-scoping intact post-restore,
+  not just raw rows present).
+- The attachment and the label PDF both **downloaded correctly through
+  nginx** at their `/media/{storage_key}` paths (the same path shape the
+  frontend uses — `apps.jobs.serializers.JobSerializer.get_download_url`,
+  `AssetDetailScreen`) — **HTTP 200** for both, and `sha256sum` of the
+  downloaded bytes on the restored stack **exactly matched** the pre-backup
+  checksums taken in step 2 (byte-for-byte, not just "a file exists").
+
+This confirms the whole chain — `pg_dump` → rotation → `pg_restore --clean
+--if-exists` into an already-migrated fresh DB, plus a plain tar/untar of
+the media volume — actually recovers a working, logged-in-able, RLS-correct
+stack with intact binary attachments, not just a documented-but-unverified
+procedure.
+
+**One thing to note if you re-run this drill:** `docker-compose.yml`'s
+`env_file: [.env]` on `web`/`worker`/`beat`/`migrate` resolves relative to
+the **compose project directory** (wherever `docker-compose.yml` itself
+lives — normally the repo root), not to whatever `--env-file` you pass on
+the `docker compose` command line. `--env-file` only controls `${VAR}`
+interpolation *within* the compose YAML (e.g. `POSTGRES_DB: ${POSTGRES_DB}`)
+— it does not redirect the `env_file:` a service reads at container
+runtime. For an isolated drill, either point `docker-compose.yml`'s
+`env_file:` at your drill file (temporary local edit, not committed), or —
+simpler, and what was actually done above — keep a real `.env` at the repo
+root with matching throwaway values so both paths agree.
+
+---
+
+## 6. Cross-references
 
 - Design-level topology, memory budget, and the full §7 hardening checklist
   with verification status: `docs/deployment.md`.
-- Backup/restore drill: forthcoming in T6.5 (`docs/deployment-runbook.md`
-  will gain backup/restore sections at that point — not yet present as of
-  this task).
+- Backup script + DSM Task Scheduler wiring, Hyper Backup media path,
+  encrypted `.env` offsite copy, and the executed restore drill: §5 above.
 - Load test against the deployed stack: T6.6 (`tests/load/*`).

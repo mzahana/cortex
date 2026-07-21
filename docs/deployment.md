@@ -146,6 +146,14 @@ You chose **app login only** for MVP. Access is documented as a **toggle**:
   PITR; media backups stay as above (or move to object storage with lifecycle
   rules).
 
+> **Step-by-step version + executed restore drill (T6.5):** see
+> `docs/deployment-runbook.md` §5 for the exact DSM Task Scheduler wiring,
+> Hyper Backup media-folder path, encrypted `.env` offsite process, and a
+> **proven, actually-run** restore drill (commands + verification transcript,
+> not just the design above). The backup script itself is
+> `docker/backup/backup.sh` — cron-invocable, runs `pg_dump -Fc` inside the
+> `postgres` container, rotates 7 daily + 4 weekly.
+
 ## 6. Secrets & environment
 
 - All secrets in the mounted `.env` (never in image/git): `SECRET_KEY`,
