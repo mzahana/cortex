@@ -146,6 +146,35 @@ class AssetSearchFilter(BaseFilterBackend):
         return matched.order_by("-rank", "-created_at")
 
 
+def visible_assets_queryset(request, permission_key: str):
+    """Shared "which assets can this request see, as a filterable LIST" base
+    queryset: retired-hiding + RBAC row-scope, reused by `AssetViewSet.
+    get_queryset` (`list`, `ASSET_VIEW`) and `apps.imports.exports.
+    AssetExportView` (`ASSET_EXPORT`) — T6.1's task instructions require the
+    export endpoint to "honor the same filters... reuse the existing filter/
+    queryset logic... don't duplicate it". Factored out here (not just left
+    inline in `AssetViewSet.get_queryset`) so the two endpoints' definition
+    of "which assets are visible" can never drift apart.
+
+    Retired-hiding (docs/data-model.md §4: "retire hides from default lists
+    but retains the row") and the docs/rbac.md §1 union-of-memberships row
+    scope (`get_viewable_project_scope`) are identical regardless of WHICH
+    permission key is being checked — only the key itself differs between
+    `asset.view` (the asset list) and `asset.export` (the CSV export).
+    """
+    qs = _asset_detail_queryset().order_by("-created_at")
+
+    include_retired = request.query_params.get("include_retired", "").lower() == "true"
+    status_param = request.query_params.get("status")
+    if not include_retired and status_param != Asset.Status.RETIRED:
+        qs = qs.exclude(status=Asset.Status.RETIRED)
+
+    tenant_wide, project_ids = get_viewable_project_scope(request.user, permission_key)
+    if not tenant_wide:
+        qs = qs.filter(project_id__in=project_ids) if project_ids else qs.none()
+    return qs
+
+
 def _asset_detail_queryset():
     """Tenant-scoped (`Asset.objects...`, never `all_objects`) base queryset
     for a single-asset detail read, shared by `AssetViewSet.get_queryset`
@@ -226,32 +255,20 @@ class AssetViewSet(
         # `?search=` term is present and no `?ordering=` was given;
         # `OrderingFilter` overrides it whenever `?ordering=` IS given; absent
         # both, this order stands untouched all the way to the response.
-        qs = _asset_detail_queryset().order_by("-created_at")
         if self.action == "list":
-            # Retired assets are hidden from the default list (docs/data-model.md
-            # §4: "retire hides from default lists but retains the row") — but
-            # a caller that explicitly asks for them (`?include_retired=true`
-            # or `?status=retired`) still gets them; `retrieve`/`retire`/
-            # `attachments` (detail routes) are NEVER filtered here, so a
+            # Retired-hiding + RBAC row-scope (docs/rbac.md §1, T1.4) — see
+            # `visible_assets_queryset`'s own docstring; `retrieve`/`retire`/
+            # `attachments` (detail routes) are NEVER filtered this way, so a
             # retired asset stays fetchable by id regardless.
-            include_retired = self.request.query_params.get("include_retired", "").lower() == "true"
-            status_param = self.request.query_params.get("status")
-            if not include_retired and status_param != Asset.Status.RETIRED:
-                qs = qs.exclude(status=Asset.Status.RETIRED)
-
-            # Scope-aware listing (docs/rbac.md §1, T1.4): a tenant-wide
-            # `asset.view` grant sees every asset in the tenant; a user whose
-            # ONLY `asset.view` grant(s) are project-scoped sees ONLY those
-            # project(s)' assets — never another project's, never the
-            # general pool (general-pool assets are governed by tenant-wide
-            # grants only). `AssetPermission.has_permission` already let a
-            # "holds it somewhere" caller reach `list` (the pure-ProjectLead
-            # over-deny fix); this is what makes the ROWS returned match that
-            # same scope precisely, instead of a blanket tenant-wide list.
-            tenant_wide, project_ids = get_viewable_project_scope(self.request.user, ASSET_VIEW)
-            if not tenant_wide:
-                qs = qs.filter(project_id__in=project_ids) if project_ids else qs.none()
-        return qs
+            return visible_assets_queryset(self.request, ASSET_VIEW)
+        # `.order_by("-created_at")` here (not a class-level `ordering`
+        # attribute — see that attribute's removal note above) is the stable
+        # default for a non-search list with no explicit `?ordering=`:
+        # `AssetSearchFilter` only overrides it (`-rank, -created_at`) when a
+        # `?search=` term is present and no `?ordering=` was given;
+        # `OrderingFilter` overrides it whenever `?ordering=` IS given; absent
+        # both, this order stands untouched all the way to the response.
+        return _asset_detail_queryset().order_by("-created_at")
 
     @action(detail=True, methods=["post"])
     def retire(self, request, pk=None):

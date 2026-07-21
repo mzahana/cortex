@@ -4,6 +4,7 @@ import {
   IconCalendarEvent,
   IconCategory,
   IconClipboardList,
+  IconFileImport,
   IconHistory,
   IconLayoutDashboard,
   IconMapPin,
@@ -14,7 +15,12 @@ import {
   type Icon,
 } from "@tabler/icons-react";
 import type { Me } from "../api/types";
-import { LABEL_GENERATE, hasAnyAssetPermission, hasAuditViewPermission } from "../api/permissions";
+import {
+  LABEL_GENERATE,
+  hasAnyAssetPermission,
+  hasAuditViewPermission,
+  hasImportRunPermission,
+} from "../api/permissions";
 
 export interface NavItem {
   to: string;
@@ -56,6 +62,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconHistory,
     testId: "nav-audit",
     hidden: (me) => !hasAuditViewPermission(me),
+  },
+  {
+    to: "/import",
+    label: "Bulk Import",
+    icon: IconFileImport,
+    testId: "nav-import",
+    hidden: (me) => !hasImportRunPermission(me),
   },
   { to: "/admin/categories", label: "Categories & Fields", icon: IconCategory, testId: "nav-admin-categories" },
   { to: "/admin/locations", label: "Locations", icon: IconMapPin, testId: "nav-admin-locations" },

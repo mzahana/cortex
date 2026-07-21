@@ -10,6 +10,75 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-21
+
+Milestone **M6 — Import/export + deploy hardening**: bulk CSV/Excel import
+with dry-run validation, filtered CSV export, production deploy hardening,
+a real Cloudflare Tunnel operator runbook, a proven backup/restore drill,
+and a 50k-asset load test. Meets F11 acceptance; F1-F11 confirmed proven
+(not just claimed) by the final MVP-wide gate. **End of MVP.**
+
+### Added
+
+- **Bulk importer** (`apps/imports`) — `POST /api/v1/imports` (upload CSV or
+  `.xlsx`, dry-run column-mapping + a per-row validation report) →
+  `POST /api/v1/imports/{id}/commit` (all-or-nothing asset creation
+  including custom-field values, reusing the existing validation path),
+  polled via the generic `apps/jobs` (`GET /api/v1/jobs/{id}`, introduced in
+  M4). No representative spreadsheet sample was available (Q8 unanswered in
+  `docs/risks.md`) — the column schema (name/category/location/project/
+  tags/status/condition + per-category custom fields) is a documented
+  assumption. `GET /api/v1/exports/assets.csv` streams the same
+  filtered/RBAC-scoped queryset the asset list uses; import↔export
+  round-trips against the same schema.
+- **Import wizard & Export CSV** — upload → mapping review with a per-row
+  error table → commit (blocked while any row is invalid) → success
+  summary; the Asset List's live filter state now drives an Export CSV
+  link.
+- **Production hardening** — `docker-compose.prod.yml` overlay
+  (`DEBUG=false`, tunable gunicorn/Celery concurrency); most of `docs/
+  deployment.md` §7's checklist (pinned image digests, mem budgets, nginx
+  security headers, non-superuser RLS-subject role) was already correct
+  from earlier milestones and is now verified item-by-item.
+- **Deploy runbook** (`docs/deployment-runbook.md`) — a numbered,
+  copy-pasteable operator guide for the Cloudflare Tunnel/DNS/SSL setup,
+  SPF/DKIM/DMARC record templates, and Synology Container Manager bring-up,
+  using a placeholder hostname/domain pending Q3 (unanswered in `docs/
+  risks.md`).
+- **Backups & a proven restore drill** — `docker/backup/backup.sh` (nightly
+  `pg_dump -Fc`, 7-daily + 4-weekly rotation, cron-invocable). The restore
+  drill was actually executed end to end: seed → back up → destroy the
+  stack entirely → restore into a brand-new stack → byte-for-byte (sha256)
+  verification that a restored attachment and label PDF matched the
+  originals, with login/RLS/tenant-scoping intact.
+- **50k-asset load test** (`tests/load/`) — real session-auth/CSRF/RBAC/RLS
+  HTTP load via Locust at 30 concurrent users against a prod-profile stack.
+  3 of 5 `docs/architecture.md` §4 p95 targets met (detail 120ms, cached
+  dashboard 87ms, checkout write 41ms). Asset list/search miss their
+  targets (450ms/740ms vs 300ms/500ms) — root-caused to a genuine
+  PostgreSQL/RLS interaction: the RLS tenant predicate is enforced as a
+  security barrier, and neither the full-text-search (`@@`) nor trigram
+  (`%`) operator is marked `LEAKPROOF`, so the planner cannot push them
+  below the barrier to use the GIN/trgm indexes. The only fix that
+  restores the fast plan (`ALTER FUNCTION ... LEAKPROOF`) would override a
+  deliberate upstream PostgreSQL security decision, cluster-wide, for a
+  performance win — explicitly **not applied**, by user decision, given
+  this project's tenant-isolation-first invariant. Documented as an
+  accepted gap, with a regression tripwire (`test_perf_rls_search_plan.py`,
+  a strict `xfail`) so it can never silently regress further or silently
+  resolve unnoticed.
+
+### Fixed
+
+- `GET /api/v1/exports/assets.csv`'s streaming response ran its
+  `prefetch_related` after Django's tenant-context middleware had already
+  unwound the request context, raising `TenantContextError` mid-stream —
+  fixed by re-entering `tenant_context(...)` inside the generator body.
+- Closed a structural blind spot in the M1 search perf test: its `EXPLAIN`
+  assertions ran on the DB **owner** connection, which bypasses RLS
+  entirely, so it could never have caught the list/search regression above.
+  A new test drives the same query through the real RLS-subject role.
+
 ## [0.6.0] - 2026-07-21
 
 Milestone **M4 — Mobile scan, photo, labels (MVP)**: installable PWA,

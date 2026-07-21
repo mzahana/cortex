@@ -37,3 +37,11 @@ django-storages==1.14.4
 # upper bound on the transitive `pydyf` dep.
 weasyprint==69.0
 segno==1.6.6
+
+# T6.1 — CSV/Excel bulk importer (docs/tasks/M6-import-export-deploy.md):
+# `openpyxl` reads `.xlsx` uploads in `read_only=True` streaming mode
+# (`apps.imports.services.iter_source_rows`) so a large workbook is parsed
+# row-by-row rather than fully materialized, bounding worker RAM (R2). CSV
+# uploads use the stdlib `csv` module (no extra dependency).
+openpyxl==3.1.5
+

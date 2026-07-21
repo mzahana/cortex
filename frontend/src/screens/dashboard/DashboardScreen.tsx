@@ -41,7 +41,7 @@ export function DashboardScreen() {
           </Text>
         </Stack>
 
-        {loading && !summary && <DashboardTilesSkeleton />}
+{loading && !summary && <DashboardTilesSkeleton />}
         {error && !summary && <DashboardTilesError message={error} onRetry={reload} />}
         {summary && <DashboardTiles summary={summary} />}
 

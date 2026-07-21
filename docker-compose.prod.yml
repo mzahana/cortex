@@ -1,0 +1,68 @@
+# Production overlay (T6.3) — layers on top of the base `docker-compose.yml`,
+# which is already written prod-shape (pinned digests, mem_limits matching
+# docs/deployment.md §1, `restart: unless-stopped`, one shared web/worker
+# image, beat as its own service). This file only tightens the handful of
+# things that legitimately differ between a local/dev run of the base file
+# and a real internet-facing deploy:
+#
+#   1. Forces `DJANGO_SETTINGS_MODULE=config.settings.prod` on every
+#      Django-running service (web/worker/beat/migrate) as defense-in-depth,
+#      so a misconfigured/missing `.env` value can't silently fall back to
+#      `config.settings.dev`'s relaxed `DEBUG`/cookie/SSL-redirect defaults
+#      (see backend/config/settings/dev.py vs prod.py). `.env.example`
+#      already defaults DJANGO_SETTINGS_MODULE to prod for the same reason;
+#      this belt-and-braces at the compose layer too.
+#   2. Makes the gunicorn worker count explicit and tunable within the
+#      documented 2-3 range (docs/deployment.md §1 table: "Gunicorn
+#      (2-3 workers)") via `GUNICORN_WORKERS` (default 2, matching the
+#      768 MB `web` mem_limit — see hardening notes for the arithmetic on
+#      why 3 workers needs the RAM-upgraded 6 GB path, not the 2 GB
+#      fallback).
+#   3. Pins Celery worker concurrency (already 2 in the base file — repeated
+#      here for a single source of truth on the prod command) and confirms
+#      `beat` stays a separate, already-present service (not re-created).
+#   4. Disables the local `build:` fallback implicitly by requiring
+#      `cortex-app:local` to already exist (`docker compose build` once, then
+#      `up --no-build` for the actual deploy) — see hardening notes on the
+#      registry-image upgrade path; no change needed here since the base
+#      file's `image:` tag is reused as-is.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Nothing here changes mem_limits, restart policy, healthchecks, volumes, or
+# pinned image digests — those are already correct in the base file per
+# docs/deployment.md §1/§7 and are NOT duplicated here to avoid the two files
+# drifting out of sync.
+
+x-prod-django-env: &prod-django-env
+  DJANGO_SETTINGS_MODULE: config.settings.prod
+
+services:
+  migrate:
+    environment:
+      <<: *prod-django-env
+
+  web:
+    environment:
+      <<: *prod-django-env
+    command: >
+      gunicorn config.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-2}
+      --timeout 60
+      --access-logfile -
+      --error-logfile -
+
+  worker:
+    environment:
+      <<: *prod-django-env
+    command: >
+      celery -A config worker --loglevel=info --concurrency=2
+
+  beat:
+    environment:
+      <<: *prod-django-env
+    command: >
+      celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid

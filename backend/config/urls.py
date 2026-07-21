@@ -18,6 +18,8 @@ from apps.assets.api import AssetResolveView, AssetViewSet
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
 from apps.dashboard.api import DashboardSummaryView
+from apps.imports.api import ImportCommitView, ImportDetailView, ImportUploadView
+from apps.imports.exports import AssetExportView
 from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
 from apps.notifications.api import NotificationPrefViewSet
@@ -84,6 +86,18 @@ urlpatterns = [
     # `dashboard/summary` above.
     path("api/v1/labels/generate", LabelGenerateView.as_view(), name="label-generate"),
     path("api/v1/jobs/<uuid:job_id>", JobRetrieveView.as_view(), name="job-detail"),
+    # T6.1: bulk importer (dry-run upload + commit, plain `path()`s — not
+    # router-registered, same reasoning as `labels/generate`/`jobs/{id}`
+    # above: none of these three is a `list`/`create`-shaped CRUD collection)
+    # + the filtered CSV export.
+    path("api/v1/imports", ImportUploadView.as_view(), name="import-upload"),
+    path("api/v1/imports/<int:import_id>", ImportDetailView.as_view(), name="import-detail"),
+    path(
+        "api/v1/imports/<int:import_id>/commit",
+        ImportCommitView.as_view(),
+        name="import-commit",
+    ),
+    path("api/v1/exports/assets.csv", AssetExportView.as_view(), name="export-assets-csv"),
     path("api/v1/", include(router.urls)),
     path("api/v1/", include(checkout_router.urls)),
 ]

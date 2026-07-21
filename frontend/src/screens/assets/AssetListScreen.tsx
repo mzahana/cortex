@@ -4,7 +4,7 @@ import { useDebouncedValue } from "@mantine/hooks";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, ApiError } from "../../api/client";
-import { ASSET_CREATE, hasAnyAssetPermission } from "../../api/permissions";
+import { ASSET_CREATE, hasAnyAssetPermission, hasAssetExportPermission } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
 import { AppLayout } from "../../layout/AppLayout";
 import type { AssetListParams, Category, Location, Project, Tag } from "../../api/types";
@@ -51,6 +51,7 @@ export function AssetListScreen() {
   const navigate = useNavigate();
   const { me } = useAuth();
   const canCreate = hasAnyAssetPermission(me, ASSET_CREATE);
+  const canExport = hasAssetExportPermission(me);
 
   // --- Bounded catalog lookups for filter dropdowns + name rendering ---
   // (categories/locations/projects/tags are tenant config, not asset rows —
@@ -182,6 +183,25 @@ export function AssetListScreen() {
           <Text size="sm" c="dimmed" data-testid="asset-count">
             {totalCount !== null ? `${assets.length} of ${totalCount.toLocaleString()}` : ""}
           </Text>
+          {canExport && (
+            // Plain `<a>` navigation to a streamed-file `GET` (T6.2, `api.
+            // exportAssetsCsvUrl` doc comment): the current filter state
+            // (search/category/location/project/tag/status/ordering/
+            // include_retired) rides along in the query string exactly as
+            // sent to `listAssets`, so the download always matches what's
+            // on screen. The session cookie goes along with a same-origin
+            // anchor navigation the same way it does for any other request
+            // — no fetch+blob dance needed for a simple file download.
+            <Button
+              component="a"
+              href={api.exportAssetsCsvUrl(filters)}
+              variant="light"
+              size="xs"
+              data-testid="export-csv-button"
+            >
+              Export CSV
+            </Button>
+          )}
           {canCreate && (
             <Button size="xs" onClick={() => navigate("/assets/new")} data-testid="new-asset-button">
               New asset

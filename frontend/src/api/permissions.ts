@@ -86,6 +86,20 @@ export const AUDIT_VIEW = "audit.view";
 // there is no scoped variant.
 export const NOTIFY_SELF = "notify.self";
 
+// `docs/rbac.md` §3 bulk-import action key (T6.2: Import screen gating).
+// `import.run` is Admin-only, tenant-wide, with no ProjectLead/scoped
+// reading at all (`apps.imports.permissions.ImportRunPermission` docstring)
+// — a plain tenant-wide `hasPermission` check is sufficient, unlike the
+// asset/stock/reservation/checkout/label keys above.
+export const IMPORT_RUN = "import.run";
+
+/** UI-gating helper for the Import screen entry point (presentation only,
+ * same caveat as every other helper in this module): true if the caller
+ * holds `import.run` tenant-wide. */
+export function hasImportRunPermission(me: Me | null | undefined): boolean {
+  return hasPermission(me, IMPORT_RUN);
+}
+
 /** UI-gating helper for the Audit Log nav link (presentation only, same
  * caveat as `hasAssetPermission`): true if the caller holds `audit.view`
  * tenant-wide OR scoped to at least one project (a ProjectLead should still
@@ -127,4 +141,14 @@ export function hasAnyAssetPermission(me: Me | null | undefined, key: string): b
   if (!me) return false;
   if (me.permissions.includes(key)) return true;
   return Object.values(me.project_permissions).some((perms) => perms.includes(key));
+}
+
+/** UI-gating helper for the Asset List's "Export CSV" button (T6.2). `asset.
+ * export` is scoped exactly like the other asset action keys above (Admin/
+ * Member tenant-wide, ProjectLead scoped to their own project's assets,
+ * `apps.imports.exports.AssetExportView` docstring) — an entry-point gate
+ * with no single target asset/project, so this is `hasAnyAssetPermission`
+ * under the hood, same caveat as every other helper in this module. */
+export function hasAssetExportPermission(me: Me | null | undefined): boolean {
+  return hasAnyAssetPermission(me, ASSET_EXPORT);
 }

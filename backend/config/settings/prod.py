@@ -20,8 +20,13 @@ if not ALLOWED_HOSTS:  # noqa: F405
 
 # --- Transport security --------------------------------------------------------
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
+# Both default True (a real deploy always terminates TLS at Cloudflare, see
+# docs/deployment.md) -- only overridable via env for the T6.6 load-test
+# overlay (`docker-compose.loadtest.yml`), which deliberately hits this stack
+# over plain HTTP from the host with no TLS terminator in front of nginx.
+# NEVER set these false in a real deployment's `.env`.
+SESSION_COOKIE_SECURE = env.bool("SESSION_COOKIE_SECURE", default=True)
+CSRF_COOKIE_SECURE = env.bool("CSRF_COOKIE_SECURE", default=True)
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 

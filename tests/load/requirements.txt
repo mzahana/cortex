@@ -1,0 +1,16 @@
+# T6.6 load-test tooling — deliberately NOT added to backend/requirements/
+# dev.txt: locust is real network/concurrency load-testing infra, not a
+# pytest-collected unit/integration test dependency, and it never runs in
+# the normal CI `pytest` job (see docs/tasks/M6-import-export-deploy.md
+# T6.6, `tests/load/README.md`). Install into a throwaway venv on the host
+# that will run the locustfiles against the docker-compose stack:
+#
+#   python3 -m venv .venv-load && source .venv-load/bin/activate
+#   pip install -r tests/load/requirements.txt
+#
+# No pinned upper/lower Python constraint here: locust itself picks the
+# newest release compatible with whatever interpreter runs `pip install`
+# (tested here against locust 2.25.0 on Python 3.8; the pin below is a
+# floor, not exact, since a fully current Python (e.g. 3.12, matching
+# backend/requirements) would resolve a newer locust release fine too).
+locust>=2.20

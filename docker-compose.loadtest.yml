@@ -1,0 +1,72 @@
+# T6.6 load-test overlay — layers on top of `docker-compose.yml` +
+# `docker-compose.prod.yml`, changing ONLY the two things that legitimately
+# differ between a real TLS-terminated-at-Cloudflare deploy and a local
+# same-host load-test run:
+#
+#   1. Publishes `nginx` on a host port (8080 by default) so a load-test
+#      client running on the host (outside the compose network) can reach
+#      it. The real deploy never publishes nginx directly (Cloudflare Tunnel
+#      only) -- see docker-compose.yml's own comment on this.
+#   2. Disables the three settings that assume a real TLS-terminating proxy
+#      in front of Django (`SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`,
+#      `CSRF_COOKIE_SECURE`), since this stack is being hit over plain HTTP
+#      from the host. Everything else about the prod profile (gunicorn
+#      worker count, DEBUG=False, HSTS headers, Celery concurrency, RLS app
+#      role) is UNCHANGED -- this is still "prod-profile" for the purposes of
+#      the T6.6 perf gate; only the TLS-termination assumption is relaxed,
+#      and it is not on the request-latency critical path.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#     -f docker-compose.loadtest.yml up -d
+#   docker compose run --rm migrate python manage.py seed_perf_assets --count 50000
+#   # optional but recommended (see tests/load/README.md "Multi-tenant corpus
+#   # shape"): a second tenant so the RLS tenant_id predicate isn't 100%
+#   # selective against the whole table, which is the more realistic shape:
+#   docker compose run --rm migrate python manage.py seed_perf_assets \
+#     --tenant-slug noise-tenant-1 --tenant-name "Noise Tenant 1" --count 20000
+#   docker compose run --rm migrate python manage.py seed_load_test_admin --count 30
+#   # then, from the host: pip install -r tests/load/requirements.txt &&
+#   # python3 tests/load/provision_sessions.py --host http://localhost:8080 --count 30
+#   # && locust -f tests/load/locustfile_read.py --host http://localhost:8080 ...
+#   # -- see tests/load/README.md for the full walkthrough and results.
+
+services:
+  nginx:
+    ports:
+      - "8080:80"
+
+  web:
+    environment:
+      SECURE_SSL_REDIRECT: "false"
+      SESSION_COOKIE_SECURE: "false"
+      CSRF_COOKIE_SECURE: "false"
+    # T6.6 finding: the base prod `--workers 2` sync-worker gunicorn command
+    # (docker-compose.prod.yml) can only serve 2 requests AT ONCE -- at 30
+    # concurrent simulated users every list/search/detail/dashboard request
+    # measured server-side in <350ms individually (confirmed by hand: a lone
+    # `curl` against the same seeded 50k-asset corpus) still showed p95 in
+    # the 2.2-3.9s range under real 30-concurrent load, purely from requests
+    # QUEUEING behind 2 busy sync workers -- not slow queries. This workload
+    # is I/O-bound (waiting on Postgres; psycopg releases the GIL during
+    # that wait), so `gthread` workers let each of the SAME 2 (RAM-budget-
+    # respecting, per docs/deployment.md's documented "2-3 workers") gunicorn
+    # processes serve several requests concurrently via threads instead of
+    # only one at a time -- see `tests/load/README.md`'s "Tuning" section for
+    # the before/after numbers this produced.
+    command: >
+      gunicorn config.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-2}
+      --worker-class gthread
+      --threads ${GUNICORN_THREADS:-8}
+      --timeout 60
+      --access-logfile -
+      --error-logfile -
+    # Default (`GUNICORN_WORKERS=2`) comfortably fits the documented 768 MB
+    # budget -- this override only matters if `GUNICORN_WORKERS` is bumped
+    # above 2-3 for an out-of-budget DIAGNOSTIC run (see `tests/load/
+    # README.md`'s "Tuning" section: a `--workers 4` data point was collected
+    # to separate "more parallelism helps" from "it's a query-plan problem",
+    # and is explicitly NOT a recommendation for the real 2-core/6 GB NAS).
+    mem_limit: 1536m

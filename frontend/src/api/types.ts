@@ -752,3 +752,95 @@ export interface LabelGenerateRequest {
   asset_ids: number[];
   template: LabelSheetTemplate;
 }
+
+// --- Bulk import (T6.2; `apps.imports.api`/`apps.imports.serializers`) ---
+// `POST /api/v1/imports` (multipart upload, dry-run), `GET /api/v1/imports/
+// {id}` (poll), `POST /api/v1/imports/{id}/commit`. Column-mapping target
+// vocabulary is fixed server-side (`apps.imports.services.ALL_TARGETS`):
+// the 7 "core" asset fields, plus `"custom"` (per-row/per-category custom
+// field lookup by header name) and `"ignore"` (drop the column).
+
+export type ImportJobStatus =
+  | "pending"
+  | "dry_run_running"
+  | "dry_run_succeeded"
+  | "dry_run_failed"
+  | "committing"
+  | "committed"
+  | "commit_failed";
+
+/** A column-mapping override: `{"<spreadsheet header>": "<target>"}`. Any
+ * header omitted falls back to the server's auto-detected default. */
+export type ImportMapping = Record<string, string>;
+
+export const IMPORT_CORE_TARGETS = [
+  "name",
+  "category",
+  "location",
+  "project",
+  "status",
+  "condition",
+  "tags",
+] as const;
+export type ImportCoreTarget = (typeof IMPORT_CORE_TARGETS)[number];
+/** Every valid mapping target — the 7 core fields above, plus `"custom"`
+ * (per-category custom-field lookup by header name/key) and `"ignore"`. */
+export type ImportTarget = ImportCoreTarget | "custom" | "ignore";
+
+/** One resolved row of a dry-run/commit report
+ * (`apps.imports.services.ResolvedRow.to_report_dict`). `row_number` is
+ * 1-based and counts the header row as row 1 (so `2` = the first data row —
+ * matches what a user sees if they open the spreadsheet themselves).
+ * `errors` is non-empty exactly when the row is invalid; a `custom_field_
+ * values` key nests `{field_key: message}` from `validate_custom_field_
+ * values`, every other key is a plain string message. */
+export interface ImportReportRow {
+  row_number: number;
+  values: {
+    name: string | null;
+    category: string | null;
+    location: string | null;
+    project: string | null;
+    tags: string[];
+    status: string;
+    condition: string;
+    custom_field_values: Record<string, unknown>;
+  };
+  errors: Record<string, unknown>;
+}
+
+/** `ImportJob.report` (`apps.imports.services.build_report`/
+ * `commit_import_rows`) — the latest dry-run OR commit-pass validation
+ * result. `null` until the first dry-run task has actually run. */
+export interface ImportReport {
+  resolved_mapping: ImportMapping;
+  rows: ImportReportRow[];
+  total_rows: number;
+  valid_count: number;
+  invalid_count: number;
+}
+
+/** Minimal nested view of the underlying `Job` (`apps.imports.serializers.
+ * ImportJobJobSerializer`) — just enough to know status/error without a
+ * second `GET /api/v1/jobs/{id}` round trip; this screen polls `GET
+ * /api/v1/imports/{id}` directly instead, which is richer. */
+export interface ImportJobJob {
+  id: string;
+  status: JobStatus;
+  error: string;
+}
+
+/** `GET /api/v1/imports/{id}` / the body `POST /api/v1/imports` and `POST
+ * /api/v1/imports/{id}/commit` return immediately (T6.2). */
+export interface ImportJob {
+  id: number;
+  status: ImportJobStatus;
+  source_filename: string;
+  mapping: ImportMapping;
+  report: ImportReport | null;
+  created_asset_ids: number[];
+  dry_run_job: ImportJobJob | null;
+  commit_job: ImportJobJob | null;
+  created_at: string;
+  updated_at: string;
+}
