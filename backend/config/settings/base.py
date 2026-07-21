@@ -67,6 +67,11 @@ INSTALLED_APPS = [
     # `apps.assets` (the assets being labeled) — listed after both.
     "apps.jobs",
     "apps.labels",
+    # T6.1: CSV/Excel bulk importer + filtered CSV export. Depends on
+    # `apps.jobs` (dry-run/commit `Job` rows), `apps.catalog`/`apps.projects`
+    # (category/location/project name lookups), and `apps.assets` (the
+    # assets it creates) — listed after all four.
+    "apps.imports",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
