@@ -21,7 +21,16 @@ FROM python:3.12-alpine3.20@sha256:25849f9599e06dfe4d11b552e06f5ac4cc2ad342054eb
 # time the Celery worker picks up a `label_pdf` job. Needed on BOTH `web`
 # (Django import-time app-loading pulls in `apps.labels`) and `worker`
 # (where the task actually renders) since they share this one image.
-RUN apk add --no-cache libpq tini pango cairo gdk-pixbuf fontconfig shared-mime-info ttf-freefont \
+# zbar + imagemagick: provide the `zbarimg` CLI the T4.5 label-PDF
+# round-trip test shells out to (see `requirements/dev.txt`) to decode a
+# rendered QR back to its token -- not used by the app itself at runtime,
+# but tiny, and this image is also what `pip install -r requirements/
+# dev.txt` + pytest run inside. `imagemagick` is required too: Alpine's
+# `zbar` package links `zbarimg` against MagickWand for image loading, and
+# without ImageMagick's own PNG delegate present `zbarimg` fails every
+# input with "NoDecodeDelegateForThisImageFormat 'PNG'" even though the
+# `zbar` package installs fine on its own.
+RUN apk add --no-cache libpq tini pango cairo gdk-pixbuf fontconfig shared-mime-info ttf-freefont zbar imagemagick \
     && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app

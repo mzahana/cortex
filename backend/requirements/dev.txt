@@ -21,14 +21,16 @@ pytest-cov==5.0.0
 factory-boy==3.3.1
 
 # T4.5 label-PDF round-trip test only (`apps/labels/tests/
-# test_label_pdf_qr_roundtrip.py`): rasterize the rendered PDF page back to
-# an image (`pymupdf`, pure wheel, no system dependency) and decode the
-# embedded QR from it (`opencv-python-headless`'s `QRCodeDetector`, also a
-# self-contained wheel) to prove the FULL pipeline — not just the
-# pre-render payload — actually round-trips. Deliberately NOT `pyzbar`
-# (needs the system `libzbar0` shared library, which a bare `pip install`
-# on a CI runner does not provide -- would pass locally on a dev machine
-# that happens to have it and then fail confusingly in CI); both packages
-# chosen here are self-contained wheels with no extra `apt`/`apk` step.
+# test_labels_generate.py`): rasterize the rendered PDF page back to an
+# image (`pymupdf`) and decode the embedded QR via the `zbarimg` CLI (see
+# `docker/Dockerfile`'s `zbar` package) to prove the FULL pipeline — not
+# just the pre-render payload — actually round-trips. Deliberately NOT
+# `opencv-python-headless`: it ships no musllinux wheel at all, so it can't
+# install in the Alpine-based app image `pip install -r dev.txt` runs
+# against (only glibc wheels exist) -- would silently work on a glibc CI
+# runner and then hard-fail everywhere this image is actually built/tested.
+# Deliberately NOT `pyzbar` either: it locates `libzbar` via
+# `ctypes.util.find_library`, which is broken under musl libc even when the
+# library is installed. Shelling out to the `zbarimg` binary sidesteps both
+# problems.
 pymupdf==1.24.11
-opencv-python-headless==5.0.0.93

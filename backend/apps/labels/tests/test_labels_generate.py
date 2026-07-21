@@ -4,20 +4,25 @@ EXACT asset it was printed for — the real F6/F7 round-trip, not just an
 encode-side assertion), `label.generate` RBAC enforcement (Admin/ProjectLead/
 Member/Viewer), and cross-tenant asset-id exclusion.
 
-QR decode uses `pymupdf` (rasterize the rendered PDF page) + OpenCV's
-`QRCodeDetector` (decode the rasterized page) — see `requirements/dev.txt`'s
-comment for why these two (both self-contained wheels, no system `libzbar`
-dependency that would work locally and silently skip/fail in CI).
+QR decode uses `pymupdf` (rasterize the rendered PDF page) + the `zbarimg`
+CLI (decode the rasterized page) — see `docker/Dockerfile`'s `zbar` package
+comment. `zbarimg` was chosen over a pip-only decoder (e.g.
+`opencv-python-headless`) because OpenCV ships no musllinux wheel, so it
+can't install in the Alpine-based app image at all; `zbar`/`zbarimg` is a
+tiny Alpine package with no such gap, and shelling out avoids `pyzbar`'s
+`ctypes.util.find_library` failing to locate `libzbar.so` under musl.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
-import cv2
 import fitz
-import numpy as np
 import pytest
 from PIL import Image
 
@@ -66,50 +71,53 @@ def _decode_qr_tokens_from_pdf(pdf_bytes: bytes, template, total_labels: int) ->
     """Rasterize `pdf_bytes` and decode each label's QR ONE AT A TIME, by
     cropping exactly the label cell `template`'s own geometry says it's at
     (the SAME `cols`/`rows`/margin/gutter math `apps.labels.rendering.
-    _label_position_css` uses to place it) and running a single-image
-    `cv2.QRCodeDetector.detectAndDecode` on just that crop.
+    _label_position_css` uses to place it) and running `zbarimg --raw` on
+    just that crop.
 
-    Deliberately NOT `detectAndDecodeMulti` over the whole page: verified by
-    hand while building this test that whole-page multi-QR detection is
-    flaky on a dense sheet (e.g. `avery_5163`'s 2x5 grid) — it occasionally
-    under-counts by one or two codes, which is a real limitation of the
-    (self-contained, no-system-dependency) decoder this test deliberately
-    chose over `pyzbar`/zbar, not a bug in the rendered PDF. Cropping each
-    label to its own known cell and decoding it in isolation removes that
-    ambiguity entirely: a genuine encode/round-trip regression still fails
-    this test (the crop's QR simply won't decode to the expected token, or
-    at all), while whole-page detector flakiness no longer can.
+    Deliberately per-cell rather than one `zbarimg` call over the whole
+    page: it keeps the same "a genuine encode/round-trip regression fails
+    this specific label's decode, not a fuzzy multi-code page scan"
+    property the earlier OpenCV-based version was built for.
     """
+    if shutil.which("zbarimg") is None:
+        pytest.skip("zbarimg not installed (see docker/Dockerfile's `zbar` package)")
+
     tokens: list[str] = []
     per_sheet = template.labels_per_sheet
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    detector = cv2.QRCodeDetector()
 
     remaining = total_labels
-    for page in doc:
-        pix = page.get_pixmap(dpi=QR_DECODE_DPI)
-        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-        arr = np.array(img)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for page in doc:
+            pix = page.get_pixmap(dpi=QR_DECODE_DPI)
+            page_img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
 
-        labels_on_this_page = min(per_sheet, remaining)
-        for i in range(labels_on_this_page):
-            row, col = divmod(i, template.cols)
-            left_in = template.margin_left_in + col * (
-                template.label_width_in + template.gutter_x_in
-            )
-            top_in = template.margin_top_in + row * (
-                template.label_height_in + template.gutter_y_in
-            )
-            x0 = int(left_in * QR_DECODE_DPI)
-            y0 = int(top_in * QR_DECODE_DPI)
-            x1 = int((left_in + template.label_width_in) * QR_DECODE_DPI)
-            y1 = int((top_in + template.label_height_in) * QR_DECODE_DPI)
-            crop = arr[y0:y1, x0:x1]
+            labels_on_this_page = min(per_sheet, remaining)
+            for i in range(labels_on_this_page):
+                row, col = divmod(i, template.cols)
+                left_in = template.margin_left_in + col * (
+                    template.label_width_in + template.gutter_x_in
+                )
+                top_in = template.margin_top_in + row * (
+                    template.label_height_in + template.gutter_y_in
+                )
+                x0 = int(left_in * QR_DECODE_DPI)
+                y0 = int(top_in * QR_DECODE_DPI)
+                x1 = int((left_in + template.label_width_in) * QR_DECODE_DPI)
+                y1 = int((top_in + template.label_height_in) * QR_DECODE_DPI)
 
-            data, _points, _straight = detector.detectAndDecode(crop)
-            if data:
-                tokens.append(data)
-        remaining -= labels_on_this_page
+                crop_path = Path(tmpdir) / f"label_{row}_{col}.png"
+                page_img.crop((x0, y0, x1, y1)).save(crop_path)
+
+                result = subprocess.run(
+                    ["zbarimg", "--raw", "-q", str(crop_path)],
+                    capture_output=True,
+                    text=True,
+                )
+                data = result.stdout.strip()
+                if data:
+                    tokens.append(data)
+            remaining -= labels_on_this_page
 
     return tokens
 
