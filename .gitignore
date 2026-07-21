@@ -63,3 +63,9 @@ Thumbs.db
 # --- CI / misc ---
 *.tmp
 *.bak
+
+# --- T6.6 load test: session cookies (credential-like, throwaway/dev-only
+# fixture data), never committed. Result CSVs ARE committed (just timing
+# numbers) -- see tests/load/README.md.
+tests/load/results/sessions.json
+tests/load/.venv-load/
