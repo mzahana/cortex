@@ -1,6 +1,13 @@
 """Auth endpoints (T0.6): `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`,
 `GET /api/v1/me`, plus `GET /api/v1/auth/csrf` (see `CsrfView` docstring).
 
+Also `GET/POST /api/v1/users` (`UserViewSet`, near the bottom of this file) --
+the "create/discover a user" gap fill. Before this, there was NO way to
+create a `User` anywhere in the app except Django admin / `manage.py shell`,
+and `apps.rbac.api.MembershipViewSet` could only grant a role to an EXISTING
+user id. See `apps.accounts.services` module docstring for the full
+gap-analysis note and the password-handling security invariants.
+
 **R4 login-resolution path (read before touching this file):**
 `apps.accounts.models.User.email` is unique only **per tenant**
 (`docs/data-model.md`), so plain `django.contrib.auth.authenticate(username=
@@ -24,23 +31,30 @@ from __future__ import annotations
 
 from django.contrib.auth import login as django_login
 from django.contrib.auth import logout as django_logout
+from django.db.models import Q
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
-from rest_framework import status
+from rest_framework import mixins, status, viewsets
+from rest_framework.filters import BaseFilterBackend, OrderingFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
+from apps.common.pagination import BoundedPageNumberPagination
 from apps.rbac.models import Membership
+from apps.rbac.permission_keys import USER_MANAGE
 from apps.tenancy.context import tenant_context
 from apps.tenancy.middleware import TENANT_SESSION_KEY
 from apps.tenancy.models import Tenant
 
 from . import lockout
 from .models import User
-from .serializers import LoginSerializer
+from .permissions import UserManagementPermission
+from .serializers import CreateUserSerializer, LoginSerializer, UserSerializer
+from .services import create_user_with_generated_password
 
 PROBLEM_BASE = "https://cortex.example.com/problems"
 
@@ -295,3 +309,104 @@ class MeView(APIView):
         # letting `_serialize_me` trigger a lazy `user.tenant` load.
         user = User.all_objects.select_related("tenant").get(pk=request.user.pk)
         return Response(_serialize_me(user, user.tenant), status=status.HTTP_200_OK)
+
+
+class UserSearchFilter(BaseFilterBackend):
+    """`?search=` — plain case-insensitive substring match on `email`/`name`.
+
+    Deliberately much simpler than `apps.assets.api.AssetSearchFilter` (no
+    FTS/trigram indexes needed for what is expected to be a small,
+    per-tenant user list).
+    """
+
+    search_param = "search"
+
+    def filter_queryset(self, request, queryset, view):
+        search = request.query_params.get(self.search_param, "").strip()
+        if not search:
+            return queryset
+        return queryset.filter(Q(email__icontains=search) | Q(name__icontains=search))
+
+
+def _user_snapshot(user: User) -> dict:
+    """Audit before/after snapshot for `user.manage` user-creation —
+    deliberately id/email/name ONLY. Must NEVER include `password`/
+    `password_hash`/anything derived from the plaintext generated in
+    `apps.accounts.services.create_user_with_generated_password` (task
+    requirement / CLAUDE.md "no secrets in the audit log").
+    """
+    return {"id": user.id, "email": user.email, "name": user.name}
+
+
+class UserViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.GenericViewSet):
+    """`GET/POST /api/v1/users` — see module docstring / `apps.accounts.
+    services` for why this exists.
+
+    Tenant scoping (golden-path step 2): `get_queryset()` builds
+    `User.objects...` (tenant-scoped, fail-closed manager) fresh per request.
+
+    RBAC (golden-path step 3): `UserManagementPermission` — `create` is
+    Admin-only (tenant-wide `user.manage`); `list` is any scope.
+
+    No `retrieve`/`update`/`destroy` route is exposed here — this endpoint's
+    only job is (a) mint a new account and (b) let an existing `user.manage`
+    holder discover a user id to hand to `POST /api/v1/memberships`.
+    """
+
+    permission_classes = [UserManagementPermission]
+    http_method_names = ["get", "post", "head", "options"]
+    filter_backends = [UserSearchFilter, OrderingFilter]
+    ordering_fields = ["email", "name", "created_at"]
+    pagination_class = BoundedPageNumberPagination
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return CreateUserSerializer
+        return UserSerializer
+
+    def get_queryset(self):
+        # Tenant-scoped manager, resolved per-request (never a class-level
+        # `queryset = ...` — same reasoning as `apps.rbac.api.
+        # MembershipViewSet.get_queryset`).
+        return User.objects.all().order_by("email")
+
+    def create(self, request, *args, **kwargs):
+        serializer = CreateUserSerializer(data=request.data)
+        if not serializer.is_valid():
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Invalid user payload",
+                detail="Could not create user.",
+                type_=f"{PROBLEM_BASE}/validation-error",
+                errors=serializer.errors,
+            )
+
+        created = create_user_with_generated_password(
+            email=serializer.validated_data["email"],
+            name=serializer.validated_data.get("name", ""),
+        )
+
+        # Audited under `user.manage` (docs/rbac.md §5), same as Membership
+        # create/destroy — before/after snapshot NEVER contains the
+        # password: `_user_snapshot()` only ever returns id/email/name (see
+        # its docstring), so there is no code path here by which the
+        # generated password could reach `write_audit_log`/the AuditLog
+        # table.
+        write_audit_log(
+            tenant_id=created.user.tenant_id,
+            actor=request.user,
+            action=USER_MANAGE,
+            entity_type="user",
+            entity_id=created.user.id,
+            before=None,
+            after=_user_snapshot(created.user),
+            ip=client_ip(request),
+        )
+
+        # The ONLY time the generated password is ever returned — added to
+        # the plain `UserSerializer` shape rather than being a field on it,
+        # so `GET /api/v1/users` (which reuses the same serializer) can
+        # never accidentally include it.
+        payload = UserSerializer(created.user).data
+        payload["password"] = created.initial_password
+        return Response(payload, status=status.HTTP_201_CREATED)

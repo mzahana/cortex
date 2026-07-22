@@ -13,7 +13,7 @@ from django.http import JsonResponse
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView
+from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView, UserViewSet
 from apps.assets.api import AssetResolveView, AssetViewSet
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
@@ -39,6 +39,10 @@ router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-req
 router.register("reservations", ReservationViewSet, basename="reservation")
 router.register("notification-prefs", NotificationPrefViewSet, basename="notification-pref")
 router.register("memberships", MembershipViewSet, basename="membership")
+# Gap-fill: "create/discover a user" (see apps.accounts.services module
+# docstring) -- `POST /api/v1/users` admin-only create, `GET /api/v1/users`
+# any `user.manage` scope for discovery ahead of `POST /api/v1/memberships`.
+router.register("users", UserViewSet, basename="user")
 # T5.3: read-only, no create/update/destroy route exists (see
 # apps.audit.api module docstring) -- registered on the same shared router
 # regardless since it's a plain additive registration, not a parallel-task
