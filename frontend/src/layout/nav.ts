@@ -12,6 +12,7 @@ import {
   IconPrinter,
   IconQrcode,
   IconUserCircle,
+  IconUsers,
   type Icon,
 } from "@tabler/icons-react";
 import type { Me } from "../api/types";
@@ -20,6 +21,7 @@ import {
   hasAnyAssetPermission,
   hasAuditViewPermission,
   hasImportRunPermission,
+  hasUserManagePermission,
 } from "../api/permissions";
 
 export interface NavItem {
@@ -72,6 +74,13 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { to: "/admin/categories", label: "Categories & Fields", icon: IconCategory, testId: "nav-admin-categories" },
   { to: "/admin/locations", label: "Locations", icon: IconMapPin, testId: "nav-admin-locations" },
+  {
+    to: "/admin/users",
+    label: "Users & Roles",
+    icon: IconUsers,
+    testId: "nav-admin-users",
+    hidden: (me) => !hasUserManagePermission(me),
+  },
 ];
 
 /**

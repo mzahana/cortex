@@ -17,6 +17,7 @@ import { NotificationsScreen } from "./screens/notifications/NotificationsScreen
 import { AuditLogScreen } from "./screens/audit/AuditLogScreen";
 import { LabelsScreen } from "./screens/labels/LabelsScreen";
 import { ImportScreen } from "./screens/import/ImportScreen";
+import { UsersRolesScreen } from "./screens/admin/UsersRolesScreen";
 
 /** Distinct "backend unreachable" full-screen state (T1.5 note 6, carried
  * from M0): a network failure / 5xx on the initial `/me` call is not the
@@ -219,6 +220,14 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <LocationsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/users"
+        element={
+          <RequireAuth>
+            <UsersRolesScreen />
           </RequireAuth>
         }
       />

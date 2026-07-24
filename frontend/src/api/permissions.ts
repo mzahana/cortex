@@ -152,3 +152,19 @@ export function hasAnyAssetPermission(me: Me | null | undefined, key: string): b
 export function hasAssetExportPermission(me: Me | null | undefined): boolean {
   return hasAnyAssetPermission(me, ASSET_EXPORT);
 }
+
+// Users & Roles admin action key (`apps.accounts.permissions.
+// UserManagementPermission`/`apps.rbac.permissions.MembershipPermission`).
+// `user.manage` is held tenant-wide by Admin and project-scoped by
+// ProjectLead (docs/rbac.md §3) -- same "any scope shows the entry point"
+// reasoning as `hasAuditViewPermission`: a ProjectLead should still see the
+// nav entry, scoped to their own project by what the server actually
+// returns from `GET /api/v1/memberships` (`get_viewable_project_scope`).
+export const USER_MANAGE = "user.manage";
+
+/** UI-gating helper for the Users & Roles nav link (presentation only, same
+ * caveat as every other helper in this module): true if the caller holds
+ * `user.manage` tenant-wide OR scoped to at least one project. */
+export function hasUserManagePermission(me: Me | null | undefined): boolean {
+  return hasAnyAssetPermission(me, USER_MANAGE);
+}

@@ -844,3 +844,78 @@ export interface ImportJob {
   created_at: string;
   updated_at: string;
 }
+
+// --- Users & Roles admin (Users & Roles screen; apps.accounts.api.UserViewSet,
+// apps.rbac.api.MembershipViewSet/RoleViewSet) ---
+
+/** `GET /api/v1/users/` row shape / the user fields of `POST /api/v1/users`'s
+ * response (`apps.accounts.serializers.UserSerializer`) — id/email/name only,
+ * deliberately excludes anything password-related. */
+export interface AppUser {
+  id: number;
+  email: string;
+  name: string;
+}
+
+/** `POST /api/v1/users/` request body (`apps.accounts.serializers.
+ * CreateUserSerializer`). No `password` field — always server-generated. */
+export interface CreateUserPayload {
+  email: string;
+  name?: string;
+}
+
+/** `POST /api/v1/users/` response (`apps.accounts.api.UserViewSet.create`):
+ * the plain `AppUser` shape plus a ONE-TIME `password` field (the server's
+ * generated initial password) — never returned again by any other endpoint.
+ * Handle with care: never log it, never put it in a URL, never stash it
+ * anywhere longer-lived than the one-time-reveal modal needs. */
+export interface CreatedUser extends AppUser {
+  password: string;
+}
+
+/** `GET /api/v1/roles/` row shape (`apps.rbac.serializers.RoleSerializer`) —
+ * the tenant's 4 seeded system roles. */
+export interface Role {
+  id: number;
+  key: string;
+  name: string;
+}
+
+/** `GET /api/v1/memberships/` row shape / `POST`+`PATCH` response
+ * (`apps.rbac.serializers.MembershipSerializer`). `project`/`project_name`
+ * are `null` for a tenant-wide grant. */
+export interface Membership {
+  id: number;
+  user: number;
+  user_email: string;
+  role: number;
+  role_key: string;
+  role_name: string;
+  project: number | null;
+  project_name: string | null;
+  created_at: string;
+}
+
+/** `POST /api/v1/memberships/` request body. `project` omitted/`null` =
+ * tenant-wide. */
+export interface MembershipCreatePayload {
+  user: number;
+  role: number;
+  project?: number | null;
+}
+
+/** `PATCH /api/v1/memberships/{id}/` request body — `role` is the ONLY
+ * editable field once a Membership exists (`user`/`project` are read-only
+ * server-side past creation, `apps.rbac.serializers.MembershipSerializer.
+ * get_fields`). */
+export interface MembershipUpdatePayload {
+  role: number;
+}
+
+/** `GET /api/v1/memberships/` query params (`apps.rbac.api.
+ * MembershipFilterSet`) — plain id-equality filters. */
+export interface MembershipListParams extends ListParams {
+  user?: number;
+  role?: number;
+  project?: number;
+}

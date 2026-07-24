@@ -5,6 +5,7 @@
  * into `ApiError`.
  */
 import type {
+  AppUser,
   Asset,
   AssetListParams,
   AssetWritePayload,
@@ -17,6 +18,8 @@ import type {
   CheckoutCreatePayload,
   CheckoutListParams,
   CheckinPayload,
+  CreatedUser,
+  CreateUserPayload,
   CustomFieldDef,
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
@@ -30,6 +33,10 @@ import type {
   LocationWritePayload,
   LoginRequest,
   Me,
+  Membership,
+  MembershipCreatePayload,
+  MembershipListParams,
+  MembershipUpdatePayload,
   NotificationPref,
   NotificationPrefUpdatePayload,
   Paginated,
@@ -41,6 +48,7 @@ import type {
   Reservation,
   ReservationCreatePayload,
   ReservationListParams,
+  Role,
   StockItem,
   StockListParams,
   StockTxnPayload,
@@ -756,6 +764,64 @@ export const api = {
    * Never walks all pages (CLAUDE.md: server-side lists). */
   async listAuditLog(params?: AuditLogListParams): Promise<Paginated<AuditLogEntry>> {
     return request<Paginated<AuditLogEntry>>(`/audit/${buildQuery(params)}`, { method: "GET" });
+  },
+
+  // --- Users & Roles admin (Users & Roles screen; apps.accounts.api.UserViewSet,
+  // apps.rbac.api.MembershipViewSet/RoleViewSet) ---
+  // Trailing slash, same `APPEND_SLASH` reason as Categories/Locations above.
+
+  /** `GET /api/v1/users/` — one page, `?search=` on email/name. Any
+   * `user.manage` scope may list (server-side, `apps.accounts.permissions.
+   * UserManagementPermission`). Used for the "add member" user picker's
+   * search-as-you-type and never walked across every page (CLAUDE.md). */
+  async listUsers(params?: ListParams): Promise<Paginated<AppUser>> {
+    return request<Paginated<AppUser>>(`/users/${buildQuery(params)}`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/users/` — Admin-only (tenant-wide `user.manage`).
+   * Response includes a ONE-TIME `password` field (the generated initial
+   * password) — see `CreatedUser` doc comment for the handling
+   * requirements; never persist it beyond the one-time-reveal modal. */
+  async createUser(payload: CreateUserPayload): Promise<CreatedUser> {
+    return request<CreatedUser>("/users/", { method: "POST", body: payload });
+  },
+
+  /** `GET /api/v1/roles/` — the tenant's 4 seeded system roles. Requires
+   * any `user.manage` scope. Small, bounded list — not paginated by the
+   * caller (one page always covers it), but the envelope is still the
+   * standard `Paginated<T>` shape. */
+  async listRoles(): Promise<Paginated<Role>> {
+    return request<Paginated<Role>>("/roles/", { method: "GET" });
+  },
+
+  /** `GET /api/v1/memberships/` — one page. An Admin (tenant-wide
+   * `user.manage`) sees every tenant Membership; a ProjectLead sees only
+   * their own project's (server-enforced, `apps.rbac.api.
+   * MembershipViewSet.get_queryset`). */
+  async listMemberships(params?: MembershipListParams): Promise<Paginated<Membership>> {
+    return request<Paginated<Membership>>(`/memberships/${buildQuery(params)}`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/memberships/` — grants `role` to `user`, scoped to
+   * `project` (omitted/`null` = tenant-wide). Admin may grant any role/
+   * project; a ProjectLead is further restricted server-side (`apps.rbac.
+   * permissions.MembershipPermission`) — this client method itself applies
+   * no extra restriction, the server is the authority. */
+  async createMembership(payload: MembershipCreatePayload): Promise<Membership> {
+    return request<Membership>("/memberships/", { method: "POST", body: payload });
+  },
+
+  /** `PATCH /api/v1/memberships/{id}/` — role change only; `user`/`project`
+   * are read-only past creation (see `MembershipUpdatePayload` doc
+   * comment). */
+  async updateMembership(id: number, payload: MembershipUpdatePayload): Promise<Membership> {
+    return request<Membership>(`/memberships/${id}/`, { method: "PATCH", body: payload });
+  },
+
+  /** `DELETE /api/v1/memberships/{id}/` — removes the membership (a real
+   * permission revocation), `204`. */
+  async deleteMembership(id: number): Promise<void> {
+    await request<void>(`/memberships/${id}/`, { method: "DELETE" });
   },
 };
 
