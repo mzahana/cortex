@@ -363,7 +363,7 @@ export const api = {
     lead_user?: number | null;
     is_active?: boolean;
   }): Promise<Project> {
-    return request<Project>("/projects/", { method: "POST", body: JSON.stringify(payload) });
+    return request<Project>("/projects/", { method: "POST", body: payload });
   },
 
   /** `PATCH /api/v1/projects/{id}/` — same `tenant.manage` gate as create. */
@@ -373,7 +373,7 @@ export const api = {
   ): Promise<Project> {
     return request<Project>(`/projects/${id}/`, {
       method: "PATCH",
-      body: JSON.stringify(payload),
+      body: payload,
     });
   },
 
