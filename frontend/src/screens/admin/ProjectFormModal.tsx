@@ -76,14 +76,26 @@ export function ProjectFormModal({ opened, onClose, onSaved, editing }: ProjectF
       onClose();
     } catch (err) {
       if (err instanceof ApiError && err.problem.errors) {
-        form.setErrors(
-          Object.fromEntries(
-            Object.entries(err.problem.errors).map(([k, v]) => [
-              k,
-              Array.isArray(v) ? v.join(" ") : String(v),
-            ]),
-          ),
-        );
+        // `non_field_errors` (a serializer-level `validate()` failure, e.g.
+        // a uniqueness check with no single offending field) has no
+        // matching form field to attach to — `form.setErrors` would accept
+        // it silently and render nothing, making the submit look like it
+        // did nothing at all. Route it to the visible Alert instead; only
+        // pass real per-field errors to the form.
+        const { non_field_errors: nonField, ...fieldErrors } = err.problem.errors;
+        if (Object.keys(fieldErrors).length > 0) {
+          form.setErrors(
+            Object.fromEntries(
+              Object.entries(fieldErrors).map(([k, v]) => [
+                k,
+                Array.isArray(v) ? v.join(" ") : String(v),
+              ]),
+            ),
+          );
+        }
+        if (nonField) {
+          setFormError(Array.isArray(nonField) ? nonField.join(" ") : String(nonField));
+        }
       } else if (err instanceof ApiError) {
         setFormError(err.problem.detail ?? err.problem.title);
       } else {
