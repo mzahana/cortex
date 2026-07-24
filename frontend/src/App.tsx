@@ -5,6 +5,7 @@ import { LoginScreen } from "./screens/LoginScreen";
 import { DashboardScreen } from "./screens/dashboard/DashboardScreen";
 import { CategoriesScreen } from "./screens/admin/CategoriesScreen";
 import { LocationsScreen } from "./screens/admin/LocationsScreen";
+import { ProjectsScreen } from "./screens/admin/ProjectsScreen";
 import { AssetListScreen } from "./screens/assets/AssetListScreen";
 import { AssetDetailScreen } from "./screens/assets/AssetDetailScreen";
 import { AssetFormScreen } from "./screens/assets/AssetForm";
@@ -220,6 +221,14 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <LocationsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/projects"
+        element={
+          <RequireAuth>
+            <ProjectsScreen />
           </RequireAuth>
         }
       />

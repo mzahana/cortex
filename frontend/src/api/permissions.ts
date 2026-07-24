@@ -19,6 +19,10 @@ export function hasPermission(me: Me | null | undefined, key: string): boolean {
 
 export const CATEGORY_MANAGE = "category.manage";
 export const LOCATION_MANAGE = "location.manage";
+// `apps.catalog.api.ProjectViewSet`'s own docstring: rbac.md has no
+// dedicated `project.manage` key, so Project writes are gated by the
+// Admin-only `tenant.manage` key as the closest documented analog.
+export const TENANT_MANAGE = "tenant.manage";
 
 // `docs/rbac.md` §3 asset action keys (T1.6: Asset List/Detail action
 // gating). Unlike Category/Location above, assets ARE project-scoped

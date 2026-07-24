@@ -11,6 +11,7 @@ import {
   IconPackages,
   IconPrinter,
   IconQrcode,
+  IconSitemap,
   IconUserCircle,
   IconUsers,
   type Icon,
@@ -74,6 +75,7 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { to: "/admin/categories", label: "Categories & Fields", icon: IconCategory, testId: "nav-admin-categories" },
   { to: "/admin/locations", label: "Locations", icon: IconMapPin, testId: "nav-admin-locations" },
+  { to: "/admin/projects", label: "Projects", icon: IconSitemap, testId: "nav-admin-projects" },
   {
     to: "/admin/users",
     label: "Users & Roles",

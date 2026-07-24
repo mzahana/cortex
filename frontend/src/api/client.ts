@@ -355,6 +355,35 @@ export const api = {
     return request<Project>(`/projects/${id}/`, { method: "GET" });
   },
 
+  /** `POST /api/v1/projects/` — requires `tenant.manage` (the closest
+   * documented analog for Project writes; see `ProjectViewSet`'s own
+   * "ASSUMPTION" comment — rbac.md has no dedicated `project.manage` key). */
+  async createProject(payload: {
+    name: string;
+    lead_user?: number | null;
+    is_active?: boolean;
+  }): Promise<Project> {
+    return request<Project>("/projects/", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  /** `PATCH /api/v1/projects/{id}/` — same `tenant.manage` gate as create. */
+  async updateProject(
+    id: number,
+    payload: Partial<{ name: string; lead_user: number | null; is_active: boolean }>,
+  ): Promise<Project> {
+    return request<Project>(`/projects/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** `DELETE /api/v1/projects/{id}/` — same `tenant.manage` gate as create.
+   * A project referenced by assets/reservations/etc. via `PROTECT` FKs
+   * 409s, same `ProtectedError` behavior as `deleteCategory`/`deleteLocation`. */
+  async deleteProject(id: number): Promise<void> {
+    await request<void>(`/projects/${id}/`, { method: "DELETE" });
+  },
+
   // --- Tags (docs/api-and-ui.md "Structure"; apps.catalog.api.TagViewSet, read-only) ---
   // Same "bounded catalog config, not an asset list" reasoning as Projects above.
 
