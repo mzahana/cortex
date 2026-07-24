@@ -36,15 +36,16 @@ import django_filters as filters
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import mixins, viewsets
 from rest_framework.filters import OrderingFilter
+from rest_framework.permissions import BasePermission
 
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.pagination import BoundedPageNumberPagination
 from apps.rbac.permission_keys import ROLE_ASSIGN, USER_MANAGE
 
-from .models import Membership
+from .models import Membership, Role
 from .permissions import MembershipPermission
-from .serializers import MembershipSerializer
-from .services import get_viewable_project_scope
+from .serializers import MembershipSerializer, RoleSerializer
+from .services import get_viewable_project_scope, user_has_permission_in_any_scope
 
 
 class MembershipFilterSet(filters.FilterSet):
@@ -149,3 +150,35 @@ class MembershipViewSet(
             after=None,
             ip=client_ip(self.request),
         )
+
+
+class RoleListPermission(BasePermission):
+    """Any `user.manage` grant, tenant-wide OR project-scoped, is enough to
+    see the tenant's role catalog (roles carry no sensitive data beyond
+    `id`/`key`/`name`, and anyone who can grant a Membership needs this to
+    discover which role ids exist). Deliberately its own tiny permission
+    class rather than reusing `MembershipPermission`: that class dispatches
+    on `MEMBERSHIP_ACTION_PERMISSION_MAP`, which has no "list" entry for
+    this endpoint's own action and would fail-closed incorrectly."""
+
+    def has_permission(self, request, view) -> bool:
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated) and user_has_permission_in_any_scope(
+            user, USER_MANAGE
+        )
+
+
+class RoleViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """`GET /api/v1/roles` — read-only, no create/update/destroy (this
+    MVP's 4 system roles are seeded per-tenant at provisioning time, T0.4;
+    custom roles are out of scope). Exists so the frontend can populate a
+    role picker when granting a Membership — see `RoleSerializer` docstring.
+    """
+
+    serializer_class = RoleSerializer
+    permission_classes = [RoleListPermission]
+    pagination_class = BoundedPageNumberPagination
+
+    def get_queryset(self):
+        # Tenant-scoped manager, resolved per-request.
+        return Role.objects.all().order_by("name")

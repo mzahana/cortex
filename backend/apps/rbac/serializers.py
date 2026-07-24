@@ -25,6 +25,21 @@ from apps.projects.models import Project
 from .models import Membership, Role
 
 
+class RoleSerializer(serializers.ModelSerializer):
+    """`GET /api/v1/roles` — read-only. `id`/`key`/`name` only: a role's
+    permission set is not exposed here (no client-side use case needs it;
+    the effective-permissions list already comes back on `/me`). Exists
+    purely so the frontend can populate a role picker when granting a
+    Membership (`POST /api/v1/memberships` needs a real, tenant-specific
+    `role` id — each tenant gets its own seeded `Role` rows, T0.4 — and
+    there was previously no way to discover them)."""
+
+    class Meta:
+        model = Role
+        fields = ["id", "key", "name"]
+        read_only_fields = fields
+
+
 class MembershipSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source="user.email", read_only=True)
     role_key = serializers.CharField(source="role.key", read_only=True)

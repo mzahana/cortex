@@ -23,7 +23,7 @@ from apps.imports.exports import AssetExportView
 from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
 from apps.notifications.api import NotificationPrefViewSet
-from apps.rbac.api import MembershipViewSet
+from apps.rbac.api import MembershipViewSet, RoleViewSet
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
 from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
@@ -39,6 +39,7 @@ router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-req
 router.register("reservations", ReservationViewSet, basename="reservation")
 router.register("notification-prefs", NotificationPrefViewSet, basename="notification-pref")
 router.register("memberships", MembershipViewSet, basename="membership")
+router.register("roles", RoleViewSet, basename="role")
 # Gap-fill: "create/discover a user" (see apps.accounts.services module
 # docstring) -- `POST /api/v1/users` admin-only create, `GET /api/v1/users`
 # any `user.manage` scope for discovery ahead of `POST /api/v1/memberships`.
