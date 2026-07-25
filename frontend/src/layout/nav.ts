@@ -7,6 +7,7 @@ import {
   IconFileImport,
   IconHistory,
   IconLayoutDashboard,
+  IconMail,
   IconMapPin,
   IconPackages,
   IconPrinter,
@@ -19,9 +20,11 @@ import {
 import type { Me } from "../api/types";
 import {
   LABEL_GENERATE,
+  TENANT_MANAGE,
   hasAnyAssetPermission,
   hasAuditViewPermission,
   hasImportRunPermission,
+  hasPermission,
   hasUserManagePermission,
 } from "../api/permissions";
 
@@ -82,6 +85,17 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconUsers,
     testId: "nav-admin-users",
     hidden: (me) => !hasUserManagePermission(me),
+  },
+  {
+    to: "/admin/email-settings",
+    label: "Email Settings",
+    icon: IconMail,
+    testId: "nav-admin-email-settings",
+    // Unlike Categories/Locations/Projects above (visible to everyone,
+    // read-only for non-managers), the server gates the GET itself on
+    // `tenant.manage` (`EmailSettingsScreen` doc comment) — there is no
+    // read-only view for a non-admin, so hide the nav entry entirely.
+    hidden: (me) => !hasPermission(me, TENANT_MANAGE),
   },
 ];
 
