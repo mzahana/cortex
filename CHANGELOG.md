@@ -10,6 +10,54 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-25
+
+Post-MVP feature batch: per-tenant email settings, reservation-first
+checkout with a month calendar, consumable stock setup from the Asset
+form, a "url" custom field type, My Items history, document attachments,
+and several UX gap-fills.
+
+### Added
+
+- **Per-tenant email settings** (`apps/notifications`) — tenant admins can
+  configure email provider/sender/Brevo API key from the UI
+  (`GET/PUT/PATCH /api/v1/notifications/email-settings`, gated on
+  `tenant.manage`) instead of only via env vars. The Brevo API key is
+  encrypted at rest with `Fernet` (`apps.notifications.crypto`, keyed by
+  the new `EMAIL_SETTINGS_ENCRYPTION_KEY` env var) and never round-trips in
+  API responses. New "Email Settings" admin screen.
+- **Reservation-first checkout + Asset Detail month calendar** — an
+  approved reservation can be checked out/checked in directly from
+  `ReservationListItem`; Asset Detail gets a "Reservations" section with a
+  month-grid calendar view alongside the existing list. `GET /checkouts`
+  gained `?asset=`/`?reservation=` filters and `ReservationSerializer.user`
+  is now a nested `{id, email, name}` object.
+- **Consumable stock setup from the Asset form** — `POST /api/v1/stock`
+  (gated on `stock.adjust`; no dedicated "create stock item" RBAC key
+  exists, documented as an assumption in `docs/rbac.md`) lets a consumable
+  asset get its `StockItem` ledger row (unit/initial quantity/reorder
+  config) at create time or via a standalone "Set up stock tracking" action
+  on an existing asset. `GET /stock` also gained `?asset=`/
+  `?include_retired=true` filters.
+- **`url` custom field data type** — a new option alongside
+  text/int/float/bool/date/enum/json, validated server-side with Django's
+  `URLValidator` (http/https only).
+- **My Items history tab** — a Current/History segmented control; History
+  is `GET /checkouts?open=false`, most-recently-returned-first.
+- **Document attachment uploads** on Asset Detail — `PhotoCapture` now also
+  accepts non-image documents (receipts, purchase orders, etc.) via a
+  second picker.
+- Frontend component-test tooling (Vitest + Testing Library).
+
+### Fixed
+
+- Add Member's user picker now lists current users by default instead of
+  staying empty until a search term is typed.
+
+### Changed
+
+- README rewritten as a numbered, step-by-step fresh-install guide.
+
 ## [0.7.0] - 2026-07-21
 
 Milestone **M6 — Import/export + deploy hardening**: bulk CSV/Excel import
