@@ -24,10 +24,14 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from django.conf import settings
 from django.utils.module_loading import import_string
+
+if TYPE_CHECKING:  # pragma: no cover - import-time only, avoids any
+    # module-level circular import between `providers.py` and `models.py`.
+    from .models import EmailSettings
 
 logger = logging.getLogger("apps.notifications")
 
@@ -110,11 +114,29 @@ class BrevoProvider:
 
     API_URL = "https://api.brevo.com/v3/smtp/email"
 
-    def __init__(self) -> None:
-        # Read ONLY from settings (itself env-only, 12-factor) -- never
-        # hardcoded, never logged (see `send_transactional` below).
+    def __init__(self, settings_row: Optional["EmailSettings"] = None) -> None:
+        # Default (no `settings_row`): read ONLY from settings (itself
+        # env-only, 12-factor) -- never hardcoded, never logged (see
+        # `send_transactional` below). Exact same behavior as before
+        # per-tenant `EmailSettings` existed.
         self._api_key = getattr(settings, "BREVO_API_KEY", "") or ""
         self._sender = getattr(settings, "BREVO_SENDER_EMAIL", "") or ""
+        self._reply_to = getattr(settings, "BREVO_REPLY_TO", "") or ""
+
+        if settings_row is not None and settings_row.api_key_encrypted:
+            # Tenant has configured their own Brevo API key via the UI
+            # (`apps.notifications.models.EmailSettings`) -- decrypt it and
+            # prefer the tenant's sender/reply-to over env defaults. Local
+            # import: `crypto` -> `django.conf.settings` only, no cycle risk,
+            # but keeps this module's imports lazy/minimal like the
+            # `EmailSettings` import below.
+            from .crypto import decrypt_api_key
+
+            self._api_key = decrypt_api_key(bytes(settings_row.api_key_encrypted))
+            if settings_row.sender_email:
+                self._sender = settings_row.sender_email
+            if settings_row.reply_to:
+                self._reply_to = settings_row.reply_to
 
     def send_transactional(
         self,
@@ -140,6 +162,8 @@ class BrevoProvider:
         }
         if self._sender:
             payload["sender"] = {"email": self._sender}
+        if self._reply_to:
+            payload["replyTo"] = {"email": self._reply_to}
         if tags:
             payload["tags"] = tags
 
@@ -166,10 +190,39 @@ class BrevoProvider:
 
 
 def get_email_provider() -> EmailProvider:
-    """Resolve the configured `EmailProvider` from
-    `settings.NOTIFICATION_EMAIL_PROVIDER` (dotted import path, env-driven --
-    same mechanism as `STORAGES["default"]["BACKEND"]`). A fresh instance is
-    returned on every call (construction is cheap; avoids any surprising
-    cross-request/cross-task shared state)."""
+    """Resolve the `EmailProvider` for the CURRENT tenant, if one is set.
+
+    Per-tenant `EmailSettings` (configured via the UI,
+    `apps.notifications.models.EmailSettings`) takes priority over the
+    env-driven default: if `apps.tenancy.context.get_current_tenant_id()`
+    returns a tenant AND that tenant has a row, `row.provider` picks
+    `ConsoleProvider`/`BrevoProvider(row)` directly -- no dotted-path lookup
+    needed since there are only ever these two built-in choices for a
+    per-tenant row.
+
+    Falls back to today's exact behavior -- resolving
+    `settings.NOTIFICATION_EMAIL_PROVIDER` (dotted import path, env-driven,
+    same mechanism as `STORAGES["default"]["BACKEND"]`) -- when there is no
+    current tenant context OR that tenant has no `EmailSettings` row yet
+    (never configured the UI), so this is a zero-behavior-change no-op for
+    every tenant that hasn't touched the new settings.
+
+    A fresh instance is returned on every call (construction is cheap;
+    avoids any surprising cross-request/cross-task shared state).
+    """
+    # Local import: avoids any module-level circular import between
+    # `providers.py` and `models.py`/`apps.tenancy.context`.
+    from apps.tenancy.context import get_current_tenant_id
+
+    from .models import EmailSettings
+
+    tenant_id = get_current_tenant_id()
+    if tenant_id is not None:
+        row = EmailSettings.objects.filter(tenant_id=tenant_id).first()
+        if row is not None:
+            if row.provider == EmailSettings.Provider.BREVO:
+                return BrevoProvider(row)
+            return ConsoleProvider()
+
     provider_class = import_string(settings.NOTIFICATION_EMAIL_PROVIDER)
     return provider_class()

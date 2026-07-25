@@ -22,7 +22,7 @@ from apps.imports.api import ImportCommitView, ImportDetailView, ImportUploadVie
 from apps.imports.exports import AssetExportView
 from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
-from apps.notifications.api import NotificationPrefViewSet
+from apps.notifications.api import EmailSettingsView, NotificationPrefViewSet
 from apps.rbac.api import MembershipViewSet, RoleViewSet
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
@@ -89,6 +89,15 @@ urlpatterns = [
     # `jobs/{id}` is a single-id read keyed by a UUID that isn't a `Job`
     # ModelViewSet's `list`/`create` route, same reasoning as `resolve/` and
     # `dashboard/summary` above.
+    # Per-tenant email delivery config (provider/sender/Brevo API key,
+    # `apps.notifications.models.EmailSettings`): a singleton resource, plain
+    # `path()` (not router-registered — same reasoning as `dashboard/summary`
+    # / `resolve/` above: not a `list`/`create`-shaped CRUD collection).
+    path(
+        "api/v1/notifications/email-settings",
+        EmailSettingsView.as_view(),
+        name="email-settings",
+    ),
     path("api/v1/labels/generate", LabelGenerateView.as_view(), name="label-generate"),
     path("api/v1/jobs/<uuid:job_id>", JobRetrieveView.as_view(), name="job-detail"),
     # T6.1: bulk importer (dry-run upload + commit, plain `path()`s — not

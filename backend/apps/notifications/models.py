@@ -107,3 +107,40 @@ class NotificationPref(TenantScopedModel):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"{self.user_id}:{self.event_type}:{self.email_enabled}"
+
+
+class EmailSettings(TenantScopedModel):
+    """Per-tenant email-provider configuration, so tenant admins can configure
+    email delivery (provider, sender, Brevo API key) from the UI instead of
+    only via env vars. Exactly one row per tenant, enforced by the
+    ``UniqueConstraint`` on ``tenant`` below.
+
+    Tenant-owned -> ``TenantScopedModel``; RLS on ``notifications_email_settings``
+    is added in the accompanying migration (same R4 backstop as every other
+    tenant table). The API/serializers/providers wiring that reads this row is
+    out of scope here and lands in a later step.
+    """
+
+    class Provider(models.TextChoices):
+        CONSOLE = "console", "Console (dev/test — logs only)"
+        BREVO = "brevo", "Brevo"
+
+    provider = models.CharField(
+        max_length=20, choices=Provider.choices, default=Provider.CONSOLE
+    )
+    sender_email = models.CharField(max_length=255, blank=True)
+    reply_to = models.CharField(max_length=255, blank=True)
+    api_key_encrypted = models.BinaryField(blank=True, default=b"")
+    api_key_last4 = models.CharField(max_length=4, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "notifications_email_settings"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant"], name="notifications_email_settings_one_per_tenant"
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"{self.tenant_id}:{self.provider}"

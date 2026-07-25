@@ -26,6 +26,12 @@ CELERY_TASK_EAGER_PROPAGATES = True
 
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
+# Fixed throwaway Fernet key so tests exercising `apps.notifications.crypto`/
+# `EmailSettings.api_key_encrypted` never need real env config (this key is
+# committed and MUST NEVER be reused outside tests). Generated once via
+# `Fernet.generate_key()`.
+EMAIL_SETTINGS_ENCRYPTION_KEY = "4V0-nqr7jkW1dFiOikcfAfGg5rWXFZjvBJM3QM58wS4="
+
 # --- Cache/session backend override (T0.9 finding) --------------------------
 #
 # `base.py` wires `CACHES["default"]` to a REAL Redis (`REDIS_URL`, default

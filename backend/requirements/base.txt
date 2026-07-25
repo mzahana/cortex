@@ -45,3 +45,11 @@ segno==1.6.6
 # uploads use the stdlib `csv` module (no extra dependency).
 openpyxl==3.1.5
 
+# Per-tenant email settings (Brevo API key encryption at rest): `Fernet`
+# symmetric encryption wraps `EmailSettings.api_key_encrypted`
+# (`apps.notifications.crypto`). Verified this has a musllinux wheel (no
+# compiler toolchain needed in this Alpine-based image) via
+# `docker run --rm python:3.12-alpine sh -c "pip install cryptography"`
+# before adding -- see per this repo's Alpine/musl gotcha (CLAUDE.md).
+cryptography==49.0.0
+

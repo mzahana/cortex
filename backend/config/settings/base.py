@@ -293,6 +293,17 @@ NOTIFICATION_EMAIL_PROVIDER = env.str(
 BREVO_API_KEY = env.str("BREVO_API_KEY", default="")
 BREVO_SENDER_EMAIL = env.str("BREVO_SENDER_EMAIL", default="")
 
+# Per-tenant email settings (tenant admins can configure provider/sender/
+# Brevo API key from the UI, `apps.notifications.models.EmailSettings`,
+# instead of only via the env vars above). `api_key_encrypted` is encrypted
+# at rest with `Fernet` (`apps.notifications.crypto`), keyed by this
+# 12-factor env var -- never hardcoded, never logged. Empty by default so a
+# fresh checkout without this set simply can't decrypt/encrypt any tenant
+# API key yet (fails loudly via `ImproperlyConfigured`, not silently); set a
+# real key (`Fernet.generate_key()`) before any tenant configures Brevo
+# through the UI.
+EMAIL_SETTINGS_ENCRYPTION_KEY = env.str("EMAIL_SETTINGS_ENCRYPTION_KEY", default="")
+
 # --- Notification beat scans (T5.2, docs/tasks/M5-notifications-audit-dashboard.md) --
 # ASSUMPTION (flagged, no confirmed Brevo tier -- Q6 is unanswered,
 # docs/risks.md §3): each beat scan (overdue checkouts / low stock) re-checks
