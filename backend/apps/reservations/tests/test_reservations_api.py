@@ -521,3 +521,60 @@ class TestViewerCannotCreate:
             content_type="application/json",
         )
         assert response.status_code == 403, response.content
+
+
+class TestUserFieldNestedRepresentation:
+    """`ReservationSerializer.user` now serializes as the nested
+    `{id, email, name}` shape instead of a bare FK id — this must stay a
+    READ-only convenience, never a new way to set the requester from client
+    input (the requester is always the authenticated caller, mirroring
+    `ReorderRequest.requested_by`)."""
+
+    def test_user_field_is_nested_object_on_read(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant, name="Ada Lovelace")
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        create_response = client.post(
+            "/api/v1/reservations/",
+            data=json.dumps(_create_payload(asset)),
+            content_type="application/json",
+        )
+        assert create_response.status_code == 201, create_response.content
+        body = create_response.json()
+        assert body["user"] == {
+            "id": member.id,
+            "email": member.email,
+            "name": "Ada Lovelace",
+        }
+
+        list_response = client.get("/api/v1/reservations/")
+        assert list_response.status_code == 200, list_response.content
+        row = list_response.json()["results"][0]
+        assert row["user"]["id"] == member.id
+        assert row["user"]["name"] == "Ada Lovelace"
+
+    def test_requester_cannot_be_spoofed_via_client_supplied_user(self, client):
+        """A client passing `"user": <other_user.id>` in the create body
+        must NOT be able to create a reservation "as" someone else — the
+        requester always comes from the authenticated session."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        other_user = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        payload = _create_payload(asset)
+        payload["user"] = other_user.id
+        response = client.post(
+            "/api/v1/reservations/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        assert response.json()["user"]["id"] == member.id  # NOT other_user.id
+
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.get(pk=response.json()["id"])
+            assert reservation.user_id == member.id

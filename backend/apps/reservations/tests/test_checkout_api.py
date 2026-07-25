@@ -450,6 +450,166 @@ class TestReservationLinkedCheckout:
             assert asset.status == Asset.Status.AVAILABLE  # never checked out
 
 
+class TestAssetAndReservationFilters:
+    """`?asset=<id>`/`?reservation=<id>` manual query-param filters on
+    `GET /checkouts` (added alongside `?open=`/`?overdue=`): non-numeric
+    values resolve to an empty list (never a 500/400), and both stay
+    tenant-scoped even against a cross-tenant id."""
+
+    def test_asset_filter_returns_only_that_assets_checkouts(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset_a = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        asset_b = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        checkout_a = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset_a)),
+            content_type="application/json",
+        ).json()["id"]
+        client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset_b)),
+            content_type="application/json",
+        )
+
+        response = client.get(f"/api/v1/checkouts/?asset={asset_a.id}")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {checkout_a}
+
+    def test_reservation_filter_returns_only_the_linked_checkout(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        other_asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        linked_checkout = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        ).json()["id"]
+        client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(other_asset)),
+            content_type="application/json",
+        )
+
+        response = client.get(f"/api/v1/checkouts/?reservation={reservation.id}")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {linked_checkout}
+
+    def test_non_numeric_asset_and_reservation_params_yield_empty_not_error(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+
+        for param, value in (("asset", "not-a-number"), ("reservation", "abc"), ("asset", "")):
+            response = client.get(f"/api/v1/checkouts/?{param}={value}")
+            assert response.status_code == 200, (param, value, response.content)
+            assert response.json()["results"] == []
+
+    def test_asset_filter_combines_with_open_filter(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        checkout_id = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        ).json()["id"]
+        client.post(f"/api/v1/checkouts/{checkout_id}/checkin/", content_type="application/json")
+
+        open_response = client.get(f"/api/v1/checkouts/?asset={asset.id}&open=true")
+        assert open_response.status_code == 200, open_response.content
+        assert open_response.json()["results"] == []
+
+        closed_response = client.get(f"/api/v1/checkouts/?asset={asset.id}&open=false")
+        assert closed_response.status_code == 200, closed_response.content
+        assert {row["id"] for row in closed_response.json()["results"]} == {checkout_id}
+
+    def test_cross_tenant_asset_id_yields_empty_not_another_tenants_checkouts(self, client):
+        """R4: a caller in tenant A filtering `?asset=<id belonging to
+        tenant B>` must get an empty list, never tenant B's checkout(s) —
+        the base queryset is already tenant-scoped BEFORE this filter is
+        applied, so this proves the added filter doesn't reintroduce a leak
+        via a raw `asset_id=int(...)` lookup that skips tenant scoping."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        other_tenant = TenantFactory()
+        other_category = CategoryFactory(tenant=other_tenant)
+        other_asset = AssetFactory(tenant=other_tenant, category=other_category)
+        other_user = UserFactory(tenant=other_tenant)
+        with tenant_context(other_tenant.id):
+            Checkout.objects.create(
+                tenant=other_tenant,
+                asset=other_asset,
+                user=other_user,
+                checked_out_at=timezone.now(),
+                due_at=timezone.now() + timedelta(days=1),
+            )
+
+        _login(client, tenant, admin)
+        response = client.get(f"/api/v1/checkouts/?asset={other_asset.id}")
+        assert response.status_code == 200, response.content
+        assert response.json()["results"] == []
+
+    def test_cross_tenant_reservation_id_yields_empty_not_another_tenants_checkouts(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        other_tenant = TenantFactory()
+        other_category = CategoryFactory(tenant=other_tenant)
+        other_asset = AssetFactory(tenant=other_tenant, category=other_category)
+        other_user = UserFactory(tenant=other_tenant)
+        with tenant_context(other_tenant.id):
+            other_reservation = Reservation.objects.create(
+                tenant=other_tenant,
+                asset=other_asset,
+                user=other_user,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+            Checkout.objects.create(
+                tenant=other_tenant,
+                asset=other_asset,
+                user=other_user,
+                reservation=other_reservation,
+                checked_out_at=timezone.now(),
+                due_at=timezone.now() + timedelta(days=1),
+            )
+
+        _login(client, tenant, admin)
+        response = client.get(f"/api/v1/checkouts/?reservation={other_reservation.id}")
+        assert response.status_code == 200, response.content
+        assert response.json()["results"] == []
+
+
 class TestCrossTenantIsolation:
     def test_checkout_in_another_tenant_404s(self, client):
         tenant = TenantFactory()

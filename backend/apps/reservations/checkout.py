@@ -404,6 +404,32 @@ class CheckoutViewSet(
         ).order_by("-checked_out_at")
 
         if self.action == "list":
+            # `?asset=<id>`/`?reservation=<id>` -- so a caller can look up
+            # "the (open) checkout for this asset/reservation" without
+            # ambiguity (e.g. checking in directly from a reservation/asset
+            # detail screen). Manual query-param handling, same style as
+            # `open`/`overdue` immediately below, rather than
+            # django-filter's `filterset_fields` -- this viewset has no
+            # `DjangoFilterBackend` wired in and these two params don't need
+            # any of its extra machinery. Invalid/non-numeric values simply
+            # match nothing (clean empty list, not a 500/400) -- same
+            # "let it resolve to no rows" tolerance as
+            # `apps.reservations.checkout._resolve_target_project_id_for_asset`
+            # treats a bogus id.
+            asset_param = self.request.query_params.get("asset")
+            if asset_param is not None:
+                try:
+                    qs = qs.filter(asset_id=int(asset_param))
+                except (TypeError, ValueError):
+                    qs = qs.none()
+
+            reservation_param = self.request.query_params.get("reservation")
+            if reservation_param is not None:
+                try:
+                    qs = qs.filter(reservation_id=int(reservation_param))
+                except (TypeError, ValueError):
+                    qs = qs.none()
+
             open_param = self.request.query_params.get("open", "").lower()
             if open_param == "true":
                 # Backed by `reservations_checkout_open_partial`

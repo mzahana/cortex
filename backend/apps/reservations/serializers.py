@@ -20,6 +20,7 @@ from typing import Any
 
 from rest_framework import serializers
 
+from apps.accounts.serializers import UserSerializer
 from apps.assets.models import Asset
 from apps.projects.models import Project
 
@@ -33,7 +34,20 @@ class ReservationSerializer(serializers.ModelSerializer):
     `approval_note` are only ever set by `apps.reservations.services`
     (auto-approve vs. `pending`, and the approve/reject actions) via
     `apps.reservations.api`, never accepted raw from the client body.
+
+    `user` serializes as the nested `UserSerializer` read shape (`id`/
+    `email`/`name`) -- same "who is this" representation
+    `apps.accounts.serializers.UserSerializer` already provides elsewhere --
+    rather than a bare FK id, so a caller can show the requester's name
+    without a second round-trip to `GET /users/{id}`. It stays read-only:
+    `get_fields()` below still routes CREATE through `Asset`/`Project`'s own
+    tenant-scoped querysets, and `user` is never in
+    `Serializer.get_fields()`'s writable set (see `read_only_fields`) --
+    the view always derives it from the authenticated caller, never from
+    this field.
     """
+
+    user = UserSerializer(read_only=True)
 
     class Meta:
         model = Reservation
@@ -52,7 +66,6 @@ class ReservationSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
-            "user",
             "status",
             "approver",
             "approval_note",
