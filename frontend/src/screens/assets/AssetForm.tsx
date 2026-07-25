@@ -29,6 +29,7 @@ import {
   ASSET_EDIT,
   hasAnyAssetPermission,
   hasAssetPermission,
+  STOCK_ADJUST,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
 import { AppLayout } from "../../layout/AppLayout";
@@ -40,6 +41,7 @@ import type {
   CustomFieldDef,
   Location,
   Project,
+  StockItemCreatePayload,
 } from "../../api/types";
 import { buildTree, flattenForSelect } from "../../components/treeUtils";
 import { STATUS_OPTIONS } from "./assetConstants";
@@ -108,6 +110,18 @@ function hasEnteredValue(value: unknown): boolean {
   return true;
 }
 
+/** Client-side mirror of the server's `URLValidator` (absolute URL, http/https
+ * scheme only) for `data_type: "url"` custom fields — catches the common typo
+ * cases (missing scheme, stray spaces) before a round trip to the server. */
+function isValidAbsoluteUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function messageFromDetail(detail: unknown): string {
   if (Array.isArray(detail)) return detail.join(" ");
   if (typeof detail === "object" && detail !== null) return JSON.stringify(detail);
@@ -128,6 +142,20 @@ function messageFromDetail(detail: unknown): string {
  * keys still present in the new field set are kept, values for keys that
  * would be silently dropped are confirmed with the user first
  * (`pendingSwitch` below).
+ *
+ * Feature C (post-MVP gap fill): when "Consumable" is on, a "Consumable
+ * stock" card collects unit/initial-quantity/reorder config and calls
+ * `POST /stock/` (+ a `receive` txn for a nonzero initial quantity, Contract
+ * 3) as a follow-up to the asset save — on create, right after
+ * `createAsset` succeeds; on edit, via its own standalone "Set up stock
+ * tracking" button (the asset already exists, so there's no single combined
+ * submit). ASSUMPTION/flagged gap: `GET /stock` has no `?asset=` filter
+ * (`apps.stock.api.StockItemViewSet.get_queryset` — confirmed by reading the
+ * backend directly), so this form can't proactively know on load whether an
+ * existing consumable asset already has a `StockItem` — the block always
+ * renders for a consumable asset and instead surfaces the server's own
+ * "already has a StockItem" `400` (`errors.asset`) inline as a normal,
+ * handled outcome, same CLAUDE.md pattern as every other write here.
  *
  * Client-side validation (required/type/enum) mirrors the server's own
  * `apps.assets.services.validate_custom_field_values` for immediate UX
@@ -177,6 +205,38 @@ export function AssetFormScreen() {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // --- Feature C (post-MVP gap fill): set initial quantity/reorder config
+  // for a consumable asset, `StockItemCreatePayload`/`Contract 3`. Local
+  // state, not part of `form`/`AssetWritePayload` — `StockItem` is a
+  // separate resource (`POST /stock/`), created as a follow-up call, never
+  // sent as part of `createAsset`/`updateAsset`'s own body.
+  const [stockUnit, setStockUnit] = useState("");
+  const [stockInitialQty, setStockInitialQty] = useState<number | "">("");
+  const [stockReorderThreshold, setStockReorderThreshold] = useState<number | "">(0);
+  const [stockReorderTarget, setStockReorderTarget] = useState<number | "">(0);
+  const [stockSetupBusy, setStockSetupBusy] = useState(false);
+  const [stockSetupError, setStockSetupError] = useState<string | null>(null);
+  const [stockSetupSuccess, setStockSetupSuccess] = useState<string | null>(null);
+  // Set once a `StockItem` is confirmed to exist for this asset — either
+  // this session's own setup succeeded, or the server told us one already
+  // exists (`errors.asset`, `StockItemSerializer.validate_asset`). There is
+  // no `GET /stock?asset=<id>` filter to check this proactively on load
+  // (flagged for backend-engineer below) — see this file's module doc
+  // comment for the full assumption.
+  const [stockAlreadyTracked, setStockAlreadyTracked] = useState(false);
+  // Set only when THIS handler invocation created the `StockItem` and the
+  // follow-up "receive" txn (initial quantity) then failed — distinct from
+  // `stockAlreadyTracked` alone, which is also true for a pre-existing item
+  // discovered via the server's "already has a StockItem" 400. That
+  // distinction matters: a pre-existing item has nothing to retry here (its
+  // quantity, if any, was already set by whoever created it); a StockItem
+  // this action just created is stuck at quantity 0 until the receive txn
+  // succeeds, so it's the one case where re-attempting just that call (not
+  // the whole create-flow, which would now 400) is the right recovery.
+  const [pendingStockReceiveRetry, setPendingStockReceiveRetry] = useState<{ stockItemId: number } | null>(
+    null,
+  );
 
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -366,12 +426,126 @@ export function AssetFormScreen() {
           if (!def.enum_options.includes(String(value)))
             errors[def.key] = `Must be one of: ${def.enum_options.join(", ")}.`;
           break;
+        case "url":
+          if (typeof value !== "string" || !isValidAbsoluteUrl(value))
+            errors[def.key] = "Expected a valid URL starting with http:// or https://.";
+          break;
         default:
           break;
       }
     }
     return errors;
   }
+
+  /** Step 1 of stock setup: `POST /stock/` for `assetId` only. Returns `null`
+   * (no-op) if the unit of measure was left blank (stock setup is optional —
+   * a consumable asset can still be created/edited without one, tracking
+   * added later). Throws on failure (including the server's "already has a
+   * StockItem" 400) so callers can distinguish "nothing was created" from
+   * step 2 failing below. */
+  async function createStockItemOnly(assetId: number) {
+    if (!stockUnit.trim()) return null;
+    const payload: StockItemCreatePayload = {
+      asset: assetId,
+      unit_of_measure: stockUnit.trim(),
+      reorder_threshold: stockReorderThreshold === "" ? 0 : stockReorderThreshold,
+      reorder_target: stockReorderTarget === "" ? 0 : stockReorderTarget,
+    };
+    return api.createStockItem(payload);
+  }
+
+  /** Step 2 of stock setup: a `receive` txn (Contract 3) to set the entered
+   * initial quantity on an already-created `StockItem`. No-op if the user
+   * left the initial quantity at 0 (the `StockItem` already starts there).
+   * Split out from `createStockItemOnly` so a failure here — after the
+   * `StockItem` already exists — can be retried on its own, without
+   * re-running (and 400ing on) the create call. */
+  async function receiveInitialStock(stockItemId: number) {
+    const initialQty = stockInitialQty === "" ? 0 : stockInitialQty;
+    if (initialQty > 0) {
+      await api.postStockTxn(stockItemId, {
+        reason: "receive",
+        delta: initialQty,
+        ref: "Initial stock (asset setup)",
+      });
+    }
+  }
+
+  /** Edit-mode-only standalone "Set up stock tracking" action — the asset
+   * already exists (unlike create mode, there's no single combined submit to
+   * piggyback on). */
+  const handleSetupStock = async (assetId: number) => {
+    setStockSetupError(null);
+    setStockSetupSuccess(null);
+    setPendingStockReceiveRetry(null);
+    if (!stockUnit.trim()) {
+      setStockSetupError("Unit of measure is required to set up stock tracking.");
+      return;
+    }
+    setStockSetupBusy(true);
+    try {
+      const stockItem = await createStockItemOnly(assetId);
+      if (!stockItem) return; // unreachable given the blank-unit guard above
+      try {
+        await receiveInitialStock(stockItem.id);
+        setStockAlreadyTracked(true);
+        setStockSetupSuccess("Stock tracking set up for this asset.");
+      } catch (receiveErr) {
+        // The StockItem WAS created (at quantity 0) — this is a partial
+        // success, not a total failure, and re-running this handler would
+        // now just 400 "already has a StockItem". Offer a scoped retry of
+        // just the receive txn instead (`pendingStockReceiveRetry`).
+        setStockAlreadyTracked(true);
+        setPendingStockReceiveRetry({ stockItemId: stockItem.id });
+        setStockSetupError(
+          receiveErr instanceof ApiError
+            ? `Stock tracking was set up (starting at 0 units), but setting the initial quantity failed: ${
+                receiveErr.problem.detail ?? receiveErr.problem.title
+              }. You can add stock from the Stock screen, or retry below.`
+            : "Stock tracking was set up (starting at 0 units), but setting the initial quantity failed: unable to reach the server. You can add stock from the Stock screen, or retry below.",
+        );
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.problem.errors?.asset) {
+        // "Only a consumable asset may own a StockItem" / "already has a
+        // StockItem" both land here — the latter means someone else already
+        // set this up (e.g. a concurrent edit) mid-session BEFORE this
+        // action ran, so there's nothing of this action's own to retry.
+        setStockAlreadyTracked(true);
+      }
+      setStockSetupError(
+        err instanceof ApiError
+          ? messageFromDetail(err.problem.errors?.asset ?? err.problem.detail ?? err.problem.title)
+          : "Unable to reach the server. Please try again.",
+      );
+    } finally {
+      setStockSetupBusy(false);
+    }
+  };
+
+  /** Retry just the "receive" txn for a `StockItem` this form already
+   * created in this session (`pendingStockReceiveRetry`) — recovery path for
+   * the "StockItem created, receive txn failed" case above. */
+  const handleRetryStockReceive = async () => {
+    if (!pendingStockReceiveRetry) return;
+    setStockSetupBusy(true);
+    setStockSetupError(null);
+    try {
+      await receiveInitialStock(pendingStockReceiveRetry.stockItemId);
+      setPendingStockReceiveRetry(null);
+      setStockSetupSuccess("Initial quantity set for this asset's stock.");
+    } catch (err) {
+      setStockSetupError(
+        err instanceof ApiError
+          ? `Setting the initial quantity failed: ${
+              err.problem.detail ?? err.problem.title
+            }. You can add stock from the Stock screen, or retry below.`
+          : "Unable to reach the server. Please try again.",
+      );
+    } finally {
+      setStockSetupBusy(false);
+    }
+  };
 
   function applyServerErrors(errors: Record<string, unknown>) {
     const standardErrors: Record<string, string> = {};
@@ -436,7 +610,47 @@ export function AssetFormScreen() {
         isEdit && existingAsset
           ? await api.updateAsset(existingAsset.id, payload)
           : await api.createAsset(payload);
-      navigate(`/assets/${saved.id}`);
+
+      // Feature C: only on CREATE — edit mode has its own standalone "Set up
+      // stock tracking" button (`handleSetupStock`) since the asset already
+      // existed before this submit. The asset itself already saved
+      // successfully at this point, so a stock-setup failure must not read
+      // as "your changes were lost" — it's surfaced as a banner on the asset
+      // detail page the caller lands on regardless (`location.state`, see
+      // `AssetDetailScreen`), not as a blocking error on this form.
+      let stockWarning: string | null = null;
+      let stockRetry: { stockItemId: number; initialQty: number } | null = null;
+      if (!isEdit && values.is_consumable) {
+        try {
+          const stockItem = await createStockItemOnly(saved.id);
+          if (stockItem) {
+            try {
+              await receiveInitialStock(stockItem.id);
+            } catch (receiveErr) {
+              // The StockItem WAS created (at quantity 0) — this is a
+              // partial success, not "stock setup failed" outright, and the
+              // Asset Detail screen this navigate lands on gets a scoped
+              // retry it can offer against the known `stockItem.id`.
+              stockWarning =
+                receiveErr instanceof ApiError
+                  ? `Stock tracking was set up (starting at 0 units), but setting the initial quantity failed: ${
+                      receiveErr.problem.detail ?? receiveErr.problem.title
+                    }. You can add stock from the Stock screen.`
+                  : "Stock tracking was set up (starting at 0 units), but setting the initial quantity failed: unable to reach the server. You can add stock from the Stock screen.";
+              stockRetry = { stockItemId: stockItem.id, initialQty: stockInitialQty === "" ? 0 : stockInitialQty };
+            }
+          }
+        } catch (stockErr) {
+          stockWarning =
+            stockErr instanceof ApiError
+              ? `Asset created, but stock setup failed: ${stockErr.problem.detail ?? stockErr.problem.title}`
+              : "Asset created, but stock setup failed: unable to reach the server.";
+        }
+      }
+      navigate(
+        `/assets/${saved.id}`,
+        stockWarning ? { state: { banner: stockWarning, stockRetry } } : undefined,
+      );
     } catch (err) {
       if (err instanceof ApiError && err.problem.errors) {
         applyServerErrors(err.problem.errors);
@@ -525,6 +739,8 @@ export function AssetFormScreen() {
   }
 
   const canAttach = existingAsset ? hasAssetPermission(me, ASSET_ATTACH, existingAsset.project) : false;
+  const stockProjectId = existingAsset ? existingAsset.project : form.values.project ? Number(form.values.project) : null;
+  const canManageStock = hasAssetPermission(me, STOCK_ADJUST, stockProjectId);
 
   return (
     <AppLayout
@@ -578,6 +794,98 @@ export function AssetFormScreen() {
                 />
               </Stack>
             </Card>
+
+            {form.values.is_consumable && (
+              <Card withBorder data-testid="asset-form-stock-card">
+                <Stack gap="sm">
+                  <Title order={6}>Consumable stock</Title>
+                  {!canManageStock ? (
+                    <Text size="sm" c="dimmed">
+                      You don&apos;t have permission to set up stock tracking for this asset.
+                    </Text>
+                  ) : stockAlreadyTracked ? (
+                    pendingStockReceiveRetry ? (
+                      <Stack gap="xs">
+                        {stockSetupError && (
+                          <Alert color="yellow" data-testid="asset-form-stock-error">
+                            {stockSetupError}
+                          </Alert>
+                        )}
+                        <Group justify="flex-end">
+                          <Button
+                            size="xs"
+                            variant="light"
+                            loading={stockSetupBusy}
+                            onClick={() => void handleRetryStockReceive()}
+                            data-testid="asset-form-stock-retry"
+                          >
+                            Retry setting initial quantity
+                          </Button>
+                        </Group>
+                      </Stack>
+                    ) : (
+                      <Text size="sm" c="teal">
+                        {stockSetupSuccess ?? "Stock tracking is already set up for this asset"} — manage quantities
+                        from the Stock screen.
+                      </Text>
+                    )
+                  ) : (
+                    <>
+                      <Text size="xs" c="dimmed">
+                        {isEdit
+                          ? "Add stock tracking to this existing consumable asset."
+                          : "Optional — leave the unit blank to add stock tracking later from the edit screen."}
+                      </Text>
+                      {stockSetupError && (
+                        <Alert color="red" data-testid="asset-form-stock-error">
+                          {stockSetupError}
+                        </Alert>
+                      )}
+                      <TextInput
+                        label="Unit of measure"
+                        placeholder="e.g. pcs, ml, rolls"
+                        value={stockUnit}
+                        onChange={(e) => setStockUnit(e.currentTarget.value)}
+                        data-testid="asset-form-stock-unit"
+                      />
+                      <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
+                        <NumberInput
+                          label="Initial quantity"
+                          min={0}
+                          value={stockInitialQty}
+                          onChange={(v) => setStockInitialQty(v === "" ? "" : Number(v))}
+                        />
+                        <NumberInput
+                          label="Reorder threshold"
+                          min={0}
+                          value={stockReorderThreshold}
+                          onChange={(v) => setStockReorderThreshold(v === "" ? "" : Number(v))}
+                        />
+                        <NumberInput
+                          label="Reorder target"
+                          min={0}
+                          value={stockReorderTarget}
+                          onChange={(v) => setStockReorderTarget(v === "" ? "" : Number(v))}
+                        />
+                      </SimpleGrid>
+                      {isEdit && existingAsset && (
+                        <Group justify="flex-end">
+                          <Button
+                            size="xs"
+                            variant="light"
+                            loading={stockSetupBusy}
+                            onClick={() => void handleSetupStock(existingAsset.id)}
+                            data-testid="asset-form-stock-setup"
+                          >
+                            Set up stock tracking
+                          </Button>
+                        </Group>
+                      )}
+                    </>
+                  )}
+                </Stack>
+              </Card>
+            )}
 
             <Card withBorder>
               <Stack gap="sm">

@@ -24,6 +24,8 @@ import type {
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
   DashboardSummary,
+  EmailSettings,
+  EmailSettingsUpdate,
   ImportJob,
   ImportMapping,
   Job,
@@ -50,6 +52,7 @@ import type {
   ReservationListParams,
   Role,
   StockItem,
+  StockItemCreatePayload,
   StockListParams,
   StockTxnPayload,
   StockTxnResponse,
@@ -501,6 +504,19 @@ export const api = {
     return request<StockItem>(`/stock/${id}/`, { method: "GET" });
   },
 
+  /** `POST /api/v1/stock/` — creates a `StockItem` for a consumable asset
+   * (post-MVP gap fill; requires `stock.adjust`, scoped to the asset's
+   * project). `quantity_on_hand` always starts at `0` — see
+   * `StockItemCreatePayload` doc comment for why: follow this with
+   * `postStockTxn(..., {reason: "receive", delta: <n>})` to set an actual
+   * starting count, presented to the user as one "set up stock" step even
+   * though it's two requests. A `400` under `errors.asset` means the asset
+   * either isn't consumable or already has a `StockItem` — surface it inline,
+   * same "server is the authority" pattern as everywhere else in this module. */
+  async createStockItem(payload: StockItemCreatePayload): Promise<StockItem> {
+    return request<StockItem>("/stock/", { method: "POST", body: payload });
+  },
+
   /** `POST /api/v1/stock/{id}/txn/` — apply a ledger transaction
    * (receive/consume/adjust/correction). Requires `stock.adjust` (receive/
    * adjust/correction) or `stock.consume` (consume), scoped to the stock
@@ -611,7 +627,10 @@ export const api = {
    * caller's own checkouts UNION their scope (docs/rbac.md §1) — see
    * `CheckoutListParams` doc comment: there is no `?user=me` param, the
    * server already includes "my own" regardless of scope. `?open=true`/
-   * `?overdue=true` are the documented filters (T3.5 My Items screen). */
+   * `?overdue=true` are the documented filters (T3.5 My Items screen);
+   * `?asset=`/`?reservation=` (post-MVP gap fill) let a caller reliably find
+   * "the (open) checkout for this specific asset/reservation" instead of
+   * scanning a bounded open-checkouts page client-side. */
   async listCheckouts(params?: CheckoutListParams): Promise<Paginated<Checkout>> {
     return request<Paginated<Checkout>>(`/checkouts/${buildQuery(params)}`, { method: "GET" });
   },
@@ -776,6 +795,29 @@ export const api = {
     payload: NotificationPrefUpdatePayload,
   ): Promise<NotificationPref> {
     return request<NotificationPref>(`/notification-prefs/${eventType}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  // --- Email settings (docs/api-and-ui.md; apps.notifications.api.
+  // EmailSettingsView) --- NOTE: no trailing slash — this is a plain
+  // `path()`-registered singleton, not a router-registered ModelViewSet
+  // collection (see `backend/config/urls.py`'s `email-settings` route).
+
+  /** `GET /api/v1/notifications/email-settings` — requires `tenant.manage`
+   * (BOTH read and write are gated on it server-side; a non-admin 403s on
+   * this GET too, not just on writes). */
+  async getEmailSettings(): Promise<EmailSettings> {
+    return request<EmailSettings>("/notifications/email-settings", { method: "GET" });
+  },
+
+  /** `PATCH /api/v1/notifications/email-settings` — requires `tenant.manage`.
+   * `payload.api_key` has "omit vs blank" semantics — see
+   * `EmailSettingsUpdate` doc comment; only include the key when the caller
+   * actually means to change/clear it. */
+  async updateEmailSettings(payload: EmailSettingsUpdate): Promise<EmailSettings> {
+    return request<EmailSettings>("/notifications/email-settings", {
       method: "PATCH",
       body: payload,
     });

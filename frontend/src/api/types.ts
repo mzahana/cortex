@@ -72,7 +72,8 @@ export type CustomFieldDataType =
   | "bool"
   | "date"
   | "enum"
-  | "json";
+  | "json"
+  | "url";
 
 /** `GET /api/v1/categories/{id}/fields` item shape
  * (`apps.catalog.serializers.CustomFieldDefSerializer`). `category` is
@@ -353,6 +354,21 @@ export interface StockItem {
   updated_at: string;
 }
 
+/** `POST /api/v1/stock/` request body (post-MVP gap fill, `apps.stock.api`
+ * module docstring / `apps.stock.serializers.StockItemSerializer`). Requires
+ * `stock.adjust`; `asset` must be `is_consumable` and not already own a
+ * `StockItem` (both re-validated server-side — a `400` under `errors.asset`
+ * either way). `quantity_on_hand` is NOT settable here (always starts at the
+ * model default, `0`) — follow up with `api.postStockTxn(..., {reason:
+ * "receive", delta: <n>})` to set an actual initial count in a second call. */
+export interface StockItemCreatePayload {
+  asset: number;
+  unit_of_measure: string;
+  reorder_threshold?: number;
+  reorder_target?: number;
+  bin_location?: number | null;
+}
+
 /** `GET /api/v1/stock` query params (`apps.stock.api.StockItemViewSet`).
  * `low_stock=true` filters to `quantity_on_hand <= reorder_threshold`
  * (the T2.3 partial-index scan). `ordering` whitelist matches
@@ -465,14 +481,16 @@ export type ReservationStatus =
   | "expired";
 
 /** `GET /api/v1/reservations` (list row / calendar feed item) / detail —
- * `apps.reservations.serializers.ReservationSerializer`. `asset`/`user`/
- * `project`/`approver` are plain ids (not nested) — the screen resolves
- * asset/user names separately, same "id, not nested" convention as
- * `StockItem.asset`. */
+ * `apps.reservations.serializers.ReservationSerializer`. `asset`/`project`/
+ * `approver` are plain ids (not nested) — the screen resolves asset names
+ * separately, same "id, not nested" convention as `StockItem.asset`. `user`
+ * (the requester) IS nested — `{id, email, name}`, same `AppUser` shape as
+ * every other nested-user field in this API (see `AppUser` below) — so the
+ * UI can render "Requested by: {name}" without a second lookup. */
 export interface Reservation {
   id: number;
   asset: number;
-  user: number;
+  user: AppUser;
   project: number | null;
   start_at: string;
   end_at: string;
@@ -561,17 +579,22 @@ export interface CheckinPayload {
 }
 
 /** `GET /api/v1/checkouts` query params (`apps.reservations.checkout.
- * CheckoutViewSet.get_queryset`). **No `asset`/`user` query filter is wired
- * server-side** — only `open`/`overdue` are recognized (expressed directly
- * as queryset predicates, not `django_filter` `filterset_fields`); `search`
- * is inherited from `ListParams` but similarly unimplemented. Do not send
- * either until a backend task adds them (flagged, same as `StockListParams`'s
- * missing `search`). Listing is already scoped server-side to the caller's
- * own checkouts UNION their `checkout.manage`/`checkout.override` project
- * scope — there is no `?user=me` param to pass (nor is one needed). */
+ * CheckoutViewSet.get_queryset`). `asset`/`reservation` are manual
+ * query-param filters (same "let a bogus id resolve to no rows" tolerance as
+ * `open`/`overdue`, not `django_filter` `filterset_fields`) — the documented
+ * way to find "the (open) checkout for this specific asset/reservation"
+ * (e.g. `?reservation=<id>&open=true`) without a client-side scan. **No
+ * `user` query filter is wired server-side**; `search` is inherited from
+ * `ListParams` but similarly unimplemented — do not send either until a
+ * backend task adds them (flagged, same as `StockListParams`'s missing
+ * `search`). Listing is already scoped server-side to the caller's own
+ * checkouts UNION their `checkout.manage`/`checkout.override` project scope
+ * — there is no `?user=me` param to pass (nor is one needed). */
 export interface CheckoutListParams extends ListParams {
   open?: boolean;
   overdue?: boolean;
+  asset?: number;
+  reservation?: number;
   ordering?:
     | "due_at"
     | "-due_at"
@@ -661,6 +684,36 @@ export interface NotificationPref {
  * client-writable field. */
 export interface NotificationPrefUpdatePayload {
   email_enabled: boolean;
+}
+
+// --- Email settings (`GET/PUT/PATCH /api/v1/notifications/email-settings`;
+// `apps.notifications.serializers.EmailSettingsSerializer`) — tenant admins
+// configure Brevo/console email delivery from the UI. Singleton per tenant
+// (no list, no id in the URL); gated server-side on `tenant.manage` for BOTH
+// read and write.
+
+/** Read shape. The raw/encrypted API key is NEVER included — only
+ * `has_api_key`/`api_key_last4` (a harmless last-4-chars hint), same UX
+ * pattern as most "add a payment card" UIs. */
+export interface EmailSettings {
+  provider: "console" | "brevo";
+  sender_email: string;
+  reply_to: string;
+  api_key_last4: string;
+  has_api_key: boolean;
+  updated_at: string;
+}
+
+/** `PUT/PATCH /api/v1/notifications/email-settings` request body.
+ * `api_key` is write-only and has "omit vs blank" semantics (see
+ * `EmailSettingsSerializer` docstring): omit the field entirely to leave the
+ * stored key untouched, send `""` to explicitly clear it, or a non-empty
+ * string to set/replace it — never always send it on every save. */
+export interface EmailSettingsUpdate {
+  provider: "console" | "brevo";
+  sender_email: string;
+  reply_to: string;
+  api_key?: string;
 }
 
 // --- Audit log (T5.3/T5.6; `apps.audit.api`/`apps.audit.serializers`) —
