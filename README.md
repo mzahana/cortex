@@ -13,6 +13,12 @@ for the handful of open product decisions (exact deploy hostname, Avery
 label stock, a real import spreadsheet sample) still pending before a live
 deploy is fully tuned to your lab.
 
+**Jump to:** [What it does](#what-it-does) · [Stack](#stack) ·
+[Repository layout](#repository-layout) ·
+[Fresh install — local dev](#fresh-install--local-dev) ·
+[Deploying to production](#deploying-to-production-nas--cloudflare-tunnel) ·
+[Documentation map](#documentation-map)
+
 ## What it does
 
 | Area | Capability |
@@ -76,31 +82,158 @@ ledger), `reservations` (booking + checkout), `labels` (QR label PDFs),
 CSV/Excel import + CSV export), `notifications` (email), `audit`,
 `dashboard`, `common` (shared test factories/utilities).
 
-## Getting started (local dev)
+## Fresh install — local dev
+
+Follow these steps **in order** for a brand-new checkout. Every step is
+required unless marked optional; skipping the frontend build (step 3) is
+the most common reason `http://localhost` shows a blank/404 page.
+
+**0. Prerequisites:** Docker + Docker Compose v2, Node.js 20+ (for the
+frontend build only — not needed inside the containers), git.
+
+**1. Clone and configure secrets/config.** All config is env-based (12-factor,
+see `CLAUDE.md`) — nothing else needs editing for a local dev run:
 
 ```bash
-cp .env.example .env              # fill in real values; never commit .env
-docker compose up -d               # postgres, redis, migrate, web, worker,
-                                    # beat, nginx (cloudflared no-ops locally
-                                    # without a real TUNNEL_TOKEN)
+git clone <this-repo-url> cortex && cd cortex
+cp .env.example .env
 ```
 
-`migrate` runs automatically before `web` starts — no manual migration step
-needed on first boot. The app is then reachable at `http://localhost` via
-nginx (add a port mapping in a local `docker-compose.override.yml` if you
-need one, e.g. `nginx: {ports: ["8080:80"]}`).
+Open `.env` and fill in every `changeme-*` placeholder. For local dev the
+defaults for `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS`/`DJANGO_SETTINGS_MODULE`
+etc. in `.env.example` are fine as-is except:
+- `SECRET_KEY` — generate one: `python3 -c "import secrets; print(secrets.token_urlsafe(50))"`.
+- `POSTGRES_PASSWORD` / `DATABASE_URL`, and `APP_DB_PASSWORD` /
+  `APP_DATABASE_URL` — pick real (even if only locally-real) passwords; keep
+  each password consistent between the two vars that reference it.
+- `BREVO_API_KEY` / `TUNNEL_TOKEN` — can stay as placeholders for local dev;
+  email sends will fail (logged, not fatal) and `cloudflared` will just idle
+  without a real tunnel token — neither blocks the rest of the stack.
+See `.env.example`'s inline comments for what every variable does and which
+are required vs. optional; `docs/deployment.md` explains the reasoning
+behind the two separate DB roles (`cortex` owner vs. `cortex_app` RLS-subject
+runtime role) and other non-obvious choices.
 
-Frontend dev server with hot reload (proxies `/api` to the backend):
+**2. Build the containers.** One shared image serves `web`/`worker`/`beat`/
+`migrate` (`docker/Dockerfile`); `postgres`/`redis`/`nginx`/`cloudflared` use
+pinned upstream images and don't need building:
+
+```bash
+docker compose build
+```
+
+**3. Build the frontend PWA bundle.** `nginx` serves static files from
+`frontend/dist/`, which is bind-mounted but **not built automatically** —
+build it once before first bring-up, and again after any frontend change
+you want reflected in the containerized app (the hot-reload dev server in
+step 5 is a separate, faster path for active frontend development):
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+```
+
+**4. Bring the stack up.**
+
+```bash
+docker compose up -d
+```
+
+This starts all 7 services: `postgres`, `redis`, `migrate` (a one-off that
+runs `manage.py migrate --noinput` and exits — no manual migration step
+needed), then `web`, `worker`, `beat`, `nginx` (`cloudflared` will restart-
+loop harmlessly without a real `TUNNEL_TOKEN`, per step 1). Check everything
+came up healthy:
+
+```bash
+docker compose ps      # all services should show "Up" (healthy) after ~30-60s
+docker compose logs -f web   # tail logs if something looks wrong
+```
+
+The app is now reachable at `http://localhost` via nginx. nginx publishes no
+host port by default (it's designed to sit behind the Cloudflare Tunnel in
+production — see "Deploying to production" below); for local browser access,
+add a port mapping via a `docker-compose.override.yml` (compose loads this
+file automatically alongside `docker-compose.yml`, no extra flag needed) —
+example already provided at the repo root:
+
+```yaml
+services:
+  nginx:
+    ports:
+      - "8080:80"
+```
+
+then browse `http://localhost:8080`.
+
+**5. (Optional) Frontend dev server with hot reload**, for active frontend
+work — proxies `/api` to the backend so you don't need to rebuild `dist/` on
+every change:
 
 ```bash
 cd frontend && npm install && npm run dev
 ```
 
-Create your first tenant + admin user — see
-[`docs/deployment-runbook.md`](docs/deployment-runbook.md) §3c for the exact
-commands (must run inside `tenant_context(...)`, since the app connects as a
-non-superuser RLS-subject role — a naive `create_superuser()` call will be
-rejected by Row-Level Security).
+**6. Create your first tenant + admin user.** There's no signup flow by
+design (multi-tenant, invite-only) — create the first tenant and admin from
+a Django shell. Full copy-pasteable snippet:
+[`docs/deployment-runbook.md`](docs/deployment-runbook.md) §3c (must run
+inside `tenant_context(...)`, since the app connects as a non-superuser
+RLS-subject role — a naive `create_superuser()` call will be rejected by Row-
+Level Security). In short:
+
+```bash
+docker compose exec web python manage.py shell
+```
+
+then log in at `http://localhost` (or `:8080` with the override above) with
+the tenant slug, email, and password you set.
+
+### Stopping / disabling the stack
+
+```bash
+docker compose stop        # stop all containers, keep them (and volumes) for a fast restart
+docker compose down        # stop AND remove containers/network (data in named volumes — pgdata,
+                            # redis-data, media, static — is preserved; add -v to also wipe volumes)
+```
+
+To disable auto-start on boot (Docker's own `restart: unless-stopped` will
+otherwise bring everything back after a host/Docker restart), stop the stack
+with `docker compose stop`, not `down` — a stopped-but-present stack stays
+stopped across a Docker daemon restart, while `down` only removes it until
+the next `docker compose up`. There is no separate "disable" flag; `stop` is
+the disable.
+
+### Rebuilding & restarting after changes
+
+- **Backend code changed** (anything under `backend/`): the image bakes in
+  source at build time (no bind mount) — rebuild before restarting, or you
+  silently run stale code:
+  ```bash
+  docker compose build web worker beat migrate
+  docker compose up -d
+  ```
+- **Frontend code changed**: rebuild the static bundle nginx serves (no
+  container rebuild needed, it's a bind mount):
+  ```bash
+  cd frontend && npm run build && cd ..
+  docker compose restart nginx
+  ```
+- **`.env` changed**: restart the affected services to pick up new env vars
+  (compose does not hot-reload `env_file:`):
+  ```bash
+  docker compose up -d     # recreates any service whose config/env changed
+  ```
+- **New migration added**: just `docker compose up -d` — the `migrate`
+  one-off re-runs automatically on every `up` (it's idempotent; already-
+  applied migrations are a no-op) before `web`/`worker`/`beat` start.
+- **Pulled new code from git** (dependency or model changes are the common
+  case): rebuild, then bring back up — the safe, always-correct sequence is
+  simply steps 2-4 of the fresh-install flow above, repeated:
+  ```bash
+  docker compose build
+  cd frontend && npm install && npm run build && cd ..
+  docker compose up -d
+  ```
 
 ### Running tests
 
@@ -118,24 +251,58 @@ docker compose run --rm --no-deps -u root \
 
 Frontend: `cd frontend && npm run typecheck && npm run lint && npm run build`.
 
-## Deploying
+## Deploying to production (NAS + Cloudflare Tunnel)
 
 Cortex is designed to self-host on a small NAS (reference target: Synology
 DS220+) behind a Cloudflare Tunnel (no inbound ports opened, TLS terminated
-at the edge). To deploy:
+at the edge). The steps mirror the local fresh install above, plus one-time
+Cloudflare/Brevo setup and a production compose overlay:
 
 1. Read [`docs/deployment.md`](docs/deployment.md) for the design-level
-   overview (topology, memory budget, hardening checklist).
+   overview (topology, memory budget, hardening checklist) — read this
+   first so the runbook's steps make sense.
 2. Follow [`docs/deployment-runbook.md`](docs/deployment-runbook.md) for the
-   exact, copy-pasteable steps: Cloudflare Tunnel + DNS + SSL setup,
-   SPF/DKIM/DMARC records for email deliverability, Synology Container
-   Manager bring-up, and first-boot tenant/admin creation. Bring the stack
-   up with the production overlay: `docker compose -f docker-compose.yml -f
-   docker-compose.prod.yml up -d`.
-3. Set up backups: `docker/backup/backup.sh` (nightly `pg_dump`, daily+weekly
-   rotation) — wire it into your scheduler per the runbook's Backups section.
-   **Test your restore before you need it** — the runbook documents a real,
-   verified restore drill to follow.
+   exact, copy-pasteable steps, **in this order**: Cloudflare Tunnel + DNS
+   setup (§1), Brevo sender domain SPF/DKIM/DMARC (§2), NAS shared-folder
+   layout and `.env` (§3a-3b), then first bring-up (§3c):
+   ```bash
+   # from the NAS project directory, .env filled in and frontend/dist built:
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+   ```
+   `docker-compose.prod.yml` is an **overlay**, not a replacement — always
+   pass both `-f` flags together (every command in this section and the
+   runbook does). It forces `DJANGO_SETTINGS_MODULE=config.settings.prod`
+   as defense-in-depth and makes the gunicorn worker count explicit/tunable
+   via `GUNICORN_WORKERS`; everything else (mem limits, restart policy,
+   healthchecks, volumes) stays the base file's values.
+3. Create the first tenant + admin — runbook §3c (same shell snippet as
+   local dev, run against the prod-overlay stack).
+4. Run through the runbook's §4 verification checklist (HTTPS reachable,
+   security headers, login, edge rate-limit, camera scan on a real phone,
+   SPF/DKIM/DMARC pass, reboot survival).
+5. Set up backups: `docker/backup/backup.sh` (nightly `pg_dump`,
+   daily+weekly rotation) — wire it into DSM Task Scheduler per the
+   runbook's §5. **Test your restore before you need it** — §5d documents a
+   real, verified restore drill to follow.
+
+**Stopping, disabling, rebuilding, and restarting in production** work
+exactly as in the "Stopping / disabling the stack" and "Rebuilding &
+restarting after changes" sections above — just add `-f docker-compose.yml
+-f docker-compose.prod.yml` to every `docker compose` command. For example,
+to stop the whole production stack (e.g. for maintenance) without losing
+data:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml stop
+```
+
+and to bring it back:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
 
 ## Documentation map
 
