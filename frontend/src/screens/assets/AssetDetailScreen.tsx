@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Anchor,
   Badge,
   Button,
   Card,
@@ -8,13 +9,14 @@ import {
   Group,
   Loader,
   Modal,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Text,
   Title,
   Tooltip,
 } from "@mantine/core";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../../api/client";
 import {
   ASSET_ATTACH,
@@ -23,6 +25,7 @@ import {
   CHECKOUT_MANAGE,
   hasAssetPermission,
   RESERVATION_CREATE,
+  STOCK_ADJUST,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
 import { AppLayout } from "../../layout/AppLayout";
@@ -33,12 +36,17 @@ import type {
   Checkout,
   CustomFieldDef,
   Location,
+  Me,
   Project,
   Reservation,
+  StockItem,
 } from "../../api/types";
 import { orderedFieldEntries, formatFieldValue } from "./assetFieldFormat";
 import { STATUS_COLORS, STATUS_LABELS } from "./assetConstants";
 import { CreateReservationModal } from "../reservations/CreateReservationModal";
+import { ReservationListItem } from "../reservations/ReservationListItem";
+import { useReservationList } from "../reservations/useReservationList";
+import { AssetReservationMonthCalendar } from "./AssetReservationMonthCalendar";
 import { CheckoutModal } from "./CheckoutModal";
 import { PhotoCapture } from "./PhotoCapture";
 
@@ -59,17 +67,26 @@ import { PhotoCapture } from "./PhotoCapture";
  *
  * Reserve reuses T3.4's `CreateReservationModal` pre-filled with this asset
  * (`initialAsset`). Check-out/check-in call the T3.3 checkout endpoints
- * directly (`POST /checkouts`, `POST /checkouts/{id}/checkin`) — no
- * `?asset=`/`?user=` server-side filter exists on `GET /checkouts` (flagged
- * for backend-engineer as a follow-up), so this screen resolves "do I have
- * this asset checked out right now" by scanning the caller's own bounded
- * open-checkouts page (same page size as the My Items screen) for a row
- * matching this asset id — acceptable here because it only runs once per
- * asset-detail view, not as a recurring list.
+ * directly (`POST /checkouts`, `POST /checkouts/{id}/checkin`) — `GET
+ * /checkouts?asset=<id>&open=true` (post-MVP gap fill) resolves "is there an
+ * open checkout for this asset" server-side; this screen still narrows to
+ * `user === me.id` client-side since there's no combined `&user=` filter.
+ *
+ * The "Reservations" section lists every reservation for this asset (`GET
+ * /reservations?asset=<id>`, post-MVP gap fill — this section didn't exist
+ * before), reusing the same `ReservationListItem` row (with its own
+ * check-out/check-in actions) as the Calendar/Approvals screens. It defaults
+ * to a Google-Calendar-style month grid (`AssetReservationMonthCalendar`,
+ * colored bars spanning each booking's days) with a "List" toggle back to
+ * the original flat list for fast exact-time scanning/actions — the month
+ * grid is view-only (no approve/reject/cancel from a bar; use List for
+ * that), matching the "simple popover, doesn't need a full modal" scope of
+ * that feature.
  */
 export function AssetDetailScreen() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const routerLocation = useLocation();
   const { me } = useAuth();
 
   const [asset, setAsset] = useState<Asset | null>(null);
@@ -90,7 +107,55 @@ export function AssetDetailScreen() {
   const [myOpenCheckout, setMyOpenCheckout] = useState<Checkout | null>(null);
   const [checkinBusy, setCheckinBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [banner, setBanner] = useState<string | null>(null);
+  // Consumable assets get a `StockItem` (Feature C, `GET /stock?asset=<id>`)
+  // — resolved here so the detail screen can surface "how many do we have"
+  // without a trip to the separate Stock screen (the gap this fill closes).
+  // `undefined` = not yet resolved (still loading), `null` = resolved but no
+  // `StockItem` exists yet (asset predates stock setup, or setup failed).
+  const [stockItem, setStockItem] = useState<StockItem | null | undefined>(undefined);
+  // Seeded from `AssetFormScreen`'s post-create navigation state (Feature C:
+  // "asset created but stock setup failed" — the asset save itself already
+  // succeeded, so this surfaces as a banner here rather than losing the
+  // success by staying on the form). `location.state` doesn't survive a
+  // refresh, which is fine — it's a one-time handoff, not persisted state.
+  const [banner, setBanner] = useState<string | null>(
+    () => (routerLocation.state as { banner?: string } | null)?.banner ?? null,
+  );
+  // Seeded alongside `banner` when the form's stock setup created the
+  // `StockItem` successfully but the follow-up "receive" txn (initial
+  // quantity) failed — lets this screen retry just that one call against the
+  // already-known `stockItemId`, instead of the dead end of re-running stock
+  // setup (which would now 400 "already has a StockItem").
+  const [stockRetry, setStockRetry] = useState<{ stockItemId: number; initialQty: number } | null>(
+    () =>
+      (routerLocation.state as { stockRetry?: { stockItemId: number; initialQty: number } | null } | null)
+        ?.stockRetry ?? null,
+  );
+  const [stockRetryBusy, setStockRetryBusy] = useState(false);
+
+  const handleRetryStockReceive = async () => {
+    if (!stockRetry) return;
+    setStockRetryBusy(true);
+    try {
+      await api.postStockTxn(stockRetry.stockItemId, {
+        reason: "receive",
+        delta: stockRetry.initialQty,
+        ref: "Initial stock (asset setup, retry)",
+      });
+      setStockRetry(null);
+      setBanner("Initial stock quantity set.");
+    } catch (err) {
+      setBanner(
+        err instanceof ApiError
+          ? `Setting the initial quantity failed again: ${
+              err.problem.detail ?? err.problem.title
+            }. You can add stock from the Stock screen.`
+          : "Unable to reach the server. Please try again.",
+      );
+    } finally {
+      setStockRetryBusy(false);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -113,22 +178,33 @@ export function AssetDetailScreen() {
       setLocation(fetchedLocation);
       setProject(fetchedProject);
 
-      // Resolve "do I currently hold this durable asset checked out" from my
-      // own bounded open-checkouts page — see the module doc comment above
-      // for why (no `?asset=` server-side filter exists yet).
+      // Resolve "do I currently hold this durable asset checked out" via the
+      // `?asset=&open=true` filter (post-MVP gap fill, see module doc
+      // comment) — still narrowed to `user === me.id` client-side since
+      // there's no combined `&user=` filter.
       if (!fetchedAsset.is_consumable) {
+        setStockItem(null);
         try {
-          const openCheckouts = await api.listCheckouts({ open: true, page_size: 100 });
-          const mine =
-            openCheckouts.results.find(
-              (c) => c.asset === fetchedAsset.id && c.user === me?.id,
-            ) ?? null;
+          const openCheckouts = await api.listCheckouts({
+            asset: fetchedAsset.id,
+            open: true,
+            page_size: 100,
+          });
+          const mine = openCheckouts.results.find((c) => c.user === me?.id) ?? null;
           setMyOpenCheckout(mine);
         } catch {
           setMyOpenCheckout(null);
         }
       } else {
         setMyOpenCheckout(null);
+        try {
+          const stock = await api.listStock({ asset: fetchedAsset.id, page_size: 1 });
+          setStockItem(stock.results[0] ?? null);
+        } catch {
+          // Treated the same as "not tracked yet" — the "Set up stock
+          // tracking" prompt is a safe fallback either way.
+          setStockItem(null);
+        }
       }
     } catch (err) {
       setAsset(null);
@@ -249,8 +325,23 @@ export function AssetDetailScreen() {
     >
         <Stack gap="md" pb="xl">
           {banner && (
-            <Alert color="teal" withCloseButton onClose={() => setBanner(null)}>
-              {banner}
+            <Alert color={stockRetry ? "yellow" : "teal"} withCloseButton onClose={() => setBanner(null)}>
+              <Stack gap="xs">
+                <Text size="sm">{banner}</Text>
+                {stockRetry && (
+                  <Group justify="flex-end">
+                    <Button
+                      size="xs"
+                      variant="light"
+                      loading={stockRetryBusy}
+                      onClick={() => void handleRetryStockReceive()}
+                      data-testid="asset-detail-stock-retry"
+                    >
+                      Retry setting initial quantity
+                    </Button>
+                  </Group>
+                )}
+              </Stack>
             </Alert>
           )}
 
@@ -309,12 +400,27 @@ export function AssetDetailScreen() {
               </Text>
             ) : (
               <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs">
-                {specs.map(({ def, value }) => (
-                  <DetailField key={def.key} label={def.label} value={formatFieldValue(def, value)} />
-                ))}
+                {specs.map(({ def, value }) =>
+                  def.data_type === "url" && typeof value === "string" && value ? (
+                    <Stack key={def.key} gap={0}>
+                      <Text size="xs" c="dimmed">
+                        {def.label}
+                      </Text>
+                      <Anchor href={value} target="_blank" rel="noopener noreferrer" size="sm" truncate>
+                        {value}
+                      </Anchor>
+                    </Stack>
+                  ) : (
+                    <DetailField key={def.key} label={def.label} value={formatFieldValue(def, value)} />
+                  ),
+                )}
               </SimpleGrid>
             )}
           </Card>
+
+          {asset.is_consumable && (
+            <AssetStockCard asset={asset} stockItem={stockItem} me={me} onNavigateToEdit={() => navigate(`/assets/${asset.id}/edit`)} />
+          )}
 
           <Card withBorder>
             <PhotoCapture
@@ -325,13 +431,16 @@ export function AssetDetailScreen() {
             />
           </Card>
 
+          {me && <AssetReservationsCard assetId={asset.id} asset={asset} me={me} />}
+
           <Card withBorder>
             <Title order={6} mb="xs">
               History
             </Title>
             <Text size="sm" c="dimmed" data-testid="history-placeholder">
-              Checkout/reservation/maintenance history lands in later
-              milestones (M2–M3) — this section is a placeholder per T1.6.
+              Checkout/maintenance history lands in a later milestone — this
+              section is a placeholder per T1.6 (reservation history now has
+              its own section above).
             </Text>
           </Card>
 
@@ -471,6 +580,171 @@ export function AssetDetailScreen() {
         asset={asset}
       />
     </AppLayout>
+  );
+}
+
+/**
+ * Asset Detail's "Reservations" section (Feature B, post-MVP gap fill — this
+ * screen previously had no reservation history/list at all). `GET
+ * /reservations?asset=<id>` ordered newest-start-first so upcoming/active
+ * bookings surface above past ones; reuses `ReservationListItem` (with its
+ * own approve/reject/cancel/check-out/check-in actions) so behavior stays in
+ * lockstep with the Calendar/Approvals screens rather than a second
+ * implementation.
+ */
+function AssetReservationsCard({ assetId, asset, me }: { assetId: number; asset: Asset; me: Me }) {
+  const [view, setView] = useState<"calendar" | "list">("calendar");
+  const filters = useMemo(() => ({ asset: assetId, ordering: "-start_at" as const }), [assetId]);
+  const { items, totalCount, loading, error, reload } = useReservationList({
+    filters,
+    // The month grid does its own fetching (scoped to its own visible-month
+    // window) — skip this flat-list fetch entirely while it's hidden rather
+    // than running two overlapping `GET /reservations` calls for the same
+    // card.
+    enabled: view === "list",
+  });
+
+  return (
+    <Card withBorder>
+      <Group justify="space-between" mb="xs">
+        <Title order={6}>Reservations</Title>
+        <SegmentedControl
+          size="xs"
+          value={view}
+          onChange={(v) => setView(v as "calendar" | "list")}
+          data={[
+            { label: "Calendar", value: "calendar" },
+            { label: "List", value: "list" },
+          ]}
+        />
+      </Group>
+
+      {view === "calendar" && <AssetReservationMonthCalendar assetId={assetId} asset={asset} me={me} />}
+
+      {view === "list" && (
+        <>
+          {error && (
+            <Alert color="red" mb="xs">
+              <Group justify="space-between">
+                <Text size="sm">{error}</Text>
+                <Button size="xs" variant="light" onClick={reload}>
+                  Retry
+                </Button>
+              </Group>
+            </Alert>
+          )}
+          {loading && !error && (
+            <Center p="md">
+              <Loader size="sm" data-testid="asset-reservations-loading" />
+            </Center>
+          )}
+          {!loading && !error && items.length === 0 && (
+            <Text size="sm" c="dimmed">
+              No reservations for this asset yet.
+            </Text>
+          )}
+          {!loading && !error && items.length > 0 && (
+            <Stack gap="xs">
+              {items.map((r) => (
+                <ReservationListItem key={r.id} reservation={r} asset={asset} me={me} onChanged={() => reload()} />
+              ))}
+            </Stack>
+          )}
+          {totalCount !== null && totalCount > items.length && (
+            <Text size="xs" c="dimmed" mt="xs">
+              Showing {items.length} of {totalCount}.
+            </Text>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Asset Detail's "Stock" section (Feature C follow-up, post-MVP gap fill —
+ * `AssetForm` already lets you set up a consumable's `StockItem`, but this
+ * screen never showed the resulting quantity anywhere). Mirrors the
+ * low-stock visual treatment from `screens/stock/StockRows.tsx`'s `StockRow`
+ * (`quantity_on_hand <= reorder_threshold` — same comparison the server's
+ * `?low_stock=true` filter uses) so a consumable looks the same here as it
+ * does on the dedicated Stock screen. When no `StockItem` exists yet, this
+ * renders a "not tracked yet" prompt linking to the edit screen's existing
+ * "Set up stock tracking" flow (`AssetForm`) rather than duplicating that
+ * flow here.
+ */
+function AssetStockCard({
+  asset,
+  stockItem,
+  me,
+  onNavigateToEdit,
+}: {
+  asset: Asset;
+  stockItem: StockItem | null | undefined;
+  me: Me | null;
+  onNavigateToEdit: () => void;
+}) {
+  const navigate = useNavigate();
+  const canManageStock = hasAssetPermission(me, STOCK_ADJUST, asset.project);
+  const isLoading = stockItem === undefined;
+  const isLowStock = stockItem != null && stockItem.quantity_on_hand <= stockItem.reorder_threshold;
+
+  return (
+    <Card withBorder data-testid="asset-stock-card">
+      <Group justify="space-between" mb="xs">
+        <Title order={6}>Stock</Title>
+        {isLowStock && (
+          <Badge color="red" data-testid="asset-stock-low-badge">
+            Low stock
+          </Badge>
+        )}
+      </Group>
+
+      {isLoading && (
+        <Center p="md">
+          <Loader size="sm" data-testid="asset-stock-loading" />
+        </Center>
+      )}
+
+      {!isLoading && stockItem === null && (
+        <Stack gap="xs" align="flex-start">
+          <Text size="sm" c="dimmed" data-testid="asset-stock-not-tracked">
+            Not tracked yet — this consumable has no stock record, so quantity on hand isn't known.
+          </Text>
+          {canManageStock ? (
+            <Button size="xs" variant="light" onClick={onNavigateToEdit} data-testid="asset-stock-setup-link">
+              Set up stock tracking
+            </Button>
+          ) : (
+            <Text size="xs" c="dimmed">
+              You don&apos;t have permission to set up stock tracking for this asset.
+            </Text>
+          )}
+        </Stack>
+      )}
+
+      {!isLoading && stockItem != null && (
+        <Stack gap={6}>
+          <Group gap="lg" wrap="wrap">
+            <Text size="sm">
+              On hand: <strong>{stockItem.quantity_on_hand}</strong> {stockItem.unit_of_measure}
+            </Text>
+            <Text size="sm" c="dimmed">
+              Reorder at {stockItem.reorder_threshold}, target {stockItem.reorder_target}
+            </Text>
+          </Group>
+          <Button
+            size="xs"
+            variant="subtle"
+            onClick={() => navigate("/stock")}
+            style={{ alignSelf: "flex-start" }}
+            data-testid="asset-stock-manage-link"
+          >
+            Manage stock (receive / consume / adjust)
+          </Button>
+        </Stack>
+      )}
+    </Card>
   );
 }
 

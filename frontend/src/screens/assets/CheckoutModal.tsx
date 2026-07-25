@@ -9,6 +9,11 @@ interface CheckoutModalProps {
   onClose: () => void;
   onCheckedOut: (checkout: Checkout) => void;
   asset: Asset;
+  /** Links this checkout to an approved/fulfilled reservation belonging to
+   * the caller for the same asset (reservation-first checkout,
+   * `CheckoutCreatePayload.reservation` doc comment) — omit for a direct
+   * walk-up checkout, same as before. */
+  reservationId?: number;
 }
 
 /** Default due window: one week out, editable — matches the reservation
@@ -20,14 +25,16 @@ function defaultDueAt(): Date {
 }
 
 /**
- * Direct walk-up checkout form (T3.5, `POST /api/v1/checkouts`), reached
- * from Asset Detail's "Check out" action. A category configured
+ * Checkout form (T3.5, `POST /api/v1/checkouts`), reached from Asset Detail's
+ * "Check out" action (direct walk-up, no `reservationId`) or from a
+ * `ReservationListItem`'s "Check out" action (reservation-first — pre-filled
+ * with `asset`/`reservationId`, post-MVP gap fill). A category configured
  * `requires_approval` rejects a reservation-less checkout with a clean `400`
  * (`apps.reservations.checkout.CheckoutSerializer.validate`) — surfaced
  * inline, telling the caller to reserve first, same "server is the
  * authority" pattern as `CreateReservationModal`'s 409 conflict handling.
  */
-export function CheckoutModal({ opened, onClose, onCheckedOut, asset }: CheckoutModalProps) {
+export function CheckoutModal({ opened, onClose, onCheckedOut, asset, reservationId }: CheckoutModalProps) {
   const [dueAt, setDueAt] = useState<Date | null>(defaultDueAt());
   const [condition, setCondition] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -61,6 +68,7 @@ export function CheckoutModal({ opened, onClose, onCheckedOut, asset }: Checkout
         asset: asset.id,
         due_at: dueAt.toISOString(),
         checkout_condition: condition.trim() || undefined,
+        reservation: reservationId,
       });
       onCheckedOut(checkout);
       onClose();
