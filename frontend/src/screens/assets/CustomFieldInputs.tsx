@@ -18,6 +18,9 @@ import type { CustomFieldDef } from "../../api/types";
  * - `json`   -> `Textarea`, edited as raw text (`jsonDrafts`/`jsonErrors`
  *   below) since a JSON value itself isn't a single form-control primitive;
  *   parsed on every keystroke so a submit can never race a stale parse.
+ * - `url`    -> `TextInput type="url"`, an absolute-http(s)-URL placeholder
+ *   and browser-native URL affordances; well-formedness is re-checked in
+ *   `AssetForm.validateCustomFields` to match the server's `URLValidator`.
  *
  * Ordered by `def.order` (then `id`), matching the same convention used to
  * render read-only specs on Asset Detail (`assetFieldFormat.orderedFieldEntries`).
@@ -137,6 +140,21 @@ export function CustomFieldInputs({
                 value={typeof value === "string" ? value : null}
                 onChange={(v) => onChange(def.key, v)}
                 clearable
+                error={error}
+                disabled={disabled}
+                data-testid={`custom-field-${def.key}`}
+              />
+            );
+          case "url":
+            return (
+              <TextInput
+                key={def.key}
+                type="url"
+                inputMode="url"
+                label={label}
+                placeholder="https://example.com/product-page"
+                value={typeof value === "string" ? value : ""}
+                onChange={(e) => onChange(def.key, e.currentTarget.value)}
                 error={error}
                 disabled={disabled}
                 data-testid={`custom-field-${def.key}`}

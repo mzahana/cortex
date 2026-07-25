@@ -37,6 +37,7 @@ const DATA_TYPES: { value: CustomFieldDataType; label: string }[] = [
   { value: "date", label: "Date" },
   { value: "enum", label: "Enum" },
   { value: "json", label: "JSON" },
+  { value: "url", label: "URL" },
 ];
 
 interface FieldFormValues {

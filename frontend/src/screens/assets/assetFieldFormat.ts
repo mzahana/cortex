@@ -4,7 +4,10 @@ import type { CustomFieldDef } from "../../api/types";
  * Typed display for one `Asset.field_values[def.key]` value against its
  * `CustomFieldDef` (T1.6 acceptance: "detail renders custom fields" —
  * bool/date/enum/unit-suffixed numbers, not a raw JSON dump). Mirrors the
- * types `CustomFieldDataType` supports (`text|int|float|bool|date|enum|json`).
+ * types `CustomFieldDataType` supports (`text|int|float|bool|date|enum|json|url`).
+ * `url` values are rendered as clickable links by the caller
+ * (`AssetDetailScreen`'s specs grid); this formatter's `url` case is only the
+ * plain-string fallback used elsewhere (e.g. if a future caller needs text).
  */
 export function formatFieldValue(def: CustomFieldDef, value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -24,6 +27,7 @@ export function formatFieldValue(def: CustomFieldDef, value: unknown): string {
     }
     case "enum":
     case "text":
+    case "url":
       return String(value);
     case "json":
     default:
