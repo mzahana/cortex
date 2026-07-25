@@ -31,14 +31,16 @@ interface AddMemberModalProps {
 const TENANT_WIDE_VALUE = "__tenant_wide__";
 
 /**
- * "Add member" flow: search-as-you-type user picker (`GET /api/v1/users/
- * ?search=`), role picker (`GET /api/v1/roles/`, already loaded by the
- * parent), project picker (`GET /api/v1/projects/`, already loaded by the
- * parent, plus a synthetic "Tenant-wide" option = no project) -> `POST
- * /api/v1/memberships/`. If no existing user matches the search, an inline
- * "create new user" link opens `CreateUserModal`; once that succeeds, the
- * newly-created user is auto-selected here so the admin can finish granting
- * the membership in one flow.
+ * "Add member" flow: user picker backed by `GET /api/v1/users/` — with no
+ * search text it lists current users (ordered by name) so one can be picked
+ * directly; typing filters that same list via `?search=`. Role picker (`GET
+ * /api/v1/roles/`, already loaded by the parent), project picker (`GET
+ * /api/v1/projects/`, already loaded by the parent, plus a synthetic
+ * "Tenant-wide" option = no project) -> `POST /api/v1/memberships/`. If no
+ * existing user matches the search, an inline "create new user" link opens
+ * `CreateUserModal`; once that succeeds, the newly-created user is
+ * auto-selected here so the admin can finish granting the membership in one
+ * flow.
  */
 export function AddMemberModal({
   opened,
@@ -78,15 +80,12 @@ export function AddMemberModal({
 
   useEffect(() => {
     if (!opened || selectedUser) return;
-    if (!debouncedSearch.trim()) {
-      setUserResults([]);
-      return;
-    }
+    const trimmed = debouncedSearch.trim();
     let cancelled = false;
     setSearching(true);
     setSearchError(null);
     api
-      .listUsers({ search: debouncedSearch.trim() })
+      .listUsers(trimmed ? { search: trimmed } : { ordering: "name" })
       .then((body) => {
         if (cancelled) return;
         setUserResults(body.results);
@@ -106,6 +105,8 @@ export function AddMemberModal({
       cancelled = true;
     };
   }, [debouncedSearch, opened, selectedUser]);
+
+  const isBrowsing = !debouncedSearch.trim();
 
   const roleOptions = useMemo(
     () => roles.map((r) => ({ value: String(r.id), label: r.name })),
@@ -175,18 +176,28 @@ export function AddMemberModal({
                 <Group gap="xs">
                   <Loader size="xs" />
                   <Text size="sm" c="dimmed">
-                    Searching…
+                    {isBrowsing ? "Loading users…" : "Searching…"}
                   </Text>
                 </Group>
               )}
-              {!searching && debouncedSearch.trim() && userResults.length === 0 && !searchError && (
+              {!searching && !isBrowsing && userResults.length === 0 && !searchError && (
                 <Text size="sm" c="dimmed">
                   No matching users.
+                </Text>
+              )}
+              {!searching && isBrowsing && userResults.length === 0 && !searchError && (
+                <Text size="sm" c="dimmed">
+                  No users found.
                 </Text>
               )}
               {userResults.length > 0 && (
                 <ScrollArea.Autosize mah={220}>
                   <Stack gap={4}>
+                    {isBrowsing && (
+                      <Text size="xs" c="dimmed" mb={2}>
+                        Current users
+                      </Text>
+                    )}
                     {userResults.map((u) => (
                       <Button
                         key={u.id}
