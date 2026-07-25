@@ -130,6 +130,21 @@ class TestCategoryRBAC:
         assert list_resp.status_code == 200
         assert [f["key"] for f in list_resp.json()] == ["vram_gb"]
 
+    def test_admin_can_create_url_data_type_field_def(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = CategoryFactory(tenant=tenant, name="Compute")
+        _login(client, tenant, admin)
+
+        response = client.post(
+            f"/api/v1/categories/{category.id}/fields/",
+            data=json.dumps({"key": "purchase_link", "label": "Purchase Link", "data_type": "url"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        assert response.json()["data_type"] == "url"
+
     def test_member_gets_server_side_403_on_category_create(self, client):
         tenant = TenantFactory()
         member = UserFactory(tenant=tenant)  # default: tenant-wide Member

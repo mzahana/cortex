@@ -83,6 +83,7 @@ class CustomFieldDef(TenantScopedModel):
         DATE = "date", "Date"
         ENUM = "enum", "Enum"
         JSON = "json", "JSON"
+        URL = "url", "URL"
 
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="field_defs")
     key = models.SlugField(max_length=100, help_text="Machine key, e.g. 'vram_gb'.")

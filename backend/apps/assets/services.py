@@ -5,7 +5,7 @@ Two responsibilities (T1.2, core F2):
 
 1. `validate_custom_field_values` — type-check/coerce a raw
    `{key: value}` dict against the target `Category`'s `CustomFieldDef` list
-   (`text|int|float|bool|date|enum|json`, `required`, `enum_options`
+   (`text|int|float|bool|date|enum|json|url`, `required`, `enum_options`
    membership), returning ready-to-persist `{field_def: coerced_value}`
    pairs or raising a field-scoped `serializers.ValidationError` (-> clean
    RFC-7807 400, not a 500).
@@ -30,7 +30,9 @@ import datetime
 from typing import Any
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
+from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from apps.catalog.models import CustomFieldDef
@@ -126,6 +128,9 @@ def validate_attachment_upload(*, kind: str, uploaded_file) -> None:
         )
 
 
+_URL_VALIDATOR = URLValidator(schemes=["http", "https"])
+
+
 def _coerce_value(field_def: CustomFieldDef, raw: Any) -> Any:
     """Type-check/coerce one raw value against `field_def.data_type`.
     Raises `serializers.ValidationError` (a plain string, wrapped by the
@@ -181,6 +186,14 @@ def _coerce_value(field_def: CustomFieldDef, raw: Any) -> Any:
     if data_type == CustomFieldDef.DataType.JSON:
         # Any JSON-serializable value is accepted as-is (already JSON-decoded
         # by DRF's request parser by the time this runs).
+        return raw
+    if data_type == CustomFieldDef.DataType.URL:
+        if not isinstance(raw, str):
+            raise serializers.ValidationError("Expected a URL value.")
+        try:
+            _URL_VALIDATOR(raw)
+        except DjangoValidationError:
+            raise serializers.ValidationError("Expected a well-formed absolute URL.") from None
         return raw
     raise serializers.ValidationError(f"Unsupported data_type '{data_type}'.")
 

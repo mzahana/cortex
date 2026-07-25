@@ -70,6 +70,15 @@ def _make_compute_category(tenant) -> Category:
         required=False,
         order=2,
     )
+    CustomFieldDef.all_objects.create(
+        tenant=tenant,
+        category=category,
+        key="purchase_link",
+        label="Purchase Link",
+        data_type=CustomFieldDef.DataType.URL,
+        required=False,
+        order=3,
+    )
     return category
 
 
@@ -192,6 +201,58 @@ class TestAssetCreateWithCustomFields:
         )
         assert response.status_code == 400, response.content
         assert "vram_gb" in response.json()["errors"]["custom_field_values"]
+
+    def test_valid_url_custom_field_is_accepted(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = _make_compute_category(tenant)
+        _login(client, tenant, admin)
+
+        response = client.post(
+            "/api/v1/assets/",
+            data=json.dumps(
+                {
+                    "category": category.id,
+                    "name": "GPU Server 6",
+                    "custom_field_values": {
+                        "gpu_model": "RTX 4090",
+                        "vram_gb": 24,
+                        "purchase_link": "https://example.com/gpu/4090",
+                    },
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        assert response.json()["field_values"]["purchase_link"] == "https://example.com/gpu/4090"
+
+    def test_bad_url_custom_field_is_400(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        category = _make_compute_category(tenant)
+        _login(client, tenant, admin)
+
+        response = client.post(
+            "/api/v1/assets/",
+            data=json.dumps(
+                {
+                    "category": category.id,
+                    "name": "GPU Server 7",
+                    "custom_field_values": {
+                        "gpu_model": "RTX 4090",
+                        "vram_gb": 24,
+                        "purchase_link": "not-a-url",  # missing scheme
+                    },
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 400, response.content
+        body = response.json()
+        assert body["status"] == 400
+        assert "purchase_link" in body["errors"]["custom_field_values"]
 
     def test_unknown_custom_field_key_is_400(self, client):
         tenant = TenantFactory()
