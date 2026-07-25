@@ -21,17 +21,18 @@ interface UseMyItemsListResult {
 }
 
 /**
- * Server-side paginated "my open items" list (T3.5, `GET /api/v1/checkouts?
- * open=true`). One bounded page at a time (CLAUDE.md: never load "all
+ * Server-side paginated "my items" list (T3.5, `GET /api/v1/checkouts?
+ * open=true|false`). One bounded page at a time (CLAUDE.md: never load "all
  * checkouts") — the server already scopes the list to the caller's own
  * checkouts UNION their `checkout.manage`/`checkout.override` project scope
  * (`apps.reservations.checkout.CheckoutViewSet.get_queryset`), so no
- * `?user=me` param is needed or sent. Ordered soonest-due-first so an
- * overdue/near-due item surfaces at the top of a one-handed phone screen.
- * Same "resolve missing assets for the current page" pattern as
- * `useStockList`/`useReservationList`.
+ * `?user=me` param is needed or sent. `open=true` (current) is ordered
+ * soonest-due-first so an overdue/near-due item surfaces at the top of a
+ * one-handed phone screen; `open=false` (history) is ordered most-recently-
+ * returned-first. Same "resolve missing assets for the current page" pattern
+ * as `useStockList`/`useReservationList`.
  */
-export function useMyItemsList(): UseMyItemsListResult {
+export function useMyItemsList(open: boolean): UseMyItemsListResult {
   const [items, setItems] = useState<Checkout[]>([]);
   const [assetsById, setAssetsById] = useState<Map<number, Asset>>(new Map());
   const [totalCount, setTotalCount] = useState<number | null>(null);
@@ -48,8 +49,8 @@ export function useMyItemsList(): UseMyItemsListResult {
       setError(null);
       try {
         const body = await api.listCheckouts({
-          open: true,
-          ordering: "due_at",
+          open,
+          ordering: open ? "due_at" : "-checked_in_at",
           page: targetPage,
           page_size: PAGE_SIZE,
         });
@@ -94,13 +95,13 @@ export function useMyItemsList(): UseMyItemsListResult {
     },
     // `assetsById` deliberately omitted — see `useStockList`'s identical note.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [open],
   );
 
   useEffect(() => {
     void fetchPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [open]);
 
   const setPage = useCallback(
     (targetPage: number) => {
