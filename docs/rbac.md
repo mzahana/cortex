@@ -50,6 +50,7 @@ Legend: ✅ allowed · 🟡 scoped (only within the user's project) · ➖ denie
 | Manage categories & custom fields (`category.manage`) | ✅ | ➖ | ➖ | ➖ |
 | Manage locations (`location.manage`) | ✅ | ➖ | ➖ | ➖ |
 | Adjust stock / receive (`stock.adjust`) | ✅ | 🟡 | ➖ | ➖ |
+| Create stock item for a consumable asset (`POST /stock`, reuses `stock.adjust` — bringing the ledger row into existence is the same authorization intent as adjusting it) | ✅ | 🟡 | ➖ | ➖ |
 | Consume stock (`stock.consume`) | ✅ | ✅ | ✅ | ➖ |
 | Request reorder (`reorder.request`) | ✅ | ✅ | ✅ | ➖ |
 | Approve reorder (`reorder.approve`) | ✅ | 🟡 | ➖ | ➖ |

@@ -21,6 +21,7 @@ asset itself). Mutations use the exact keys the task maps from the ledger
 | Action                                  | Permission key      |
 |------------------------------------------|----------------------|
 | `GET /stock`, `GET /stock/{id}`           | `asset.view`         |
+| `POST /stock` (create)                    | `stock.adjust`¹      |
 | `POST /stock/{id}/txn` reason=`receive`   | `stock.adjust`       |
 | `POST /stock/{id}/txn` reason=`adjust`    | `stock.adjust`       |
 | `POST /stock/{id}/txn` reason=`correction`| `stock.adjust`       |
@@ -33,12 +34,20 @@ asset itself). Mutations use the exact keys the task maps from the ledger
 |                                            | original requester cancelling their own request |
 | `PATCH .../{id}` non-status edit          | `reorder.approve` OR the |
 | (quantity/note)                           | original requester |
+
+¹ **No dedicated `stock.create`/"stand up a StockItem" key exists in
+`docs/rbac.md`'s matrix** (ASSUMPTION, flagged for code-reviewer): creating
+the `StockItem` ledger row for a consumable asset is reused under
+`stock.adjust`, the closest existing key in intent (same
+Admin-tenant-wide/ProjectLead-scoped/Member-denied shape) rather than
+inventing a new permission key unilaterally.
 """
 
 from __future__ import annotations
 
 from rest_framework.permissions import BasePermission
 
+from apps.assets.models import Asset
 from apps.rbac.permission_keys import (
     ASSET_VIEW,
     REORDER_APPROVE,
@@ -66,10 +75,36 @@ APPROVER_ONLY_TRANSITIONS = frozenset(
 )
 
 
+def _resolve_target_project_id_for_asset(asset_id) -> tuple[bool, int | None]:
+    """Resolve a `POST /stock` request's target `Asset.project_id`, re-scoped
+    through the tenant-scoped `Asset.objects` manager (R4: never trust a
+    client-supplied id blindly). Mirrors
+    `apps.reservations.checkout._resolve_target_project_id_for_asset`.
+
+    Returns `(found, project_id)` — `found=False` means the id didn't
+    resolve inside the caller's tenant at all; the caller lets the
+    serializer's own tenant-scoped FK field produce the clean 400 instead of
+    guessing a scope.
+    """
+    if asset_id in (None, "", "null"):
+        return False, None
+    try:
+        asset = Asset.objects.get(pk=asset_id)
+    except (Asset.DoesNotExist, ValueError, TypeError):
+        return False, None
+    return True, asset.project_id
+
+
 class StockItemPermission(BasePermission):
     """`StockItemViewSet`: list/retrieve gated by `asset.view`; the `txn`
     action's required key depends on the request body's `reason` (see
-    `REASON_PERMISSION_MAP`).
+    `REASON_PERMISSION_MAP`); `create` (standing up a `StockItem` for a
+    consumable asset) is gated by `stock.adjust` -- there is no dedicated
+    "create stock item" key in `docs/rbac.md`'s matrix, and creating the
+    ledger row that then gets adjusted/received into is the same
+    Admin-tenant-wide/ProjectLead-scoped, Member-denied shape as
+    `stock.adjust` itself (`docs/rbac.md` §3), so this reuses that key
+    rather than inventing a new one.
     """
 
     def has_permission(self, request, view) -> bool:
@@ -80,6 +115,15 @@ class StockItemPermission(BasePermission):
         action = getattr(view, "action", "") or ""
         if action in ("list", "retrieve"):
             return user_has_permission_in_any_scope(user, ASSET_VIEW)
+
+        if action == "create":
+            found, project_id = _resolve_target_project_id_for_asset(request.data.get("asset"))
+            if not found:
+                # Let the serializer's tenant-scoped `asset` field produce
+                # the clean 400 for a missing/bogus/cross-tenant asset
+                # rather than this permission class guessing at a scope.
+                return True
+            return user_has_permission(user, STOCK_ADJUST, project=project_id)
 
         if action == "txn":
             reason = request.data.get("reason")

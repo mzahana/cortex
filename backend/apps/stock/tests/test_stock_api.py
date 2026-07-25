@@ -13,9 +13,11 @@ import threading
 import pytest
 from django.db import connection
 
+from apps.assets.models import Asset
 from apps.audit.models import AuditLog
 from apps.common.tests.factories import (
     DEFAULT_TEST_PASSWORD,
+    AssetFactory,
     ProjectFactory,
     StockItemFactory,
     TenantFactory,
@@ -25,7 +27,7 @@ from apps.common.tests.factories import (
 )
 from apps.rbac.models import Membership
 from apps.rbac.permission_keys import ROLE_ADMIN, ROLE_PROJECT_LEAD, ROLE_VIEWER
-from apps.stock.models import ReorderRequest, StockTxn
+from apps.stock.models import ReorderRequest, StockItem, StockTxn
 from apps.stock.services import apply_stock_txn
 from apps.stock.signals import low_stock_crossed
 from apps.tenancy.context import tenant_context
@@ -128,6 +130,358 @@ class TestStockList:
         _login(client, tenant, admin)
         response = client.get(f"/api/v1/stock/{other_item.id}/")
         assert response.status_code == 404
+
+    def test_asset_filter_returns_only_that_assets_stock_item(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        item_a = StockItemFactory(tenant=tenant)
+        StockItemFactory(tenant=tenant)  # item_b, should not show up
+
+        _login(client, tenant, admin)
+        response = client.get(f"/api/v1/stock/?asset={item_a.asset_id}")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {item_a.id}
+
+    def test_asset_filter_non_numeric_yields_empty_not_error(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        StockItemFactory(tenant=tenant)
+
+        _login(client, tenant, admin)
+        response = client.get("/api/v1/stock/?asset=not-a-number")
+        assert response.status_code == 200, response.content
+        assert response.json()["results"] == []
+
+    def test_asset_filter_cross_tenant_id_yields_empty(self, client):
+        """R4: filtering `?asset=<id belonging to another tenant>` must
+        never leak that tenant's StockItem."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        other_tenant = TenantFactory()
+        other_item = StockItemFactory(tenant=other_tenant)
+
+        _login(client, tenant, admin)
+        response = client.get(f"/api/v1/stock/?asset={other_item.asset_id}")
+        assert response.status_code == 200, response.content
+        assert response.json()["results"] == []
+
+    def test_default_list_excludes_retired_assets_stock_item(self, client):
+        """Bug fix: retiring an asset (Asset.status -> RETIRED) previously
+        left its StockItem visible in the default stock list forever —
+        mirrors `apps.assets.api.visible_assets_queryset`'s own
+        `include_retired` opt-in (`TestAssetRetireLifecycle` in
+        `apps.assets.tests.test_assets_api`)."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        active_item = StockItemFactory(tenant=tenant)
+        retired_item = StockItemFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            retired_item.asset.status = Asset.Status.RETIRED
+            retired_item.asset.save(update_fields=["status"])
+
+        _login(client, tenant, admin)
+        response = client.get("/api/v1/stock/")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {active_item.id}
+        assert retired_item.id not in ids
+
+    def test_include_retired_true_includes_retired_assets_stock_item(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        active_item = StockItemFactory(tenant=tenant)
+        retired_item = StockItemFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            retired_item.asset.status = Asset.Status.RETIRED
+            retired_item.asset.save(update_fields=["status"])
+
+        _login(client, tenant, admin)
+        response = client.get("/api/v1/stock/?include_retired=true")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {active_item.id, retired_item.id}
+
+    def test_asset_filter_resolves_retired_asset_without_include_retired(self, client):
+        """An explicit `?asset=<id>` lookup always resolves regardless of
+        the asset's retired status — only the "browse all" default list
+        hides retired ones (see `StockItemViewSet.get_queryset` docstring)."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        retired_item = StockItemFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            retired_item.asset.status = Asset.Status.RETIRED
+            retired_item.asset.save(update_fields=["status"])
+
+        _login(client, tenant, admin)
+        response = client.get(f"/api/v1/stock/?asset={retired_item.asset_id}")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {retired_item.id}
+
+    def test_asset_filter_plus_include_retired_still_resolves_retired_asset(self, client):
+        """Combining `?asset=<id>&include_retired=true` should behave the
+        same as `?asset=<id>` alone (the exemption doesn't require the
+        opt-in flag too)."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        retired_item = StockItemFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            retired_item.asset.status = Asset.Status.RETIRED
+            retired_item.asset.save(update_fields=["status"])
+
+        _login(client, tenant, admin)
+        response = client.get(
+            f"/api/v1/stock/?asset={retired_item.asset_id}&include_retired=true"
+        )
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {retired_item.id}
+
+    def test_retired_stock_item_detail_still_reachable_by_id(self, client):
+        """Detail route (`GET /stock/{id}/`) is not the `?asset=` list
+        filter and is not touched by this fix at all — a retired asset's
+        StockItem must remain reachable by id, same as
+        `AssetViewSet.retrieve` staying reachable after `retire()`."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        retired_item = StockItemFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            retired_item.asset.status = Asset.Status.RETIRED
+            retired_item.asset.save(update_fields=["status"])
+
+        _login(client, tenant, admin)
+        response = client.get(f"/api/v1/stock/{retired_item.id}/")
+        assert response.status_code == 200, response.content
+        assert response.json()["id"] == retired_item.id
+
+    def test_retired_filter_composes_with_low_stock_filter(self, client):
+        """Regression guard: `low_stock` filtering and retired-hiding are
+        independent filters that both apply on the default list — a
+        retired asset's low-stock StockItem should still be hidden by
+        default, and reappear with `include_retired=true`."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        low_active = StockItemFactory(tenant=tenant, reorder_threshold=5)
+        _seed_ledger(low_active, quantity=3)
+        low_retired = StockItemFactory(tenant=tenant, reorder_threshold=5)
+        _seed_ledger(low_retired, quantity=3)
+        with tenant_context(tenant.id):
+            low_retired.asset.status = Asset.Status.RETIRED
+            low_retired.asset.save(update_fields=["status"])
+
+        _login(client, tenant, admin)
+        response = client.get("/api/v1/stock/?low_stock=true")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {low_active.id}
+
+        response = client.get("/api/v1/stock/?low_stock=true&include_retired=true")
+        assert response.status_code == 200, response.content
+        ids = {row["id"] for row in response.json()["results"]}
+        assert ids == {low_active.id, low_retired.id}
+
+
+class TestStockCreate:
+    """`POST /api/v1/stock` (`StockItemViewSet` + `CreateModelMixin`,
+    gated by the reused `stock.adjust` key — see `StockItemPermission`
+    docstring)."""
+
+    def _payload(self, asset, **overrides):
+        payload = {
+            "asset": asset.id,
+            "unit_of_measure": "unit",
+            "reorder_threshold": 5,
+            "reorder_target": 20,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_admin_can_create_stock_item_for_consumable_asset(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        asset = AssetFactory(tenant=tenant, is_consumable=True)
+
+        _login(client, tenant, admin)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        body = response.json()
+        assert body["asset"] == asset.id
+        assert body["quantity_on_hand"] == 0  # never client-settable, even on create
+
+        with tenant_context(tenant.id):
+            item = StockItem.objects.get(pk=body["id"])
+            assert item.asset_id == asset.id
+            assert item.tenant_id == tenant.id
+
+    def test_member_without_stock_adjust_gets_403(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)  # default Member: no stock.adjust
+        asset = AssetFactory(tenant=tenant, is_consumable=True)
+
+        _login(client, tenant, member)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 403, response.content
+
+        with tenant_context(tenant.id):
+            assert not StockItem.objects.filter(asset=asset).exists()
+
+    def test_project_lead_can_create_for_own_project_asset_only(self, client):
+        tenant = TenantFactory()
+        own_project = ProjectFactory(tenant=tenant)
+        other_project = ProjectFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        add_project_membership(lead, own_project, ROLE_PROJECT_LEAD)
+
+        own_asset = AssetFactory(tenant=tenant, is_consumable=True, project=own_project)
+        other_asset = AssetFactory(tenant=tenant, is_consumable=True, project=other_project)
+
+        _login(client, tenant, lead)
+        allowed = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(own_asset)),
+            content_type="application/json",
+        )
+        assert allowed.status_code == 201, allowed.content
+
+        denied = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(other_asset)),
+            content_type="application/json",
+        )
+        assert denied.status_code == 403, denied.content
+
+        with tenant_context(tenant.id):
+            assert not StockItem.objects.filter(asset=other_asset).exists()
+
+    def test_project_lead_cannot_create_for_general_pool_asset(self, client):
+        """docs/rbac.md §1: a pure ProjectLead's grant is project-scoped
+        only — it must not implicitly reach a general-pool (project=None)
+        asset, mirroring the reservation-approval general-pool rule."""
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        Membership.all_objects.filter(user=lead, project__isnull=True).delete()
+        add_project_membership(lead, project, ROLE_PROJECT_LEAD)
+
+        pool_asset = AssetFactory(tenant=tenant, is_consumable=True)  # project=None
+
+        _login(client, tenant, lead)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(pool_asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 403, response.content
+
+    def test_create_rejects_durable_asset(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        durable_asset = AssetFactory(tenant=tenant, is_consumable=False)
+
+        _login(client, tenant, admin)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(durable_asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 400, response.content
+
+    def test_create_rejects_a_second_stock_item_for_the_same_asset(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        stock_item = StockItemFactory(tenant=tenant)
+
+        _login(client, tenant, admin)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(stock_item.asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 400, response.content
+
+        with tenant_context(tenant.id):
+            assert StockItem.objects.filter(asset=stock_item.asset).count() == 1
+
+    def test_cross_tenant_asset_id_rejected_not_leaked(self, client):
+        """R4: `POST /stock` citing another tenant's asset id must be
+        rejected (never a 201 that creates a StockItem for another
+        tenant's asset, and never a 500 that leaks whether the id exists)."""
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+
+        other_tenant = TenantFactory()
+        other_asset = AssetFactory(tenant=other_tenant, is_consumable=True)
+
+        _login(client, tenant, admin)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(other_asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 400, response.content
+
+        with tenant_context(other_tenant.id):
+            assert not StockItem.objects.filter(asset=other_asset).exists()
+
+    def test_create_writes_audit_log_with_before_none_and_after_state(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        asset = AssetFactory(tenant=tenant, is_consumable=True)
+
+        _login(client, tenant, admin)
+        response = client.post(
+            "/api/v1/stock/",
+            data=json.dumps(self._payload(asset, reorder_threshold=3, reorder_target=15)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+        stock_item_id = response.json()["id"]
+
+        entries = AuditLog.all_objects.filter(
+            tenant_id=tenant.id, entity_type="stock_item", entity_id=str(stock_item_id)
+        )
+        assert entries.count() == 1
+        entry = entries.first()
+        assert entry is not None
+        assert entry.action == "stock.adjust"
+        assert entry.actor_id == admin.id
+        assert entry.before is None
+        assert entry.after is not None
+        assert entry.after["asset_id"] == asset.id
+        assert entry.after["quantity_on_hand"] == 0
+        assert entry.after["reorder_threshold"] == 3
+        assert entry.after["reorder_target"] == 15
 
 
 class TestStockTxn:

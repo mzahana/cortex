@@ -1,9 +1,18 @@
 """Stock endpoints (T2.2): `docs/api-and-ui.md` "Stock" table.
 
-- `GET /api/v1/stock` — paginated list, `?low_stock=true` filter, scope-aware
-  (a caller sees stock for assets in their viewable project scope, same rule
-  as `apps.assets.api.AssetViewSet`).
+- `GET /api/v1/stock` — paginated list, `?low_stock=true`, `?asset=<id>`, and
+  `?include_retired=true` filters, scope-aware (a caller sees stock for
+  assets in their viewable project scope, same rule as `apps.assets.api.
+  AssetViewSet`). Retired assets' stock rows are hidden by default (same
+  `include_retired` opt-in as `apps.assets.api.visible_assets_queryset`)
+  unless the caller passes an explicit `?asset=<id>`, in which case that
+  lookup always resolves regardless of retired status.
 - `GET /api/v1/stock/{id}` — detail.
+- `POST /api/v1/stock` — create a `StockItem` for a consumable asset (post-MVP
+  gap fill: this is how a consumable asset gets a quantity/reorder-threshold
+  ledger row in the first place). Gated by `stock.adjust` (see
+  `apps.stock.permissions.StockItemPermission` for why); audited, same as
+  every other `stock.adjust` exercise (`docs/rbac.md` §5).
 - `POST /api/v1/stock/{id}/txn` — apply a ledger transaction
   (receive/consume/adjust/correction). The core of this task: delegates the
   atomic, concurrency-safe ledger-apply + quantity reconciliation to
@@ -29,6 +38,7 @@ from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 
+from apps.assets.models import Asset
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.pagination import BoundedPageNumberPagination
 from apps.dashboard.cache import invalidate_tenant_dashboard
@@ -49,10 +59,12 @@ _AUDITED_TXN_REASONS = {"receive", "adjust", "correction"}
 class StockItemViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
     viewsets.GenericViewSet,
 ):
     serializer_class = StockItemSerializer
     permission_classes = [StockItemPermission]
+    http_method_names = ["get", "post", "head", "options"]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     ordering_fields = ["quantity_on_hand", "reorder_threshold", "created_at"]
     pagination_class = BoundedPageNumberPagination
@@ -71,6 +83,37 @@ class StockItemViewSet(
             qs = qs.filter(quantity_on_hand__lte=F("reorder_threshold"))
 
         if self.action == "list":
+            # `?asset=<id>` -- so a caller can look up "does this consumable
+            # asset already have a StockItem" without ambiguity (e.g. gating
+            # an "already has stock tracking" UI state). Manual query-param
+            # handling, same style as `apps.reservations.checkout.
+            # CheckoutViewSet.get_queryset`'s `?asset=`/`?reservation=`
+            # params, rather than django-filter's `filterset_fields` (kept
+            # consistent with the `low_stock` handling immediately above,
+            # which is also hand-rolled). Invalid/non-numeric values simply
+            # match nothing (clean empty list, not a 500/400).
+            asset_param = self.request.query_params.get("asset")
+            if asset_param is not None:
+                try:
+                    qs = qs.filter(asset_id=int(asset_param))
+                except (TypeError, ValueError):
+                    qs = qs.none()
+
+            # Retired-hiding (docs/data-model.md §4), same
+            # `?include_retired=true` opt-in as `apps.assets.api.
+            # visible_assets_queryset` -- a retired asset's StockItem should
+            # not clutter the default "browse all stock" list. An explicit
+            # `?asset=<id>` lookup is deliberately exempt: if a caller
+            # already knows the specific asset id (e.g. viewing that asset's
+            # own detail/history), they should still get its stock row
+            # regardless of the asset's retired status, same as
+            # `AssetViewSet`'s detail routes staying reachable by id.
+            include_retired = (
+                self.request.query_params.get("include_retired", "").lower() == "true"
+            )
+            if not include_retired and asset_param is None:
+                qs = qs.exclude(asset__status=Asset.Status.RETIRED)
+
             # Scope-aware listing (docs/rbac.md §1), same pattern as
             # `apps.assets.api.AssetViewSet.get_queryset` — a caller whose
             # ONLY `asset.view` grant(s) are project-scoped sees only stock
@@ -80,6 +123,36 @@ class StockItemViewSet(
             if not tenant_wide:
                 qs = qs.filter(asset__project_id__in=project_ids) if project_ids else qs.none()
         return qs
+
+    def perform_create(self, serializer):
+        # `create` is gated by `stock.adjust` (see `StockItemPermission`
+        # docstring for why there's no dedicated "create stock item" key) --
+        # `docs/rbac.md` §5 requires every exercise of `stock.adjust` to
+        # write an `AuditLog` entry, same "audit every mutating action, not
+        # just the ones the task text happened to mention" rule as
+        # `apps.assets.api.AssetViewSet.perform_create`.
+        stock_item: StockItem = serializer.save()
+        write_audit_log(
+            tenant_id=stock_item.tenant_id,
+            actor=self.request.user,
+            action=STOCK_ADJUST,
+            entity_type="stock_item",
+            entity_id=stock_item.id,
+            before=None,
+            after={
+                "asset_id": stock_item.asset_id,
+                "unit_of_measure": stock_item.unit_of_measure,
+                "quantity_on_hand": stock_item.quantity_on_hand,
+                "reorder_threshold": stock_item.reorder_threshold,
+                "reorder_target": stock_item.reorder_target,
+                "bin_location_id": stock_item.bin_location_id,
+            },
+            ip=client_ip(self.request),
+        )
+        # T5.5: a new low/zero-stock item can immediately affect the
+        # `low_stock` dashboard tile -- invalidate on create too, same as
+        # every other stock-mutating action in this module.
+        invalidate_tenant_dashboard(stock_item.tenant_id)
 
     @action(detail=True, methods=["post"])
     def txn(self, request, pk=None):
