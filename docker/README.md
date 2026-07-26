@@ -7,6 +7,7 @@ docker/
   Dockerfile          # single image shared by web + worker (different commands)
   redis.conf          # maxmemory 256mb, allkeys-lru
   nginx/
+    Dockerfile         # multi-stage: node builds ../frontend, then nginx:alpine
     nginx.conf
     default.conf      # reverse proxy to web:8000, serves /static and /media
   cloudflared/

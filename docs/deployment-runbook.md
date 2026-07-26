@@ -192,8 +192,13 @@ matches exactly what `docker-compose.yml`'s named volumes and bind mounts
 need (cross-checked against the file: `pgdata`, `redis-data`, `media`,
 `static` are named Docker volumes managed by the engine, not bind mounts,
 so they don't need their own DSM subfolder unless you explicitly rebind
-them; `.env`, `docker/nginx/*`, `frontend/dist` **are** bind-mounted paths
-and do need to exist on disk exactly where the compose file expects them):
+them; `.env`, `docker/nginx/nginx.conf`, `docker/nginx/default.conf` **are**
+bind-mounted paths and do need to exist on disk exactly where the compose
+file expects them — the PWA itself is no longer a bind mount: `docker/nginx/
+Dockerfile`'s multi-stage build runs `npm ci && npm run build` against
+`frontend/` and bakes the resulting `dist/` straight into the `cortex-nginx`
+image at `docker compose build` time, so there is no separate `frontend/
+dist` folder to create or keep in sync on the NAS):
 
 ```
 /volume1/docker/cortex/                  <- project root; `cd` here to run docker compose
@@ -201,27 +206,28 @@ and do need to exist on disk exactly where the compose file expects them):
 ├── docker-compose.yml                   <- copied from the repo (or the whole repo checked out)
 ├── docker-compose.prod.yml
 ├── docker/
-│   ├── Dockerfile
+│   ├── Dockerfile                       <- builds the shared web/worker image
 │   ├── nginx/
+│   │   ├── Dockerfile                   <- builds the frontend (Node stage) + nginx image
 │   │   ├── nginx.conf                   <- bind-mounted read-only into nginx
 │   │   └── default.conf                 <- bind-mounted read-only into nginx
 │   └── redis.conf                       <- bind-mounted read-only into redis
-├── frontend/
-│   └── dist/                            <- built PWA bundle (`npm run build` output),
-│                                            bind-mounted read-only into nginx as
-│                                            /usr/share/nginx/html
+├── frontend/                            <- source only; `docker compose build` runs
+│                                            `npm ci && npm run build` inside the nginx
+│                                            image, no local/NAS npm install needed
 └── backend/                             <- only needed if building the image on the NAS;
-                                             if you push cortex-app to a registry instead,
-                                             you only need the compose files + docker/nginx +
-                                             frontend/dist on the NAS itself
+                                             if you push cortex-app/cortex-nginx to a
+                                             registry instead, you only need the compose
+                                             files on the NAS itself
 ```
 
 The simplest, lowest-maintenance option for a DS220+: **check out the whole
 git repo** into `/volume1/docker/cortex` (via `git clone` over SSH, or
 `git pull` to update) rather than hand-copying individual files — that way
 `docker compose build` always has everything it needs (`docker/Dockerfile`,
-`backend/`, `frontend/`) and stays trivially updatable. Only `.env` needs
-to be created by hand on the NAS (never checked into git).
+`docker/nginx/Dockerfile`, `backend/`, `frontend/`) and stays trivially
+updatable, including building the PWA bundle itself. Only `.env` needs to be
+created by hand on the NAS (never checked into git).
 
 Named volumes (`pgdata`, `redis-data`, `media`, `static`) are created and
 managed by the Docker engine itself under
