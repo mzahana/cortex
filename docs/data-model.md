@@ -63,6 +63,7 @@ erDiagram
 ### Tenancy & identity
 - **Tenant** — a lab/organization. `id, name, slug, settings(jsonb), created_at`.
 - **User** — `id, tenant_id, email(unique per tenant), password_hash, name, is_active, last_login`. (Global-unique email optional; scoped per tenant by default.)
+- **PasswordResetToken** — one-time, hashed forgot-password token (tenant-owned, RLS). `id, tenant_id, user_id, token_hash(sha256, unique), expires_at, used_at(nullable), created_at`. The raw token is **never** stored — only its hash; it lives only in the emailed reset link. Single-use (`used_at` set atomically on consume) and TTL-bounded (`PASSWORD_RESET_TOKEN_TTL_SECONDS`, default 1h).
 - **Role** — named bundle of permissions: `Admin, ProjectLead, Member, Viewer` (system roles, tenant may add custom). `id, tenant_id(nullable for system), key, name`.
 - **Permission** — atomic action key, e.g. `asset.create`, `stock.adjust`, `reservation.approve`, `user.manage`, `audit.view` (see `rbac.md`).
 - **RolePermission** — Role ↔ Permission.
@@ -124,3 +125,40 @@ erDiagram
 - **General-pool vs. project-assigned** is `Asset.project_id` (NULL = general
   pool). This drives both dashboards (per-project allocation) and project-scoped
   RBAC.
+
+## 5. Project & grant management (M7)
+
+Extends the thin `Project` config into a full grant hub **without changing the
+asset-first model** — a project stays an optional lens (`Asset.project_id`
+NULL = general pool, unchanged). All new tables are tenant-owned (RLS,
+fail-closed) and, where noted, additionally **project-scoped** so the §3 RBAC
+scope rule applies. See `docs/tasks/M7-project-grants.md`.
+
+- **Project** (extended, `projects_project`) — adds grant fields to the existing
+  `id, tenant_id, name, lead_user_id, is_active`: `code`, `funding_source
+  (internal|external)`, `sponsor`, `start_date`, `end_date`, `budget_total
+  (Decimal 14,2)`, `currency`, `status (active|closed)`, `description`. Budget
+  rollup (`spent`, `remaining`, `spend_by_category`) is **computed**, never
+  stored, from `Expense` (single aggregated query).
+- **ExpenseCategory** (`projects_expense_category`) — tenant-wide config
+  (like `Location`): `name, is_active`. Seeded per tenant with Equipment,
+  Consumables, Services, Software, Travel, Shipping, Other (data migration +
+  a `Tenant` post-save signal for tenants created later).
+- **Expense** (`projects_expense`, project-scoped) — the itemized ledger:
+  `project_id, category_id(SET_NULL), amount(Decimal 14,2), currency, date,
+  vendor, invoice_number, description, asset_id(nullable SET_NULL — optional
+  link to the asset a purchase bought), created_by, timestamps`. Indexed
+  `(tenant, project)`, `(tenant, category)`, `(tenant, date)`.
+- **ExpenseAttachment** (`projects_expense_attachment`, project-scoped) — invoice
+  scans for an expense (`expense_id` CASCADE). Dedicated table per anchor (same
+  rationale as `assets.Attachment`), binary on the storage backend, only
+  `storage_key` + metadata in the DB.
+- **ProjectDocument** (`projects_project_document`, project-scoped) — grant
+  paperwork: `project_id, kind(proposal|contract|progress_report|other)` + the
+  same storage fields as `Attachment`. Reads gated by project-scoped
+  `expense.view` (documents routinely contain budget detail).
+
+Report PDF (budget summary, spend-by-category, itemized expenses, asset
+inventory, document appendix) renders in **Celery via WeasyPrint**, reusing the
+label/`jobs` async pipeline. Field-selectable CSV export streams like the asset
+export.

@@ -21,14 +21,17 @@ import {
   Title,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../../api/client";
 import {
   ASSET_ATTACH,
   ASSET_CREATE,
   ASSET_EDIT,
+  CATEGORY_MANAGE,
   hasAnyAssetPermission,
   hasAssetPermission,
+  hasPermission,
+  LOCATION_MANAGE,
   STOCK_ADJUST,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
@@ -46,6 +49,8 @@ import type {
 import { buildTree, flattenForSelect } from "../../components/treeUtils";
 import { STATUS_OPTIONS } from "./assetConstants";
 import { CustomFieldInputs } from "./CustomFieldInputs";
+import { CategoryFormModal } from "../admin/CategoryFormModal";
+import { LocationFormModal } from "../admin/LocationFormModal";
 
 interface FormValues {
   category: string | null;
@@ -168,6 +173,14 @@ export function AssetFormScreen() {
   const isEdit = Boolean(id);
   const navigate = useNavigate();
   const { me } = useAuth();
+  // M7 (`docs/tasks/M7-project-grants.md`): the project hub's Assets tab
+  // links "New asset" to `/assets/new?project=<id>` so a new asset created
+  // from within a project's context starts pre-scoped to it — read-only
+  // preset (create only; an edit never has this query param since the
+  // existing asset's own `project` always wins, see `existingAsset` load
+  // below).
+  const [searchParams] = useSearchParams();
+  const presetProjectId = !isEdit ? searchParams.get("project") : null;
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -242,8 +255,15 @@ export function AssetFormScreen() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const resetFileRef = useRef<() => void>(null);
 
+  // Inline "+ New" category/location creation (so the user doesn't have to
+  // leave the Asset form to add a missing one) — reuses the existing admin
+  // modals (`CategoryFormModal`/`LocationFormModal`) rather than duplicating
+  // their create logic.
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const [locationModalOpen, setLocationModalOpen] = useState(false);
+
   const form = useForm<FormValues>({
-    initialValues: EMPTY_VALUES,
+    initialValues: presetProjectId ? { ...EMPTY_VALUES, project: presetProjectId } : EMPTY_VALUES,
     validate: {
       name: (v) => (v.trim() ? null : "Name is required."),
       category: (v) => (v ? null : "Category is required."),
@@ -367,6 +387,30 @@ export function AssetFormScreen() {
     } finally {
       setFieldDefsLoading(false);
     }
+  };
+
+  /** After a new category is created via the inline "+ New" modal: re-fetch
+   * the category list, find the one that wasn't there before, and route it
+   * through `handleCategoryChange` (rather than setting form state directly)
+   * so its custom fields load and all the same side effects fire as a normal
+   * category pick. */
+  const handleCategoryCreated = async () => {
+    const previousIds = new Set(categories.map((c) => c.id));
+    const refreshed = await api.listAllCategories({ ordering: "name" });
+    setCategories(refreshed);
+    const created = refreshed.find((c) => !previousIds.has(c.id));
+    if (created) void handleCategoryChange(String(created.id));
+  };
+
+  /** Mirrors `handleCategoryCreated` for the inline "+ New" location modal —
+   * `Location` has no side effects to reuse, so this sets the form field
+   * directly. */
+  const handleLocationCreated = async () => {
+    const previousIds = new Set(locations.map((l) => l.id));
+    const refreshed = await api.listAllLocations({ ordering: "name" });
+    setLocations(refreshed);
+    const created = refreshed.find((l) => !previousIds.has(l.id));
+    if (created) form.setFieldValue("location", String(created.id));
   };
 
   const handleCustomFieldChange = (key: string, value: unknown) => {
@@ -758,19 +802,32 @@ export function AssetFormScreen() {
             <Card withBorder>
               <Stack gap="sm">
                 <Title order={6}>Identity</Title>
-                <Select
-                  label="Category"
-                  placeholder="Select a category"
-                  data={categoryOptions}
-                  value={form.values.category}
-                  onChange={(v) => void handleCategoryChange(v)}
-                  error={form.errors.category}
-                  searchable
-                  required
-                  disabled={fieldDefsLoading}
-                  rightSection={fieldDefsLoading ? <Loader size="xs" /> : undefined}
-                  data-testid="asset-form-category"
-                />
+                <Group align="flex-end" gap="xs">
+                  <Select
+                    flex={1}
+                    label="Category"
+                    placeholder="Select a category"
+                    data={categoryOptions}
+                    value={form.values.category}
+                    onChange={(v) => void handleCategoryChange(v)}
+                    error={form.errors.category}
+                    searchable
+                    required
+                    disabled={fieldDefsLoading}
+                    rightSection={fieldDefsLoading ? <Loader size="xs" /> : undefined}
+                    data-testid="asset-form-category"
+                  />
+                  {hasPermission(me, CATEGORY_MANAGE) && (
+                    <Button
+                      variant="light"
+                      size="sm"
+                      onClick={() => setCategoryModalOpen(true)}
+                      data-testid="asset-form-new-category"
+                    >
+                      + New
+                    </Button>
+                  )}
+                </Group>
                 {fieldDefsError && (
                   <Alert color="red" data-testid="asset-form-field-defs-error">
                     {fieldDefsError}
@@ -917,14 +974,27 @@ export function AssetFormScreen() {
             <Card withBorder>
               <Stack gap="sm">
                 <Title order={6}>Location &amp; project</Title>
-                <Select
-                  label="Location"
-                  placeholder="No location"
-                  data={locationOptions}
-                  clearable
-                  searchable
-                  {...form.getInputProps("location")}
-                />
+                <Group align="flex-end" gap="xs">
+                  <Select
+                    flex={1}
+                    label="Location"
+                    placeholder="No location"
+                    data={locationOptions}
+                    clearable
+                    searchable
+                    {...form.getInputProps("location")}
+                  />
+                  {hasPermission(me, LOCATION_MANAGE) && (
+                    <Button
+                      variant="light"
+                      size="sm"
+                      onClick={() => setLocationModalOpen(true)}
+                      data-testid="asset-form-new-location"
+                    >
+                      + New
+                    </Button>
+                  )}
+                </Group>
                 <Select
                   label="Project"
                   placeholder="General pool"
@@ -1065,6 +1135,24 @@ export function AssetFormScreen() {
           </Button>
         </Group>
       </Modal>
+
+      <CategoryFormModal
+        opened={categoryModalOpen}
+        onClose={() => setCategoryModalOpen(false)}
+        onSaved={() => void handleCategoryCreated()}
+        tree={buildTree(categories)}
+        editing={null}
+        presetParentId={null}
+      />
+
+      <LocationFormModal
+        opened={locationModalOpen}
+        onClose={() => setLocationModalOpen(false)}
+        onSaved={() => void handleLocationCreated()}
+        tree={buildTree(locations)}
+        editing={null}
+        presetParentId={null}
+      />
     </AppLayout>
   );
 }

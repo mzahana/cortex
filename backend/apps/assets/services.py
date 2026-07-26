@@ -268,24 +268,38 @@ def replace_asset_field_values(asset: Asset, category, raw_values: dict[str, Any
     )
 
 
-def attachment_upload_path(tenant_id: int, asset_id: int, filename: str) -> str:
-    """Storage key layout: tenant/asset-scoped so two tenants' files never
-    collide on the shared volume, plus a random component so an original
-    filename never overwrites another upload.
+def attachment_upload_path(
+    tenant_id: int, anchor_id: int, filename: str, *, prefix: str = "attachments"
+) -> str:
+    """Storage key layout: tenant/anchor-scoped so two tenants' (or two
+    anchors') files never collide on the shared volume, plus a random
+    component so an original filename never overwrites another upload.
+
+    `anchor_id` is deliberately generic (not just an `Asset` id): M7 reuses
+    this exact helper for `ProjectDocument` (`prefix="project-documents"`,
+    `anchor_id=project.id`) and `ExpenseAttachment`
+    (`prefix="expense-attachments"`, `anchor_id=expense.id`) — see
+    `apps.projects.services`. Each anchor kind gets its own `prefix` so the
+    three never share a directory (an asset id and a project id can
+    coincidentally be equal within the same tenant; the `prefix` keeps that
+    harmless).
     """
     import uuid
 
     safe_name = filename.replace("/", "_").replace("\\", "_")
-    return f"attachments/{tenant_id}/{asset_id}/{uuid.uuid4().hex}_{safe_name}"
+    return f"{prefix}/{tenant_id}/{anchor_id}/{uuid.uuid4().hex}_{safe_name}"
 
 
-def save_attachment_file(*, tenant_id: int, asset_id: int, uploaded_file) -> tuple[str, str, int]:
+def save_attachment_file(
+    *, tenant_id: int, anchor_id: int, uploaded_file, prefix: str = "attachments"
+) -> tuple[str, str, int]:
     """Write `uploaded_file`'s bytes to the storage backend (the media
     volume via `django-storages`/Django's storage API) and return
     `(storage_key, content_type, size)` — the ONLY things ever persisted on
-    `Attachment`. The bytes themselves never enter the DB.
+    `Attachment`/`ProjectDocument`/`ExpenseAttachment`. The bytes themselves
+    never enter the DB. `anchor_id`/`prefix`: see `attachment_upload_path`.
     """
-    key = attachment_upload_path(tenant_id, asset_id, uploaded_file.name)
+    key = attachment_upload_path(tenant_id, anchor_id, uploaded_file.name, prefix=prefix)
     storage_key = default_storage.save(key, uploaded_file)
     content_type = getattr(uploaded_file, "content_type", "") or ""
     size = getattr(uploaded_file, "size", None)

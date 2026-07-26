@@ -172,3 +172,40 @@ export const USER_MANAGE = "user.manage";
 export function hasUserManagePermission(me: Me | null | undefined): boolean {
   return hasAnyAssetPermission(me, USER_MANAGE);
 }
+
+// M7 project/grant hub action keys (`docs/tasks/M7-project-grants.md` RBAC
+// matrix; `apps.rbac.permission_keys`). All four are project-scoped through
+// `Project`/`Expense.project` (a pure ProjectLead's grant is scoped to their
+// own project only) — same scope resolution as asset/stock/reservation
+// actions, so `hasAssetPermission`/`hasAnyAssetPermission` are reused
+// directly (not re-implemented) with the project's own id as the scope.
+export const PROJECT_VIEW = "project.view";
+export const PROJECT_MANAGE = "project.manage";
+export const EXPENSE_VIEW = "expense.view";
+export const EXPENSE_MANAGE = "expense.manage";
+
+/** UI-gating helper for the Projects nav link (presentation only, same
+ * caveat as `hasAuditViewPermission`/`hasUserManagePermission`): true if the
+ * caller holds `project.view` tenant-wide OR scoped to at least one project
+ * (a pure ProjectLead should still see the entry point and land on their own
+ * project(s), narrowed server-side by `ProjectViewSet.get_queryset`). */
+export function hasProjectViewPermission(me: Me | null | undefined): boolean {
+  return hasAnyAssetPermission(me, PROJECT_VIEW);
+}
+
+/**
+ * UI-gating helper for an action on a SPECIFIC project (NOT a security
+ * boundary — same caveat as `hasAssetPermission`, which this wraps). Unlike
+ * a general-pool asset (`projectId === null` falls back to the tenant-wide
+ * pool only), a `Project` always has an id to scope against — there is no
+ * "general pool" project — so this is a thin, differently-named alias kept
+ * for readability at call sites (`hasProjectScopedPermission(me, EXPENSE_VIEW,
+ * project.id)` reads clearer than reusing the asset-flavored name directly).
+ */
+export function hasProjectScopedPermission(
+  me: Me | null | undefined,
+  key: string,
+  projectId: number,
+): boolean {
+  return hasAssetPermission(me, key, projectId);
+}

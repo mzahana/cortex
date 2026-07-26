@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../api/client";
-import type { Asset, AssetListParams } from "../../api/types";
+import type { Asset, AssetListParams, Paginated } from "../../api/types";
 
 interface UseAssetListOptions {
   /** Caller-owned filter object — should be `useMemo`'d by value so this
@@ -8,6 +8,14 @@ interface UseAssetListOptions {
    * every render. */
   filters: AssetListParams;
   pageSize?: number;
+  /** The server-side page fetch — defaults to `api.listAssets` (`GET
+   * /assets`). The M7 project hub's Assets tab (`AssetListView`) passes
+   * `(params) => api.listProjectAssets(projectId, params)` (`GET
+   * /projects/{id}/assets`) instead — same `Paginated<Asset>` envelope, same
+   * `AssetListParams` shape, so this hook's pagination/accumulation logic is
+   * identical either way (docs/tasks/M7-project-grants.md: reuse the
+   * existing asset list component, don't reimplement it). */
+  fetcher?: (params: AssetListParams) => Promise<Paginated<Asset>>;
 }
 
 interface UseAssetListResult {
@@ -34,7 +42,11 @@ interface UseAssetListResult {
  * assets"). A filter/search/ordering change resets to page 1 and replaces
  * the whole array; `loadMore()` appends the next page.
  */
-export function useAssetList({ filters, pageSize = 50 }: UseAssetListOptions): UseAssetListResult {
+export function useAssetList({
+  filters,
+  pageSize = 50,
+  fetcher = api.listAssets,
+}: UseAssetListOptions): UseAssetListResult {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -64,7 +76,7 @@ export function useAssetList({ filters, pageSize = 50 }: UseAssetListOptions): U
         setLoadingMore(true);
       }
       try {
-        const body = await api.listAssets({ ...filters, page, page_size: pageSize });
+        const body = await fetcher({ ...filters, page, page_size: pageSize });
         if (requestId !== requestIdRef.current) return; // superseded — drop
         setAssets((prev) => (replace ? body.results : [...prev, ...body.results]));
         setTotalCount(body.count);

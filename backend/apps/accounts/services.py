@@ -31,12 +31,26 @@ CLAUDE.md "Audit everything mutating" / "no secrets in the audit log"):
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from dataclasses import dataclass
+from datetime import timedelta
+
+from django.conf import settings
+from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 
 from apps.tenancy.context import TenantContextError, get_current_tenant_id
 
-from .models import User
+from .models import PasswordResetToken, User
+
+# Audit `action` strings (free-form per `apps.audit.models.AuditLog.action`,
+# documented in `docs/rbac.md` §5). Kept here so the views and any test refer
+# to one constant rather than re-typing the literal.
+USER_PASSWORD_CHANGE = "user.password_change"  # self-service (actor == subject)
+USER_PASSWORD_RESET = "user.password_reset"  # admin resets ANOTHER user
+USER_PASSWORD_RESET_REQUEST = "user.password_reset_request"  # forgot-password mint
+USER_PASSWORD_RESET_CONFIRM = "user.password_reset_confirm"  # forgot-password consume
 
 
 @dataclass(frozen=True)
@@ -91,3 +105,113 @@ def create_user_with_generated_password(*, email: str, name: str) -> CreatedUser
     user.set_password(password)
     user.save()
     return CreatedUser(user=user, initial_password=password)
+
+
+def validate_new_password(user: User, new_password: str) -> None:
+    """Run a USER-CHOSEN password through Django's `AUTH_PASSWORD_VALIDATORS`
+    (length/common/numeric/similarity — the last needs the `User`). Raises
+    `django.core.exceptions.ValidationError` on a weak password; the caller
+    maps it to an RFC-7807 400. Split out from `set_user_password` so the
+    forgot-password confirm can validate BEFORE consuming its single-use token.
+    """
+    validate_password(new_password, user=user)
+
+
+def set_user_password(user: User, new_password: str) -> None:
+    """Validate and set a USER-CHOSEN password (self-service change / forgot-
+    password confirm), then persist it.
+
+    Unlike `create_user_with_generated_password` (a CSPRNG value that skips the
+    validators by design), a client-supplied password MUST clear the validators
+    (`validate_new_password`) — this is the single choke point that runs them.
+    `set_password` re-hashes with Argon2 (same hasher as everywhere else); the
+    plaintext is never persisted or logged.
+    """
+    validate_new_password(user, new_password)
+    user.set_password(new_password)
+    user.save(update_fields=["password", "updated_at"])
+
+
+def reset_user_password(user: User) -> str:
+    """Admin action: regenerate `user`'s password to a fresh CSPRNG one-time
+    value and return the plaintext ONCE (same handling contract as
+    `create_user_with_generated_password`'s `initial_password` — the caller
+    puts it in the HTTP body exactly once and it never touches the audit log).
+
+    Callers must already be inside the target user's tenant context (the
+    `user.manage`-gated viewset action resolves `user` through the tenant-
+    scoped manager first).
+    """
+    password = generate_initial_password()
+    user.set_password(password)
+    user.save(update_fields=["password", "updated_at"])
+    return password
+
+
+# --- Forgot-password reset tokens ------------------------------------------
+
+def _hash_reset_token(raw_token: str) -> str:
+    """SHA-256 hex digest of the raw token. The DB only ever stores this — the
+    raw token exists only in the emailed link (same posture as Django's
+    session-key hashing)."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _reset_token_ttl() -> timedelta:
+    return timedelta(seconds=settings.PASSWORD_RESET_TOKEN_TTL_SECONDS)
+
+
+def create_password_reset_token(user: User) -> str:
+    """Mint a one-time reset token for `user` and return the RAW token (to be
+    emailed, never stored). Any of the user's still-valid outstanding tokens
+    are invalidated first, so at most one link is ever live.
+
+    Must run inside `user`'s tenant context (the caller resolves the tenant
+    from the request's `tenant` slug and enters `tenant_context()` first — the
+    same reviewed R4 exception `LoginView` uses).
+    """
+    now = timezone.now()
+    # Invalidate any live tokens for this user (single-active-link invariant).
+    PasswordResetToken.objects.filter(user=user, used_at__isnull=True).update(used_at=now)
+
+    raw_token = secrets.token_urlsafe(32)
+    PasswordResetToken.objects.create(
+        tenant_id=user.tenant_id,
+        user=user,
+        token_hash=_hash_reset_token(raw_token),
+        expires_at=now + _reset_token_ttl(),
+    )
+    return raw_token
+
+
+def peek_live_reset_token(raw_token: str) -> PasswordResetToken | None:
+    """Return the live (unused, unexpired) token matching `raw_token`'s hash
+    within the CURRENT tenant context, WITHOUT consuming it — so the caller can
+    validate the proposed new password before committing the single use.
+    Returns `None` if no live token matches.
+
+    Uses the tenant-scoped `.objects` manager: the caller has already resolved
+    and entered the token's tenant context, so RLS + the app filter both scope
+    this lookup to that tenant (no cross-tenant token is ever visible).
+    """
+    return (
+        PasswordResetToken.objects.select_related("user")
+        .filter(
+            token_hash=_hash_reset_token(raw_token),
+            used_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        )
+        .first()
+    )
+
+
+def claim_reset_token(token: PasswordResetToken) -> bool:
+    """Atomically mark `token` used, but only if it is still unused. Returns
+    `True` if THIS call won the claim, `False` if it was already consumed
+    (concurrent confirm) — the conditional `UPDATE ... WHERE used_at IS NULL`
+    makes the single-use guarantee race-safe rather than relying on the earlier
+    read."""
+    updated = PasswordResetToken.objects.filter(
+        pk=token.pk, used_at__isnull=True
+    ).update(used_at=timezone.now())
+    return updated == 1

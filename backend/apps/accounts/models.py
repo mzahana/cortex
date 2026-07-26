@@ -17,7 +17,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import models
 
 from apps.tenancy.managers import TenantScopedManager
-from apps.tenancy.models import Tenant
+from apps.tenancy.models import Tenant, TenantScopedModel
 
 from .managers import UserManager
 
@@ -73,3 +73,45 @@ class User(AbstractBaseUser):
 
     def has_module_perms(self, app_label) -> bool:
         return self.is_superuser
+
+
+class PasswordResetToken(TenantScopedModel):
+    """One-time, hashed password-reset token (the forgot-password flow).
+
+    Tenant-owned (a token belongs to a `User`, which belongs to a tenant), so
+    it inherits `TenantScopedModel`'s fail-closed `.objects` manager and gets
+    the standard tenant-isolation RLS policy in migration `0002` (R4 backstop).
+
+    The RAW token is NEVER stored — only its SHA-256 hash (`token_hash`), the
+    same "store the hash, mail the secret" posture Django's own session/
+    password-reset machinery uses. A DB read therefore never yields anything
+    that can actually reset a password.
+
+    The confirm endpoint (`apps.accounts.api.PasswordResetConfirmView`) runs
+    UNAUTHENTICATED — no session, no tenant context yet — so it resolves the
+    tenant from the reset link's `tenant` slug FIRST and enters
+    `tenant_context()` before looking a token up by hash, byte-identical to
+    how `LoginView` resolves `(tenant, email)` (see that module's docstring).
+    That is why this stays a tenant-scoped table with RLS rather than a global
+    one: the app-level filter and the DB policy agree, and no lookup ever
+    crosses a tenant boundary.
+    """
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="password_reset_tokens"
+    )
+    # SHA-256 hex digest (64 chars). `unique=True` also creates the index the
+    # confirm lookup uses. Globally unique is fine — a hash collision is
+    # infeasible — and does not weaken tenant isolation (RLS still scopes every
+    # read).
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounts_password_reset_token"
+        indexes = [models.Index(fields=["tenant", "user"])]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"reset:{self.user_id} (used={self.used_at is not None})"

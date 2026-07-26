@@ -203,6 +203,16 @@ class LocationViewSet(viewsets.ModelViewSet):
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
+    """**Superseded by `apps.projects.api.ProjectViewSet` (M7,
+    `docs/tasks/M7-project-grants.md`) — left defined but UNREGISTERED**
+    (see that module's "Route ownership" docstring section for why: the M7
+    task explicitly allows leaving this class in place rather than deleting
+    it, but `/api/v1/projects` now resolves exclusively to the richer M7
+    viewset, which is contract-compatible with this one's list/create). Not
+    imported by `config/urls.py` any more — kept only as a documented,
+    inert reference for the pre-M7 admin CRUD shape.
+    """
+
     serializer_class = ProjectSerializer
     # ASSUMPTION (flagged, see apps.catalog.permissions module docstring):
     # rbac.md has no dedicated `project.manage` key; Project writes are

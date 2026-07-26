@@ -210,8 +210,25 @@ REST_FRAMEWORK = {
         # Tighter, dedicated rate for the login endpoint (T0.6) to back off
         # brute-force per docs/architecture.md §7.
         "login": "10/min",
+        # Password endpoints (self-service change + forgot-password request/
+        # confirm) — auth-sensitive, so tight dedicated buckets like `login`.
+        "password_change": "10/min",
+        "password_reset": "5/min",
     },
 }
+
+# --- Password reset (forgot-password flow) ---------------------------------
+# One-time reset tokens (see `apps.accounts.models.PasswordResetToken`) expire
+# after this many seconds. Default 1h — short enough to bound exposure of a
+# leaked link, long enough to be usable. (Django's own PASSWORD_RESET_TIMEOUT
+# default is 3 days; we deliberately tighten it.)
+PASSWORD_RESET_TOKEN_TTL_SECONDS = env.int("PASSWORD_RESET_TOKEN_TTL_SECONDS", default=3600)
+
+# Absolute base URL of the PWA, used ONLY to build the emailed reset link
+# (`{FRONTEND_BASE_URL}/reset-password?token=...&tenant=...`). 12-factor: comes
+# from env. Default matches the local nginx origin; set it to the real
+# Cloudflare-Tunnel hostname in production (`risks.md` §3 hostname decision).
+FRONTEND_BASE_URL = env.str("FRONTEND_BASE_URL", default="http://localhost")
 
 # --- I18N ------------------------------------------------------------------
 LANGUAGE_CODE = "en-us"

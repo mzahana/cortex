@@ -13,9 +13,9 @@ import {
   Text,
   Tooltip,
 } from "@mantine/core";
-import { IconTrash, IconUserPlus, IconUsersGroup } from "@tabler/icons-react";
+import { IconKey, IconTrash, IconUserPlus, IconUsersGroup } from "@tabler/icons-react";
 import { api, ApiError } from "../../api/client";
-import { hasUserManagePermission } from "../../api/permissions";
+import { hasPermission, hasUserManagePermission, USER_MANAGE } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
 import { AppLayout } from "../../layout/AppLayout";
 import { ConfirmDeleteModal } from "../../components/ConfirmDeleteModal";
@@ -24,6 +24,7 @@ import { AddMemberModal } from "./AddMemberModal";
 import { ChangeRoleModal } from "./ChangeRoleModal";
 import { CreateUserModal } from "./CreateUserModal";
 import { CreatedPasswordModal } from "./CreatedPasswordModal";
+import { ResetUserPasswordModal } from "./ResetUserPasswordModal";
 import { useMembershipList } from "./useMembershipList";
 
 /**
@@ -43,6 +44,10 @@ import { useMembershipList } from "./useMembershipList";
 export function UsersRolesScreen() {
   const { me } = useAuth();
   const canManage = hasUserManagePermission(me);
+  // Resetting another user's password is Admin-only (tenant-wide `user.manage`,
+  // enforced server-side) — gate the affordance the same way so a ProjectLead
+  // isn't shown an action that will 403.
+  const canResetPassword = hasPermission(me, USER_MANAGE);
 
   const { items, totalCount, page, pageCount, loading, error, forbidden, setPage, reload } =
     useMembershipList();
@@ -56,6 +61,9 @@ export function UsersRolesScreen() {
   const [changeRoleTarget, setChangeRoleTarget] = useState<Membership | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Membership | null>(null);
   const [createdUser, setCreatedUser] = useState<CreatedUser | null>(null);
+  const [resetTarget, setResetTarget] = useState<{ userId: number; email: string } | null>(null);
+  // Distinguishes the reveal copy: a fresh account vs. a reset of an existing one.
+  const [passwordModalKind, setPasswordModalKind] = useState<"created" | "reset">("created");
 
   const loadRefData = useCallback(async () => {
     if (!canManage) return;
@@ -175,6 +183,21 @@ export function UsersRolesScreen() {
                               ✎
                             </ActionIcon>
                           </Tooltip>
+                          {canResetPassword && (
+                            <Tooltip label="Reset password">
+                              <ActionIcon
+                                variant="subtle"
+                                size="sm"
+                                aria-label={`Reset password for ${m.user_email}`}
+                                onClick={() =>
+                                  setResetTarget({ userId: m.user, email: m.user_email })
+                                }
+                                data-testid={`membership-reset-password-${m.id}`}
+                              >
+                                <IconKey size={16} />
+                              </ActionIcon>
+                            </Tooltip>
+                          )}
                           <Tooltip label="Remove">
                             <ActionIcon
                               variant="subtle"
@@ -216,7 +239,10 @@ export function UsersRolesScreen() {
         roles={roles}
         projects={projects}
         onAdded={reload}
-        onUserCreated={(user) => setCreatedUser(user)}
+        onUserCreated={(user) => {
+          setPasswordModalKind("created");
+          setCreatedUser(user);
+        }}
       />
 
       <CreateUserModal
@@ -224,6 +250,17 @@ export function UsersRolesScreen() {
         onClose={() => setCreateUserOpen(false)}
         onCreated={(user) => {
           setCreateUserOpen(false);
+          setPasswordModalKind("created");
+          setCreatedUser(user);
+        }}
+      />
+
+      <ResetUserPasswordModal
+        target={resetTarget}
+        onClose={() => setResetTarget(null)}
+        onReset={(user) => {
+          setResetTarget(null);
+          setPasswordModalKind("reset");
           setCreatedUser(user);
         }}
       />
@@ -233,6 +270,14 @@ export function UsersRolesScreen() {
         email={createdUser?.email ?? ""}
         password={createdUser?.password ?? ""}
         onClose={() => setCreatedUser(null)}
+        title={passwordModalKind === "reset" ? "Password reset" : "User created"}
+        intro={
+          passwordModalKind === "reset" ? (
+            <>
+              New password generated for <strong>{createdUser?.email}</strong>.
+            </>
+          ) : undefined
+        }
       />
 
       <ChangeRoleModal

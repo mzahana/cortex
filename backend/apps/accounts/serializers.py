@@ -68,3 +68,36 @@ class CreateUserSerializer(serializers.Serializer):
                 "A user with this email already exists in this tenant."
             )
         return email
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """`POST /api/v1/me/password` — self-service password change payload.
+
+    Only shape validation here (both fields required, non-empty). The
+    `current_password` check (`user.check_password`) and the strength check on
+    `new_password` (`AUTH_PASSWORD_VALIDATORS`, needs the `User` for the
+    similarity validator) both happen in the view/service where the user is in
+    hand — see `apps.accounts.services.set_user_password`.
+    """
+
+    current_password = serializers.CharField(trim_whitespace=False, write_only=True)
+    new_password = serializers.CharField(trim_whitespace=False, write_only=True)
+
+
+class ForgotPasswordRequestSerializer(serializers.Serializer):
+    """`POST /api/v1/auth/password-reset/request` payload. `tenant` slug
+    disambiguates the per-tenant-unique email, exactly as `LoginSerializer`
+    does (see its docstring for the reviewed R4 exception)."""
+
+    tenant = serializers.SlugField()
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """`POST /api/v1/auth/password-reset/confirm` payload. `tenant` slug lets
+    the unauthenticated confirm endpoint enter the token's tenant context
+    before looking it up by hash (RLS needs a tenant — same path as login)."""
+
+    tenant = serializers.SlugField()
+    token = serializers.CharField(trim_whitespace=False, write_only=True)
+    new_password = serializers.CharField(trim_whitespace=False, write_only=True)

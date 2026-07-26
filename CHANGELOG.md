@@ -10,6 +10,89 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-26
+
+### Added
+
+- **Password management** — the app previously had no way to change a password
+  in the UI (the only password ever set was the generated one at user
+  creation). Adds three flows:
+  - **Self-service change** — `POST /api/v1/me/password` + an **Account**
+    screen: a signed-in user enters their current password and a new one
+    (validated against `AUTH_PASSWORD_VALIDATORS`); the session stays valid.
+    Audited `user.password_change`.
+  - **Admin reset** — `POST /api/v1/users/{id}/reset-password` + a "Reset
+    password" action on the Users & Roles screen: an Admin (tenant-wide
+    `user.manage`) regenerates a one-time password, revealed once (reusing the
+    existing one-time-reveal modal). Cross-tenant id `404`s. Audited
+    `user.password_reset`.
+  - **Forgot password** — `POST /api/v1/auth/password-reset/request` +
+    `/confirm` (both unauthenticated) with "Forgot password?" on Login and a
+    reset-link landing screen. New tenant-owned `PasswordResetToken` table
+    (RLS, single-use, TTL-bounded; only the SHA-256 hash is stored). The
+    request endpoint is enumeration-safe (always a generic 200, dummy hash cost
+    on miss) and emails the link via the `EmailProvider`. Audited
+    `user.password_reset_request` / `user.password_reset_confirm`.
+
+- **Project & grant management (M7)** — turns the thin `Project` config into a
+  full grant hub without shifting the app away from its asset-first focus (a
+  project stays an optional lens; `Asset.project_id` NULL = general pool,
+  unchanged). See `docs/tasks/M7-project-grants.md`.
+  - **Grant metadata + budget** on `Project`: `code`, `funding_source`
+    (internal/external), `sponsor`, `start/end_date`, `budget_total`,
+    `currency`, `status`, `description`. Budget `spent`/`remaining` and a
+    per-category spend breakdown are **computed** (single aggregated query),
+    never stored.
+  - **Itemized expense/invoice ledger** — new `Expense` (project-scoped:
+    amount, date, category, vendor, invoice number, optional link to the asset
+    a purchase bought) with an `ExpenseAttachment` for the invoice scan; new
+    seeded `ExpenseCategory` reference data (Equipment, Consumables, Services,
+    Software, Travel, Shipping, Other), seeded per tenant via data migration +
+    a `Tenant` post-save signal.
+  - **Project documents** — `ProjectDocument` stores proposal/contract/
+    progress-report files per project (binary on the storage backend, only
+    `storage_key` + metadata in the DB, reusing the shared attachment writer).
+  - **Audit-report PDF** — `POST /api/v1/projects/{id}/report` renders a
+    structured report (budget summary, spend-by-category, itemized expenses,
+    asset inventory with photo thumbnails, document appendix) in **Celery via
+    WeasyPrint**, reusing the label/`jobs` async pipeline; plus a
+    field-selectable streamed CSV export (`/projects/{id}/export.csv`).
+  - **New endpoints** under `/api/v1`: richer `projects/{id}` detail+PATCH with
+    budget rollup, `projects/{id}/assets`, `projects/{id}/expenses` +
+    `expenses/{id}` + `expenses/{id}/attachment`, `projects/{id}/documents` +
+    `documents/{id}`, `expense-categories`, `projects/{id}/report`, and
+    `projects/{id}/export.csv`.
+  - **New RBAC keys** `project.view` / `project.manage` / `expense.view` /
+    `expense.manage`, enforced per-project (🟡): a Project Lead can only see and
+    manage their own project's budget, expenses, and documents; Admins are
+    tenant-wide. **Financial data is gated** — `budget_total`, spend, the
+    expense/invoice ledger, and project documents require project-scoped
+    `expense.view`; the project detail endpoint **redacts** (nulls) financial
+    fields for non-privileged callers rather than 403-ing, so the non-financial
+    project view still renders. Project create/delete stay Admin-only; a delete
+    cascades the whole financial ledger and writes a single before/after audit
+    snapshot of everything destroyed.
+  - **Frontend** — new top-level **Projects** destination and a project hub
+    (`/projects/:id`) with Overview/Budget, Assets (reuses the asset list),
+    Expenses (ledger + form with invoice upload), Documents, and Report/Export
+    tabs. Redacted financials render as an explicit locked state, never `$0`.
+    The old thin `/admin/projects` CRUD is superseded by the hub.
+  - Every new tenant table carries a fail-closed RLS policy and composite
+    `(tenant, project)` indexes; RLS firing as the real `cortex_app` role is
+    proven by test.
+
+### Changed
+
+- **Frontend PWA now builds inside Docker** — `nginx`'s image is now built
+  from a new `docker/nginx/Dockerfile` (multi-stage: a `node:20-alpine`
+  stage runs `npm ci && npm run build` against `frontend/`, then the built
+  `dist/` is copied into the final pinned `nginx:1.27-alpine` stage). Removes
+  the `./frontend/dist:/usr/share/nginx/html:ro` bind mount and the manual
+  `npm install && npm run build` step it required before `docker compose up`
+  — a plain Container Manager "Build" action (or `docker compose build`) now
+  produces a working frontend with no NAS terminal/CLI step. `nginx.conf`/
+  `default.conf` stay bind-mounted read-only for operator tweaking.
+
 ## [0.8.0] - 2026-07-25
 
 Post-MVP feature batch: per-tenant email settings, reservation-first

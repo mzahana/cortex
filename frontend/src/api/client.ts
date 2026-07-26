@@ -14,18 +14,27 @@ import type {
   AuditLogListParams,
   Category,
   CategoryWritePayload,
+  ChangePasswordRequest,
   Checkout,
   CheckoutCreatePayload,
   CheckoutListParams,
   CheckinPayload,
   CreatedUser,
   CreateUserPayload,
+  ForgotPasswordRequest,
+  PasswordResetConfirmRequest,
   CustomFieldDef,
   CustomFieldDefCreatePayload,
   CustomFieldDefUpdatePayload,
   DashboardSummary,
   EmailSettings,
   EmailSettingsUpdate,
+  Expense,
+  ExpenseAttachment,
+  ExpenseCategory,
+  ExpenseCategoryListParams,
+  ExpenseListParams,
+  ExpenseWritePayload,
   ImportJob,
   ImportMapping,
   Job,
@@ -43,6 +52,12 @@ import type {
   NotificationPrefUpdatePayload,
   Paginated,
   Project,
+  ProjectCreatePayload,
+  ProjectDetail,
+  ProjectDocument,
+  ProjectDocumentKind,
+  ProjectListParams,
+  ProjectUpdatePayload,
   ReorderRequest,
   ReorderRequestCreatePayload,
   ReorderRequestListParams,
@@ -207,6 +222,34 @@ export const api = {
     return request<Me>("/me", { method: "GET" });
   },
 
+  /** `POST /api/v1/me/password` — self-service password change. `204` on
+   * success; the server refreshes the session auth hash so the user stays
+   * logged in. `400` with `errors.current_password`/`errors.new_password`
+   * carries field-level messages the form surfaces. */
+  async changePassword(payload: ChangePasswordRequest): Promise<void> {
+    await request<void>("/me/password", { method: "POST", body: payload });
+  },
+
+  /** `POST /api/v1/auth/password-reset/request` — unauthenticated. Plants the
+   * CSRF cookie first (like `login`, there may be no session yet). ALWAYS
+   * resolves 200 with a generic message regardless of whether the account
+   * exists (no enumeration). */
+  async requestPasswordReset(payload: ForgotPasswordRequest): Promise<{ detail: string }> {
+    await ensureCsrfCookie();
+    return request<{ detail: string }>("/auth/password-reset/request", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  /** `POST /api/v1/auth/password-reset/confirm` — unauthenticated. `204` on
+   * success; `400` (`invalid-reset-token`) if the link is bad/expired/used, or
+   * `errors.new_password` if the chosen password is too weak. */
+  async confirmPasswordReset(payload: PasswordResetConfirmRequest): Promise<void> {
+    await ensureCsrfCookie();
+    await request<void>("/auth/password-reset/confirm", { method: "POST", body: payload });
+  },
+
   // --- Categories (docs/api-and-ui.md "Structure"; apps.catalog.api.CategoryViewSet) ---
   // NOTE: every path below has a trailing slash — the router-registered
   // viewsets (`DefaultRouter`, `config/urls.py`) only resolve at
@@ -358,14 +401,11 @@ export const api = {
     return request<Project>(`/projects/${id}/`, { method: "GET" });
   },
 
-  /** `POST /api/v1/projects/` — requires `tenant.manage` (the closest
-   * documented analog for Project writes; see `ProjectViewSet`'s own
-   * "ASSUMPTION" comment — rbac.md has no dedicated `project.manage` key). */
-  async createProject(payload: {
-    name: string;
-    lead_user?: number | null;
-    is_active?: boolean;
-  }): Promise<Project> {
+  /** `POST /api/v1/projects/` — requires `tenant.manage` (Admin-only
+   * structural create, unchanged by M7 — see `ProjectCreatePayload` doc
+   * comment for why the full grant-metadata field set is accepted here too,
+   * not just `name`/`lead_user`/`is_active`). */
+  async createProject(payload: ProjectCreatePayload): Promise<Project> {
     return request<Project>("/projects/", { method: "POST", body: payload });
   },
 
@@ -385,6 +425,235 @@ export const api = {
    * 409s, same `ProtectedError` behavior as `deleteCategory`/`deleteLocation`. */
   async deleteProject(id: number): Promise<void> {
     await request<void>(`/projects/${id}/`, { method: "DELETE" });
+  },
+
+  // --- Project hub (M7, docs/tasks/M7-project-grants.md; `apps.projects.api`)
+  // --- Grant metadata + budget rollup, project-scoped assets/expenses/
+  // documents, report PDF job, and CSV export. Distinct from the bounded
+  // catalog helpers above (`listAllProjects`/`createProject`/`updateProject`/
+  // `deleteProject`, which stay the thin Admin CRUD contract unchanged) —
+  // these are the richer M7 hub surface (`ProjectDetail`, budget/spend
+  // rollup, nested sub-resources).
+
+  /** `GET /api/v1/projects/` — one server-side page (the Projects hub LIST
+   * screen; NOT the bounded `listAllProjects` walk-every-page helper used
+   * for filter dropdowns elsewhere — CLAUDE.md: never assume a tenant's
+   * project count stays small forever). `budget_total` is redacted to
+   * `null` per-row for a caller without project-scoped `expense.view` — see
+   * `Project` type doc comment. */
+  async listProjects(params?: ProjectListParams): Promise<Paginated<Project>> {
+    return request<Paginated<Project>>(`/projects/${buildQuery(params)}`, { method: "GET" });
+  },
+
+  /** `GET /api/v1/projects/{id}/` — the M7 hub detail (`ProjectDetail`:
+   * grant metadata + `spent`/`remaining`/`spend_by_category`, all four
+   * redacted to `null` together under the same per-project `expense.view`
+   * gate as `budget_total`). Requires `project.view` (tenant-wide-grantable)
+   * for the row itself to 200 at all — see `ProjectDetail` doc comment. */
+  async getProjectDetail(id: number): Promise<ProjectDetail> {
+    return request<ProjectDetail>(`/projects/${id}/`, { method: "GET" });
+  },
+
+  /** `PATCH /api/v1/projects/{id}/` — requires `project.manage` scoped to
+   * this project (Admin tenant-wide, or that project's own Lead). Edits
+   * grant metadata/budget; partial update, every field optional. */
+  async updateProjectDetail(id: number, payload: ProjectUpdatePayload): Promise<ProjectDetail> {
+    return request<ProjectDetail>(`/projects/${id}/`, { method: "PATCH", body: payload });
+  },
+
+  /** `GET /api/v1/projects/{id}/assets/` — reuses the SAME pagination +
+   * `AssetSerializer` + filter/search/ordering as `GET /api/v1/assets`,
+   * scoped to this project server-side (`apps.projects.api.ProjectViewSet.
+   * assets`). Requires `project.view` scoped to this project — a guessed/
+   * cross-tenant/other-Lead's project id 403s/404s here, never leaks a list.
+   * This is what lets the project hub's Assets tab reuse `useAssetList`/
+   * `AssetListView` unchanged (same `Paginated<Asset>` envelope, same
+   * `AssetListParams` query shape) instead of a parallel implementation. */
+  async listProjectAssets(projectId: number, params?: AssetListParams): Promise<Paginated<Asset>> {
+    return request<Paginated<Asset>>(`/projects/${projectId}/assets/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  /** `GET /api/v1/projects/{id}/expenses/` — one page, `?category=`/
+   * `?date_from=`/`?date_to=` filters (`ExpenseFilterSet`). Requires
+   * `expense.view` scoped to this project (Lead-of-that-project, or Admin)
+   * — the project-scoped financial boundary, same gate as the budget rollup. */
+  async listProjectExpenses(
+    projectId: number,
+    params?: ExpenseListParams,
+  ): Promise<Paginated<Expense>> {
+    return request<Paginated<Expense>>(`/projects/${projectId}/expenses/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  /** `POST /api/v1/projects/{id}/expenses/` — requires `expense.manage`
+   * scoped to this project. `project`/`created_by` are server-derived. */
+  async createExpense(projectId: number, payload: ExpenseWritePayload): Promise<Expense> {
+    return request<Expense>(`/projects/${projectId}/expenses/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  /** `GET /api/v1/expenses/{id}/` — detail. Requires `expense.view` scoped
+   * to the expense's OWN project. */
+  async getExpense(id: number): Promise<Expense> {
+    return request<Expense>(`/expenses/${id}/`, { method: "GET" });
+  },
+
+  /** `PATCH /api/v1/expenses/{id}/` — requires `expense.manage` scoped to
+   * the expense's own project. Partial update. */
+  async updateExpense(id: number, payload: Partial<ExpenseWritePayload>): Promise<Expense> {
+    return request<Expense>(`/expenses/${id}/`, { method: "PATCH", body: payload });
+  },
+
+  /** `DELETE /api/v1/expenses/{id}/` — requires `expense.manage` scoped to
+   * the expense's own project, `204`. */
+  async deleteExpense(id: number): Promise<void> {
+    await request<void>(`/expenses/${id}/`, { method: "DELETE" });
+  },
+
+  /** `GET /api/v1/expense-categories/` — one page. Requires `project.view`.
+   * Active-only by default (`?include_inactive=true` to include retired
+   * ones — see `ExpenseCategoryListParams` doc comment). Used to populate
+   * the Expense form's category `<Select>` (`ExpenseFormModal`) and to
+   * resolve `Expense.category` (a bare id) to a name in the ledger
+   * (`ExpensesTab`). */
+  async listExpenseCategories(
+    params?: ExpenseCategoryListParams,
+  ): Promise<Paginated<ExpenseCategory>> {
+    return request<Paginated<ExpenseCategory>>(`/expense-categories/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  /** Walks every page of `/api/v1/expense-categories/` — bounded tenant
+   * config (a handful of categories per tenant, same "walk every page"
+   * reasoning as `listAllCategories`/`listAllLocations`/`listAllProjects`),
+   * never an asset-scale list. */
+  async listAllExpenseCategories(params?: ExpenseCategoryListParams): Promise<ExpenseCategory[]> {
+    return fetchAllPages<ExpenseCategory>("/expense-categories/", params);
+  },
+
+  /** `GET /api/v1/expense-categories/{id}/` — detail (rarely needed
+   * directly; `listAllExpenseCategories` covers the picker/resolution use
+   * cases above), included for parity with the other resources' typed
+   * client methods. */
+  async getExpenseCategory(id: number): Promise<ExpenseCategory> {
+    return request<ExpenseCategory>(`/expense-categories/${id}/`, { method: "GET" });
+  },
+
+  /** `GET /api/v1/expenses/{id}/attachment/` — list this expense's invoice
+   * scans (plain array, NOT a `Paginated` envelope — see
+   * `ExpenseAttachmentSerializer` usage in `apps.projects.api.
+   * ExpenseViewSet.attachment`). Requires `expense.view` scoped to the
+   * expense's project. */
+  async listExpenseAttachments(expenseId: number): Promise<ExpenseAttachment[]> {
+    return request<ExpenseAttachment[]>(`/expenses/${expenseId}/attachment/`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/expenses/{id}/attachment/` — invoice/receipt scan upload
+   * (multipart, same pattern as `uploadAssetAttachment`). Requires
+   * `expense.manage` scoped to the expense's project. `kind` is
+   * `"photo"`|`"doc"` (camera capture vs. a picked document/PDF). */
+  async uploadExpenseAttachment(
+    expenseId: number,
+    file: File,
+    kind: "photo" | "doc" = "photo",
+  ): Promise<ExpenseAttachment> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("kind", kind);
+
+    const headers = new Headers();
+    const token = readCookie(CSRF_COOKIE_NAME);
+    if (token) headers.set(CSRF_HEADER_NAME, token);
+
+    const response = await fetch(`${API_BASE}/expenses/${expenseId}/attachment/`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: formData,
+    });
+    if (!response.ok) throw await toApiError(response);
+    return (await response.json()) as ExpenseAttachment;
+  },
+
+  /** `GET /api/v1/projects/{id}/documents/` — one page. **Gated by
+   * `expense.view` scoped to this project, NOT `project.view`** (product
+   * decision, `apps.projects.permissions._action_permission_key` doc
+   * comment: proposals/contracts routinely restate the exact budget figures
+   * redacted elsewhere) — a plain Member/Viewer or a Lead of a different
+   * project gets a 403 on the WHOLE sub-resource here, not an empty list;
+   * surface that as "you don't have access to this project's documents",
+   * same posture as the financial redaction. */
+  async listProjectDocuments(
+    projectId: number,
+    params?: ListParams,
+  ): Promise<Paginated<ProjectDocument>> {
+    return request<Paginated<ProjectDocument>>(
+      `/projects/${projectId}/documents/${buildQuery(params)}`,
+      { method: "GET" },
+    );
+  },
+
+  /** `POST /api/v1/projects/{id}/documents/` — requires `project.manage`
+   * scoped to this project. Multipart: `file` + `kind` (proposal/contract/
+   * progress_report/other) + `file_kind` (`"photo"`|`"doc"`, defaults to
+   * `"doc"` server-side — grant documents are virtually always PDFs/office
+   * docs, not camera photos, but the picker still allows either). */
+  async uploadProjectDocument(
+    projectId: number,
+    file: File,
+    kind: ProjectDocumentKind,
+    fileKind: "photo" | "doc" = "doc",
+  ): Promise<ProjectDocument> {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("kind", kind);
+    formData.append("file_kind", fileKind);
+
+    const headers = new Headers();
+    const token = readCookie(CSRF_COOKIE_NAME);
+    if (token) headers.set(CSRF_HEADER_NAME, token);
+
+    const response = await fetch(`${API_BASE}/projects/${projectId}/documents/`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: formData,
+    });
+    if (!response.ok) throw await toApiError(response);
+    return (await response.json()) as ProjectDocument;
+  },
+
+  /** `DELETE /api/v1/documents/{id}/` — requires `project.manage` scoped to
+   * the document's own project, `204`. */
+  async deleteProjectDocument(id: number): Promise<void> {
+    await request<void>(`/documents/${id}/`, { method: "DELETE" });
+  },
+
+  /** `GET /api/v1/projects/{id}/export.csv/?fields=...` — streamed,
+   * field-selectable export of this project's expense ledger. Requires
+   * `expense.view` scoped to this project. Same "plain URL, browser
+   * navigation, session cookie rides along" pattern as
+   * `exportAssetsCsvUrl` — this only builds the URL, it never fetches the
+   * body itself. */
+  exportProjectCsvUrl(projectId: number, fields?: string[]): string {
+    const query = fields && fields.length > 0 ? `?fields=${fields.join(",")}` : "";
+    return `${API_BASE}/projects/${projectId}/export.csv/${query}`;
+  },
+
+  /** `POST /api/v1/projects/{id}/report/` — requires `expense.view` scoped
+   * to this project (the report inlines the same redacted financial
+   * figures, `apps.projects.permissions.PROJECT_ACTION_PERMISSION_MAP`
+   * doc comment). Enqueues the PDF-render job and returns it immediately
+   * (`202`, `queued`) — same job-poll contract as `generateLabels`: poll
+   * `api.getJob(job.id)` until `status` lands on `succeeded`/`failed`. */
+  async generateProjectReport(projectId: number): Promise<Job> {
+    return request<Job>(`/projects/${projectId}/report/`, { method: "POST" });
   },
 
   // --- Tags (docs/api-and-ui.md "Structure"; apps.catalog.api.TagViewSet, read-only) ---
@@ -855,6 +1124,14 @@ export const api = {
    * requirements; never persist it beyond the one-time-reveal modal. */
   async createUser(payload: CreateUserPayload): Promise<CreatedUser> {
     return request<CreatedUser>("/users/", { method: "POST", body: payload });
+  },
+
+  /** `POST /api/v1/users/{id}/reset-password/` — Admin-only (tenant-wide
+   * `user.manage`). Regenerates the user's password and returns a ONE-TIME
+   * `password` field (same handling as `createUser` — reveal once, never
+   * persist). Trailing slash: it's a router `@action`. */
+  async resetUserPassword(userId: number): Promise<CreatedUser> {
+    return request<CreatedUser>(`/users/${userId}/reset-password/`, { method: "POST" });
   },
 
   /** `GET /api/v1/roles/` — the tenant's 4 seeded system roles. Requires

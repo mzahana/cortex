@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Alert,
+  Anchor,
   Box,
   Button,
   Center,
@@ -13,7 +14,7 @@ import {
   Title,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 
@@ -148,6 +149,15 @@ export function LoginScreen() {
                 <Button type="submit" fullWidth mt="md" loading={submitting} size="md">
                   Sign in
                 </Button>
+                <Anchor
+                  component={Link}
+                  to="/forgot-password"
+                  ta="center"
+                  size="sm"
+                  data-testid="forgot-password-link"
+                >
+                  Forgot password?
+                </Anchor>
               </Stack>
             </form>
           </Paper>

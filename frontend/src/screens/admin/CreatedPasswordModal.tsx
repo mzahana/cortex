@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Alert, Button, CopyButton, Group, Modal, Stack, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconCopy } from "@tabler/icons-react";
 
@@ -6,36 +7,48 @@ interface CreatedPasswordModalProps {
   email: string;
   password: string;
   onClose: () => void;
+  /** Modal heading. Defaults to the user-creation copy; the admin
+   * reset-password flow passes "Password reset". */
+  title?: string;
+  /** Leading sentence above the reveal. Defaults to the user-creation copy. */
+  intro?: ReactNode;
 }
 
 /**
- * One-time reveal for a newly-generated user password (`POST /api/v1/users/`
- * response's `password` field — see `CreatedUser` doc comment in
- * `api/types.ts`). The server returns this value exactly once and never
- * again; this modal is the ONLY place it is ever displayed. Security
- * invariants (task requirement / CLAUDE.md "no secrets in the audit log"):
- * never logged, never put in a URL/query param, and held only in the
- * caller's transient React state for exactly as long as this modal is open
- * — closing it is the caller's cue to drop that state entirely.
+ * One-time reveal for a server-generated user password — the `password` field
+ * returned exactly once by `POST /api/v1/users/` (create) or
+ * `POST /api/v1/users/{id}/reset-password/` (admin reset). The server returns
+ * this value exactly once and never again; this modal is the ONLY place it is
+ * ever displayed. Security invariants (task requirement / CLAUDE.md "no
+ * secrets in the audit log"): never logged, never put in a URL/query param,
+ * and held only in the caller's transient React state for exactly as long as
+ * this modal is open — closing it is the caller's cue to drop that state
+ * entirely.
  */
 export function CreatedPasswordModal({
   opened,
   email,
   password,
   onClose,
+  title = "User created",
+  intro,
 }: CreatedPasswordModalProps) {
   return (
     <Modal
       opened={opened}
       onClose={onClose}
-      title="User created"
+      title={title}
       centered
       closeOnClickOutside={false}
       data-testid="created-password-modal"
     >
       <Stack gap="sm">
         <Text size="sm">
-          Account created for <strong>{email}</strong>.
+          {intro ?? (
+            <>
+              Account created for <strong>{email}</strong>.
+            </>
+          )}
         </Text>
         <Alert color="yellow" title="Copy this now — it will not be shown again">
           This initial password is shown exactly once. Share it with the user securely (e.g. in

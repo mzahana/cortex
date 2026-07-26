@@ -340,7 +340,7 @@ class AssetViewSet(
         # Bytes go to the storage backend (volume via django-storages); only
         # the returned key + metadata is ever persisted below.
         storage_key, content_type, size = save_attachment_file(
-            tenant_id=asset.tenant_id, asset_id=asset.id, uploaded_file=uploaded_file
+            tenant_id=asset.tenant_id, anchor_id=asset.id, uploaded_file=uploaded_file
         )
         attachment = Attachment.objects.create(
             tenant=asset.tenant,

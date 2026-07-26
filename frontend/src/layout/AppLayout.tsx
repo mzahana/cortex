@@ -25,6 +25,23 @@ function isNavItemActive(pathname: string, to: string): boolean {
   return pathname === to || pathname.startsWith(`${to}/`);
 }
 
+/** Buckets nav items into consecutive runs by `section` (desktop sidebar
+ * only — mobile's tab bar / "More" sheet stay flat lists), preserving
+ * `NAV_ITEMS`' order. `undefined` section (just Dashboard) comes back as one
+ * ungrouped, caption-less run first. */
+function groupNavItems(items: NavItem[]): Array<[NavItem["section"], NavItem[]]> {
+  const groups: Array<[NavItem["section"], NavItem[]]> = [];
+  for (const item of items) {
+    const last = groups[groups.length - 1];
+    if (last && last[0] === item.section) {
+      last[1].push(item);
+    } else {
+      groups.push([item.section, [item]]);
+    }
+  }
+  return groups;
+}
+
 interface AppLayoutProps {
   /** Current screen's title, shown in the shared top bar (replaces every
    * screen's own ad hoc `<AppShell.Header>` title). */
@@ -142,18 +159,34 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
               </Group>
 
               <ScrollArea.Autosize mah="calc(100vh - 260px)" type="auto">
-                <Stack gap={2}>
-                  {visibleNavItems.map((item) => (
-                    <NavLink
-                      key={item.to}
-                      label={item.label}
-                      leftSection={<item.icon size={18} stroke={1.75} />}
-                      active={isNavItemActive(location.pathname, item.to)}
-                      onClick={() => navigate(item.to)}
-                      data-testid={item.testId}
-                      variant="filled"
-                      style={{ borderRadius: "var(--mantine-radius-md)" }}
-                    />
+                <Stack gap="md">
+                  {groupNavItems(visibleNavItems).map(([section, items]) => (
+                    <Stack gap={2} key={section ?? "_ungrouped"}>
+                      {section && (
+                        <Text
+                          size="10px"
+                          fw={700}
+                          c="dimmed"
+                          px={8}
+                          pt={4}
+                          style={{ letterSpacing: 0.6, textTransform: "uppercase" }}
+                        >
+                          {section}
+                        </Text>
+                      )}
+                      {items.map((item) => (
+                        <NavLink
+                          key={item.to}
+                          label={item.label}
+                          leftSection={<item.icon size={18} stroke={1.75} />}
+                          active={isNavItemActive(location.pathname, item.to)}
+                          onClick={() => navigate(item.to)}
+                          data-testid={item.testId}
+                          variant="filled"
+                          style={{ borderRadius: "var(--mantine-radius-md)" }}
+                        />
+                      ))}
+                    </Stack>
                   ))}
                 </Stack>
               </ScrollArea.Autosize>
