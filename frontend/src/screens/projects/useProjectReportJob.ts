@@ -11,8 +11,14 @@ interface UseProjectReportJobResult {
   /** `POST /api/v1/projects/{id}/report` then poll `GET /api/v1/jobs/{id}`
    * until it lands on `succeeded`/`failed` — same job-poll contract as
    * `useLabelJob` (T4.5's label-PDF pattern), reused here unchanged for the
-   * M7 project report PDF. */
-  generate: (projectId: number) => Promise<void>;
+   * M7 project report PDF. `options.includeInvoiceScans` opts into
+   * embedding invoice/receipt images in the rendered PDF;
+   * `options.includeProjectDocuments` opts into appending each uploaded
+   * project document's full pages to the PDF. Both default to `false`. */
+  generate: (
+    projectId: number,
+    options?: { includeInvoiceScans?: boolean; includeProjectDocuments?: boolean },
+  ) => Promise<void>;
   reset: () => void;
 }
 
@@ -35,22 +41,28 @@ export function useProjectReportJob(): UseProjectReportJobResult {
       ? (err.problem.detail ?? err.problem.title)
       : "Unable to reach the server. Please try again.";
 
-  const generate = useCallback(async (projectId: number) => {
-    const requestId = ++requestIdRef.current;
-    setSubmitting(true);
-    setError(null);
-    setJob(null);
-    try {
-      const created = await api.generateProjectReport(projectId);
-      if (requestId !== requestIdRef.current) return;
-      setJob(created);
-    } catch (err) {
-      if (requestId !== requestIdRef.current) return;
-      setError(toMessage(err));
-    } finally {
-      if (requestId === requestIdRef.current) setSubmitting(false);
-    }
-  }, []);
+  const generate = useCallback(
+    async (
+      projectId: number,
+      options?: { includeInvoiceScans?: boolean; includeProjectDocuments?: boolean },
+    ) => {
+      const requestId = ++requestIdRef.current;
+      setSubmitting(true);
+      setError(null);
+      setJob(null);
+      try {
+        const created = await api.generateProjectReport(projectId, options);
+        if (requestId !== requestIdRef.current) return;
+        setJob(created);
+      } catch (err) {
+        if (requestId !== requestIdRef.current) return;
+        setError(toMessage(err));
+      } finally {
+        if (requestId === requestIdRef.current) setSubmitting(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!job || job.status === "succeeded" || job.status === "failed") return;

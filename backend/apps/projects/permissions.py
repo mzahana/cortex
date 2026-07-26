@@ -229,6 +229,28 @@ class ProjectDocumentPermission(BasePermission):
         return user_has_permission(request.user, PROJECT_MANAGE, project=obj.project_id)
 
 
+# --- ExpenseAttachmentViewSet (`/api/v1/expense-attachments/{id}`, destroy only)
+
+
+class ExpenseAttachmentPermission(BasePermission):
+    """Top-level `/api/v1/expense-attachments/{id}` — `DELETE` only
+    (create/list are nested under `/expenses/{id}/attachment`, gated by
+    `ExpensePermission` above). Gated by `expense.manage`, scoped to
+    `obj.expense.project_id` (an `ExpenseAttachment` has no `project_id` of
+    its own — it hangs off an `Expense`, which is the project-scoped parent)
+    — same per-project 🟡 rule as `ExpensePermission`/`ProjectDocumentPermission`.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated:
+            return False
+        return user_has_permission_in_any_scope(user, EXPENSE_MANAGE)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return user_has_permission(request.user, EXPENSE_MANAGE, project=obj.expense.project_id)
+
+
 # --- ExpenseCategoryViewSet (`/api/v1/expense-categories`, list/retrieve) ---
 
 

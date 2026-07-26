@@ -59,9 +59,11 @@ exact budget figures being redacted elsewhere.
 from __future__ import annotations
 
 import csv
+import logging
 from decimal import Decimal
 
 import django_filters as filters
+from django.core.files.storage import default_storage
 from django.db import transaction
 from django.http import StreamingHttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
@@ -91,6 +93,7 @@ from apps.tenancy.context import tenant_context
 
 from .models import Expense, ExpenseAttachment, ExpenseCategory, Project, ProjectDocument
 from .permissions import (
+    ExpenseAttachmentPermission,
     ExpenseCategoryPermission,
     ExpensePermission,
     ProjectDocumentPermission,
@@ -107,6 +110,8 @@ from .serializers import (
 )
 from .services import save_expense_attachment_file, save_project_document_file
 from .tasks import generate_project_report_pdf
+
+logger = logging.getLogger(__name__)
 
 
 class _EchoWriter:
@@ -594,6 +599,21 @@ class ProjectViewSet(viewsets.ModelViewSet):
         `Job` for the client to poll (`GET /api/v1/jobs/{id}`) until
         `download_url` is populated.
 
+        Accepts an optional JSON body `{"include_invoice_scans": bool,
+        "include_project_documents": bool}` (both default `False`).
+        `include_invoice_scans` is opt-in embedding of rasterized invoice/
+        receipt scan previews in the report appendix (see `apps.projects.
+        services.resolve_project_report_data`'s docstring); left off, the
+        appendix stays filename-only, identical to the report's behavior
+        before this option existed. Embedding scans bloats the PDF, so it is
+        deliberately never the default.
+
+        `include_project_documents` is opt-in appending of each project
+        document's FULL PAGES (not a thumbnail) onto the end of the rendered
+        report — see `apps.projects.report._append_project_documents`'s
+        docstring for exactly how. Also deliberately never the default: it
+        can add a lot of pages and reads/rasterizes every document on file.
+
         Gated on `expense.view` scoped to THIS project
         (`apps.projects.permissions.PROJECT_ACTION_PERMISSION_MAP["report"]`)
         — the report inlines the SAME budget/spend-by-category/itemized-
@@ -605,11 +625,17 @@ class ProjectViewSet(viewsets.ModelViewSet):
         `get_object()` below re-runs that exact object-level check.
         """
         project = self.get_object()
+        include_invoice_scans = bool(request.data.get("include_invoice_scans", False))
+        include_project_documents = bool(request.data.get("include_project_documents", False))
 
         job = Job.objects.create(
             tenant=request.user.tenant,
             job_type="project_report_pdf",
-            params={"project_id": project.id},
+            params={
+                "project_id": project.id,
+                "include_invoice_scans": include_invoice_scans,
+                "include_project_documents": include_project_documents,
+            },
             created_by=request.user,
         )
         # Audit the report-generation request itself (task instruction:
@@ -630,7 +656,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         transaction.on_commit(
             lambda: generate_project_report_pdf.delay(
-                job_id=str(job.id), tenant_id=job.tenant_id, project_id=project.id
+                job_id=str(job.id),
+                tenant_id=job.tenant_id,
+                project_id=project.id,
+                include_invoice_scans=include_invoice_scans,
+                include_project_documents=include_project_documents,
             )
         )
 
@@ -750,6 +780,60 @@ class ExpenseViewSet(
         )
         return Response(
             ExpenseAttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED
+        )
+
+
+class ExpenseAttachmentViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """`/api/v1/expense-attachments/{id}` — `DELETE` only (list/create are
+    nested under `/expenses/{id}/attachment`, `ExpenseViewSet.attachment`
+    above). Mirrors `ProjectDocumentViewSet` exactly.
+    """
+
+    serializer_class = ExpenseAttachmentSerializer
+    permission_classes = [ExpenseAttachmentPermission]
+    http_method_names = ["delete", "head", "options"]
+
+    def get_queryset(self):
+        return ExpenseAttachment.objects.select_related(
+            "expense", "expense__project", "uploaded_by"
+        )
+
+    def perform_destroy(self, instance):
+        before = ExpenseAttachmentSerializer(instance).data
+        tenant_id = instance.tenant_id
+        attachment_id = instance.id
+        storage_key = instance.storage_key
+        instance.delete()
+        # Deliberate divergence from `ProjectDocumentViewSet.perform_destroy`
+        # (which only deletes the DB row and leaves the file orphaned on
+        # disk/object storage): the user explicitly wants disk space reclaimed
+        # for this new delete path. `save_expense_attachment_file`/
+        # `save_attachment_file` write via `default_storage.save(...)`, so
+        # `default_storage.delete()` is the symmetric call — works against
+        # either the local filesystem or an S3-compatible backend per the
+        # django-storages config, never a hardcoded path join. Best-effort:
+        # if the file is already missing (or the backend errors), that must
+        # not roll back / block the DB delete that already happened above.
+        try:
+            default_storage.delete(storage_key)
+        except Exception:
+            logger.warning(
+                "Failed to delete storage object %r for expense_attachment %s "
+                "(tenant %s) after DB row delete; DB delete already committed.",
+                storage_key,
+                attachment_id,
+                tenant_id,
+                exc_info=True,
+            )
+        write_audit_log(
+            tenant_id=tenant_id,
+            actor=self.request.user,
+            action=EXPENSE_MANAGE,
+            entity_type="expense_attachment",
+            entity_id=attachment_id,
+            before=before,
+            after=None,
+            ip=client_ip(self.request),
         )
 
 

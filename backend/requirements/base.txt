@@ -53,3 +53,36 @@ openpyxl==3.1.5
 # before adding -- see per this repo's Alpine/musl gotcha (CLAUDE.md).
 cryptography==49.0.0
 
+# M7 project audit report -- optional invoice-scan embedding
+# (`apps.projects.services._invoice_scan_data_uri`): PDF invoice/receipt
+# attachments are rasterized (first page only) to a PNG thumbnail via
+# PyMuPDF before being base64-embedded in the report appendix. Runs in the
+# `worker` process at request-serving time now (not just in tests), so this
+# moved here from `dev.txt`, where it was previously only a test-only
+# dependency (`apps/labels/tests/test_labels_generate.py`, round-tripping a
+# rendered label PDF back to a PNG to decode its QR code). Confirmed
+# `pymupdf==1.24.11` has a working musllinux wheel for this image's Python
+# 3.12 (it was already installing/running fine under `dev.txt` in this exact
+# Alpine image before this move) -- verified `import fitz` after moving here
+# and rebuilding the `web` image, per CLAUDE.md's Alpine/musl wheel gotcha.
+pymupdf==1.24.11
+
+# Same M7 report feature: `apps.projects.services._resize_and_encode_png`
+# downscales every embedded invoice scan (code-review finding -- the scan
+# now renders large/legible in the PDF via the `.invoice-scan` CSS class, so
+# it needs a real resolution cap instead of inlining full-resolution upload
+# bytes as-is). `Pillow` was already an installed transitive dependency of
+# `weasyprint`; pinning it directly here since `apps.projects.services` now
+# imports it explicitly rather than relying on it staying a WeasyPrint
+# implementation detail. `pillow-heif` decodes HEIC/HEIF (the iPhone camera
+# default -- a real "scanned receipt" case in `PHOTO_CONTENT_TYPES`) that
+# stock Pillow cannot: it registers itself as a normal Pillow codec plugin
+# via `register_heif_opener()`. Verified BOTH have working musllinux wheels
+# for this image's Python 3.12 and that pillow-heif's encode/decode actually
+# round-trips together with this exact Pillow pin (`docker run --rm
+# python:3.12-alpine sh -c "pip install pillow==12.3.0 pillow-heif==1.5.0"`,
+# then a real `Image.save(format='HEIF')` -> `Image.open()` round trip) --
+# see CLAUDE.md's Alpine/musl wheel gotcha.
+pillow==12.3.0
+pillow-heif==1.5.0
+

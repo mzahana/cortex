@@ -10,6 +10,48 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-27
+
+### Added
+
+- **Remove an expense's invoice/receipt attachment** — new
+  `DELETE /api/v1/expense-attachments/{id}`, gated on `expense.manage` scoped
+  to the expense's project, tenant-isolated (cross-tenant id `404`s), and
+  audited (`expense_attachment`, before/after). Also purges the file off the
+  storage backend on delete (best-effort — a missing/already-gone file is
+  logged, not fatal), unlike the sibling `ProjectDocument` delete path, which
+  still only removes the DB row. A trash-icon control on each attachment in
+  the expense form calls it.
+- **Project report: optionally embed invoice scans** — a checkbox on the
+  Report tab ("Include invoice/receipt scans in the PDF") opts the generated
+  project audit report into embedding each expense's invoice scan inline
+  (default off). Image scans (JPEG/PNG/WebP/HEIC/HEIF, via `pillow-heif`)
+  embed directly; PDF scans have their first page rasterized (PyMuPDF); all
+  scans are downscaled to a 1600px-longest-edge cap before embedding to keep
+  the report a sane size. DOCX/XLS/TXT invoices and any unreadable file fall
+  back to the existing filename-only appendix listing rather than failing the
+  report.
+- **Project report: optionally append full project documents** — a second
+  checkbox ("Include project documents ... in the PDF") appends the complete,
+  original pages of each uploaded project document (proposals, contracts,
+  progress reports, other) onto the end of the report, each preceded by a
+  divider page naming the document. PDF documents are merged page-for-page;
+  image documents are converted to a page (downscaled the same way as invoice
+  scans); unsupported formats are skipped from the page-append (still listed
+  in the appendix table) rather than failing the report. Bounded by a
+  per-document page cap and a total document-count/aggregate-byte budget
+  (checked against already-recorded upload size before any storage read) to
+  keep worker memory bounded on a project with many/large documents.
+
+### Fixed
+
+- **Expense invoice/receipt upload silently rejected scanned images** — the
+  expense form's file picker already accepted images, but always tagged the
+  upload as `kind="doc"`, which the backend's content-type allowlist for that
+  kind doesn't include (`doc` is PDF/Word/Excel/text only). Uploads now tag
+  `kind="photo"` for `image/*` files, matching the backend's existing
+  photo-content-type allowlist.
+
 ## [0.9.1] - 2026-07-26
 
 ### Added

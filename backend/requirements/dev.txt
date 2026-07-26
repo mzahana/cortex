@@ -20,17 +20,14 @@ pytest-django==4.9.0
 pytest-cov==5.0.0
 factory-boy==3.3.1
 
-# T4.5 label-PDF round-trip test only (`apps/labels/tests/
-# test_labels_generate.py`): rasterize the rendered PDF page back to an
-# image (`pymupdf`) and decode the embedded QR via the `zbarimg` CLI (see
-# `docker/Dockerfile`'s `zbar` package) to prove the FULL pipeline — not
-# just the pre-render payload — actually round-trips. Deliberately NOT
-# `opencv-python-headless`: it ships no musllinux wheel at all, so it can't
-# install in the Alpine-based app image `pip install -r dev.txt` runs
-# against (only glibc wheels exist) -- would silently work on a glibc CI
-# runner and then hard-fail everywhere this image is actually built/tested.
-# Deliberately NOT `pyzbar` either: it locates `libzbar` via
-# `ctypes.util.find_library`, which is broken under musl libc even when the
-# library is installed. Shelling out to the `zbarimg` binary sidesteps both
-# problems.
-pymupdf==1.24.11
+# `pymupdf` used to be pinned here as a T4.5-test-only dependency
+# (`apps/labels/tests/test_labels_generate.py`, rasterizing a rendered label
+# PDF back to a PNG to decode its QR code via the `zbarimg` CLI). It moved
+# to `base.txt` once `apps.projects.services._invoice_scan_data_uri` (M7
+# project report "include invoice scans" option) started needing it in the
+# `worker` process at request-serving time, not just in tests -- `-r
+# base.txt` above already pulls it in here. Deliberately NOT
+# `opencv-python-headless` (no musllinux wheel at all) or `pyzbar` (locates
+# `libzbar` via `ctypes.util.find_library`, broken under musl libc even when
+# the library is installed) for the zbarimg-based QR decode in that same
+# label test -- shelling out to the `zbarimg` binary sidesteps both.

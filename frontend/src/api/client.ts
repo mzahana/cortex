@@ -581,6 +581,13 @@ export const api = {
     return (await response.json()) as ExpenseAttachment;
   },
 
+  /** `DELETE /api/v1/expense-attachments/{id}/` — requires `expense.manage`
+   * scoped to the attachment's own expense's project, `204`. Same pattern as
+   * `deleteProjectDocument`. */
+  async deleteExpenseAttachment(attachmentId: number): Promise<void> {
+    await request<void>(`/expense-attachments/${attachmentId}/`, { method: "DELETE" });
+  },
+
   /** `GET /api/v1/projects/{id}/documents/` — one page. **Gated by
    * `expense.view` scoped to this project, NOT `project.view`** (product
    * decision, `apps.projects.permissions._action_permission_key` doc
@@ -651,9 +658,25 @@ export const api = {
    * figures, `apps.projects.permissions.PROJECT_ACTION_PERMISSION_MAP`
    * doc comment). Enqueues the PDF-render job and returns it immediately
    * (`202`, `queued`) — same job-poll contract as `generateLabels`: poll
-   * `api.getJob(job.id)` until `status` lands on `succeeded`/`failed`. */
-  async generateProjectReport(projectId: number): Promise<Job> {
-    return request<Job>(`/projects/${projectId}/report/`, { method: "POST" });
+   * `api.getJob(job.id)` until `status` lands on `succeeded`/`failed`.
+   * `options.includeInvoiceScans` opts into embedding each invoice/receipt
+   * image directly in the rendered PDF (bigger file); `options.
+   * includeProjectDocuments` opts into appending the full pages of each
+   * uploaded project document (proposals, contracts, progress reports,
+   * other) onto the end of the PDF (can make it much larger). Both default
+   * to `false`, matching the server's defaults when the fields are
+   * omitted. */
+  async generateProjectReport(
+    projectId: number,
+    options?: { includeInvoiceScans?: boolean; includeProjectDocuments?: boolean },
+  ): Promise<Job> {
+    return request<Job>(`/projects/${projectId}/report/`, {
+      method: "POST",
+      body: {
+        include_invoice_scans: options?.includeInvoiceScans ?? false,
+        include_project_documents: options?.includeProjectDocuments ?? false,
+      },
+    });
   },
 
   // --- Tags (docs/api-and-ui.md "Structure"; apps.catalog.api.TagViewSet, read-only) ---

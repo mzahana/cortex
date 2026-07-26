@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ActionIcon,
   Alert,
   Anchor,
   Button,
@@ -15,7 +16,9 @@ import {
 } from "@mantine/core";
 import { DateInput } from "@mantine/dates";
 import { useForm } from "@mantine/form";
+import { IconTrash } from "@tabler/icons-react";
 import { api, ApiError } from "../../api/client";
+import type { ExpenseAttachment } from "../../api/types";
 import type { Asset, Expense, ExpenseCategory, ExpenseWritePayload } from "../../api/types";
 
 interface ExpenseFormValues {
@@ -107,6 +110,8 @@ export function ExpenseFormModal({
   const [formError, setFormError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [removingAttachmentId, setRemovingAttachmentId] = useState<number | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [savedExpense, setSavedExpense] = useState<Expense | null>(null);
   const resetFileRef = useRef<() => void>(null);
 
@@ -122,6 +127,7 @@ export function ExpenseFormModal({
     if (!opened) return;
     setFormError(null);
     setUploadError(null);
+    setRemoveError(null);
     setSavedExpense(editing);
     form.setValues(editing ? toFormValues(editing) : EMPTY_VALUES);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -192,7 +198,8 @@ export function ExpenseFormModal({
     setUploadError(null);
     setUploading(true);
     try {
-      const attachment = await api.uploadExpenseAttachment(savedExpense.id, file, "doc");
+      const kind = file.type.startsWith("image/") ? "photo" : "doc";
+      const attachment = await api.uploadExpenseAttachment(savedExpense.id, file, kind);
       const updated = { ...savedExpense, attachments: [...savedExpense.attachments, attachment] };
       setSavedExpense(updated);
       onSaved(updated);
@@ -203,6 +210,27 @@ export function ExpenseFormModal({
     } finally {
       setUploading(false);
       resetFileRef.current?.();
+    }
+  };
+
+  const handleRemoveAttachment = async (attachment: ExpenseAttachment) => {
+    if (!savedExpense) return;
+    setRemoveError(null);
+    setRemovingAttachmentId(attachment.id);
+    try {
+      await api.deleteExpenseAttachment(attachment.id);
+      const updated = {
+        ...savedExpense,
+        attachments: savedExpense.attachments.filter((a) => a.id !== attachment.id),
+      };
+      setSavedExpense(updated);
+      onSaved(updated);
+    } catch (err) {
+      setRemoveError(
+        err instanceof ApiError ? err.problem.detail ?? err.problem.title : "Remove failed. Please try again.",
+      );
+    } finally {
+      setRemovingAttachmentId(null);
     }
   };
 
@@ -266,6 +294,11 @@ export function ExpenseFormModal({
                   {uploadError}
                 </Alert>
               )}
+              {removeError && (
+                <Alert color="red" data-testid="expense-attachment-remove-error">
+                  {removeError}
+                </Alert>
+              )}
               {savedExpense.attachments.length === 0 ? (
                 <Text size="sm" c="dimmed">
                   No scans uploaded yet.
@@ -273,15 +306,27 @@ export function ExpenseFormModal({
               ) : (
                 <Stack gap={4}>
                   {savedExpense.attachments.map((att) => (
-                    <Anchor
-                      key={att.id}
-                      href={`/media/${att.storage_key}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      size="sm"
-                    >
-                      {att.filename}
-                    </Anchor>
+                    <Group key={att.id} gap="xs" justify="space-between" wrap="nowrap">
+                      <Anchor
+                        href={`/media/${att.storage_key}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        size="sm"
+                      >
+                        {att.filename}
+                      </Anchor>
+                      <ActionIcon
+                        variant="subtle"
+                        color="red"
+                        size="sm"
+                        aria-label="Remove attachment"
+                        loading={removingAttachmentId === att.id}
+                        onClick={() => handleRemoveAttachment(att)}
+                        data-testid={`expense-attachment-remove-${att.id}`}
+                      >
+                        <IconTrash size={14} />
+                      </ActionIcon>
+                    </Group>
                   ))}
                 </Stack>
               )}

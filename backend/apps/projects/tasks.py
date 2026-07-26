@@ -31,7 +31,15 @@ from .services import resolve_project_report_data, save_project_report_pdf
     # against, same reasoning `apps.labels.tasks.generate_label_pdf` gives
     # for its own `max_retries=0`.
 )
-def generate_project_report_pdf(self, *, job_id: str, tenant_id: int, project_id: int) -> None:
+def generate_project_report_pdf(
+    self,
+    *,
+    job_id: str,
+    tenant_id: int,
+    project_id: int,
+    include_invoice_scans: bool = False,
+    include_project_documents: bool = False,
+) -> None:
     """Render one project's audit report PDF and update the matching `Job`
     row. `project_id` was already tenant + RBAC scope-validated by
     `apps.projects.api.ProjectViewSet.report` (via `self.get_object()`,
@@ -39,6 +47,11 @@ def generate_project_report_pdf(self, *, job_id: str, tenant_id: int, project_id
     enqueued — this task trusts its own `project_id` input, same trust
     boundary `apps.labels.tasks.generate_label_pdf` has for its
     caller-resolved `asset_ids`.
+
+    `include_invoice_scans` and `include_project_documents` are the
+    caller-supplied opt-ins (both default `False`) threaded straight through
+    to `resolve_project_report_data` — see that function's docstring for
+    what turning each one on does.
     """
     with tenant_context(tenant_id):
         try:
@@ -59,7 +72,11 @@ def generate_project_report_pdf(self, *, job_id: str, tenant_id: int, project_id
                 job.mark_failed(error="The project no longer exists.")
                 return
 
-            data = resolve_project_report_data(project)
+            data = resolve_project_report_data(
+                project,
+                include_invoice_scans=include_invoice_scans,
+                include_project_documents=include_project_documents,
+            )
             pdf_bytes = render_project_report_pdf(data)
 
             storage_key, filename = save_project_report_pdf(

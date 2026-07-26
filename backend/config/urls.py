@@ -33,6 +33,7 @@ from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
 from apps.notifications.api import EmailSettingsView, NotificationPrefViewSet
 from apps.projects.api import (
+    ExpenseAttachmentViewSet,
     ExpenseCategoryViewSet,
     ExpenseViewSet,
     ProjectDocumentViewSet,
@@ -60,6 +61,7 @@ router.register("locations", LocationViewSet, basename="location")
 router.register("projects", ProjectViewSet, basename="project")
 router.register("expenses", ExpenseViewSet, basename="expense")
 router.register("documents", ProjectDocumentViewSet, basename="project-document")
+router.register("expense-attachments", ExpenseAttachmentViewSet, basename="expense-attachment")
 # Frontend follow-up (`docs/tasks/M7-project-grants.md`): read-only reference
 # data for the expense form's category picker (name-to-id resolution) — no
 # create/update/delete, see `apps.projects.api.ExpenseCategoryViewSet`.

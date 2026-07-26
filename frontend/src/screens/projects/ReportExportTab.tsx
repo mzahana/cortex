@@ -42,6 +42,8 @@ interface ReportExportTabProps {
 export function ReportExportTab({ projectId }: ReportExportTabProps) {
   const { job, submitting, error, generate, reset } = useProjectReportJob();
   const [selectedFields, setSelectedFields] = useState<string[]>(CSV_FIELDS.map((f) => f.value));
+  const [includeInvoiceScans, setIncludeInvoiceScans] = useState(false);
+  const [includeProjectDocuments, setIncludeProjectDocuments] = useState(false);
 
   const isPolling = job !== null && (job.status === "queued" || job.status === "running");
   const isDone = job !== null && (job.status === "succeeded" || job.status === "failed");
@@ -70,8 +72,24 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
                 {error}
               </Alert>
             )}
+            <Checkbox
+              label="Include invoice/receipt scans in the PDF"
+              description="Embeds each invoice image directly in the report — makes the PDF larger"
+              checked={includeInvoiceScans}
+              onChange={(event) => setIncludeInvoiceScans(event.currentTarget.checked)}
+              mb="sm"
+              data-testid="report-include-invoice-scans-checkbox"
+            />
+            <Checkbox
+              label="Include project documents (proposals, contracts, progress reports) in the PDF"
+              description="Appends each document's full pages to the report — can make the PDF much larger."
+              checked={includeProjectDocuments}
+              onChange={(event) => setIncludeProjectDocuments(event.currentTarget.checked)}
+              mb="sm"
+              data-testid="report-include-project-documents-checkbox"
+            />
             <Button
-              onClick={() => void generate(projectId)}
+              onClick={() => void generate(projectId, { includeInvoiceScans, includeProjectDocuments })}
               loading={submitting}
               data-testid="generate-report-button"
             >
