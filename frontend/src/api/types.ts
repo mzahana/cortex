@@ -47,6 +47,28 @@ export interface LoginRequest {
   password: string;
 }
 
+/** `POST /api/v1/me/password` request body (`apps.accounts.serializers.
+ * ChangePasswordSerializer`). Self-service password change. */
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+/** `POST /api/v1/auth/password-reset/request` body — `tenant` slug
+ * disambiguates the per-tenant-unique email, same as `LoginRequest`. */
+export interface ForgotPasswordRequest {
+  tenant: string;
+  email: string;
+}
+
+/** `POST /api/v1/auth/password-reset/confirm` body. `tenant` + one-time
+ * `token` (both carried in the emailed reset link) plus the chosen password. */
+export interface PasswordResetConfirmRequest {
+  tenant: string;
+  token: string;
+  new_password: string;
+}
+
 /**
  * DRF `PageNumberPagination` envelope — every list endpoint returns this
  * shape (`docs/api-and-ui.md` §1: "every list endpoint is paginated").
@@ -171,13 +193,239 @@ export interface ListParams {
   [key: string]: string | number | boolean | null | undefined;
 }
 
-/** `GET/POST/PATCH /api/v1/projects` (`apps.catalog.serializers.ProjectSerializer`,
- * registered as `ProjectViewSet` in `apps.catalog.api`). */
+/** `Project.FundingSource`/`Project.Status` choices
+ * (`backend/apps/projects/models.py::Project`). `""` is a valid `funding_source`
+ * value (unset — pre-M7 projects/plain asset-grouping lenses never had one). */
+export type ProjectFundingSource = "internal" | "external" | "";
+export type ProjectStatus = "active" | "closed";
+
+/** `GET/POST/PATCH /api/v1/projects` (`apps.projects.serializers.
+ * ProjectSerializer`, registered as `ProjectViewSet` in `apps.projects.api` —
+ * M7 supersedes the earlier thin `apps.catalog.api.ProjectViewSet`, same
+ * route/contract, see that module's own "Route ownership" docstring).
+ *
+ * **Financial redaction (product decision, `docs/tasks/M7-project-grants.md`
+ * "Product decision"):** `budget_total` is `null` on the wire for any caller
+ * who does not hold `expense.view` scoped to THIS project (a Member with no
+ * project-scoped Lead grant, or a Lead of a different project) — render that
+ * as a locked/"—" affordance, NEVER as `0`/`$0.00`. This applies to every
+ * list row too, not just the detail view (`ProjectSerializer.
+ * to_representation`), so the Projects list must handle it the same way. */
 export interface Project {
   id: number;
   name: string;
+  code: string;
   lead_user: number | null;
   is_active: boolean;
+  funding_source: ProjectFundingSource;
+  sponsor: string;
+  start_date: string | null;
+  end_date: string | null;
+  /** Redacted to `null` unless the caller holds `expense.view` scoped to
+   * this project — see interface doc comment above. A real awarded budget
+   * of exactly `"0.00"` is a valid (if unusual) string; `null` is the ONLY
+   * "hidden" sentinel — never conflate the two in the UI. */
+  budget_total: string | null;
+  currency: string;
+  status: ProjectStatus;
+  description: string;
+  created_at: string;
+}
+
+/** `GET/PATCH /api/v1/projects/{id}` — the M7 project hub detail
+ * (`apps.projects.serializers.ProjectDetailSerializer`), adding the computed
+ * budget rollup. `spent`/`remaining`/`spend_by_category` are redacted to
+ * `null` under the EXACT SAME per-project `expense.view` gate as
+ * `budget_total` above (same doc comment applies: render as a locked
+ * affordance, never `$0`/an empty breakdown). */
+export interface ProjectDetail extends Project {
+  spent: string | null;
+  remaining: string | null;
+  spend_by_category: SpendByCategoryRow[] | null;
+}
+
+/** One row of `ProjectDetail.spend_by_category`
+ * (`apps.projects.serializers.ProjectDetailSerializer.get_spend_by_category`).
+ * `category_id`/`category` are `null` for expenses with no category
+ * (`Expense.category` is `SET_NULL`). */
+export interface SpendByCategoryRow {
+  category_id: number | null;
+  category: string | null;
+  total: string;
+}
+
+/** `GET /api/v1/projects` query params (`apps.projects.api.ProjectViewSet`:
+ * `filterset_fields = ["is_active", "status"]`, `search_fields = ["name",
+ * "code"]`, `ordering_fields = ["name", "created_at"]`). */
+export interface ProjectListParams extends ListParams {
+  is_active?: boolean;
+  status?: ProjectStatus;
+  ordering?: "name" | "-name" | "created_at" | "-created_at";
+}
+
+/** `PATCH /api/v1/projects/{id}` request body (`project.manage`-gated grant
+ * metadata edit, `apps.projects.api.ProjectViewSet._PROJECT_AUDIT_FIELDS`) —
+ * every field optional (partial update). `create`/`POST /api/v1/projects`
+ * (Admin-only `tenant.manage`) still uses the narrower legacy
+ * `{name, lead_user?, is_active?}` shape via `api.createProject` — the M7
+ * grant fields can be filled in immediately after via this same PATCH path,
+ * kept as a separate type since create's contract is deliberately unchanged
+ * (`apps.projects.api` module docstring: "create/destroy... deliberately
+ * IDENTICAL to the superseded viewset's contract"). */
+/** `POST /api/v1/projects` request body — `apps.projects.serializers.
+ * ProjectSerializer` is used for BOTH create/list and is the base class
+ * `ProjectDetailSerializer` extends, so the full M7 grant-metadata field set
+ * (`code`/`funding_source`/`sponsor`/dates/`budget_total`/`currency`/
+ * `status`/`description`) is writable on create too, not just `name`/
+ * `lead_user`/`is_active` (the pre-M7 admin CRUD screen's narrower usage,
+ * `apps.projects.api` module docstring: "create... deliberately IDENTICAL to
+ * the superseded viewset's contract" refers to the gating/validation
+ * behavior, not a narrower field set). `create`/`destroy` stay
+ * `tenant.manage`-gated (Admin-only) regardless of which fields are filled
+ * in at creation time. */
+export interface ProjectCreatePayload {
+  name: string;
+  code?: string;
+  lead_user?: number | null;
+  is_active?: boolean;
+  funding_source?: ProjectFundingSource;
+  sponsor?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  budget_total?: string | null;
+  currency?: string;
+  status?: ProjectStatus;
+  description?: string;
+}
+
+export interface ProjectUpdatePayload {
+  name?: string;
+  code?: string;
+  lead_user?: number | null;
+  is_active?: boolean;
+  funding_source?: ProjectFundingSource;
+  sponsor?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  budget_total?: string | null;
+  currency?: string;
+  status?: ProjectStatus;
+  description?: string;
+}
+
+// --- M7 project hub: expenses, invoice attachments, documents
+// (`apps.projects.api`/`apps.projects.serializers`) ---
+
+/** `GET /expenses/{id}/attachment` / `POST` response item
+ * (`apps.projects.serializers.ExpenseAttachmentSerializer`) — an invoice/
+ * receipt scan. Same storage-key convention as the asset `Attachment` type,
+ * but no `kind` field (every row here is implicitly an invoice scan) and
+ * anchors to an `Expense`, not an `Asset` — see `apps.projects.models.
+ * ExpenseAttachment` doc comment for why this is a dedicated model/type
+ * rather than the reused asset `Attachment` shape. */
+export interface ExpenseAttachment {
+  id: number;
+  storage_key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded_by: number | null;
+  created_at: string;
+}
+
+/** `GET /projects/{id}/expenses` (list row) / `GET /expenses/{id}` (detail) —
+ * both use `apps.projects.serializers.ExpenseSerializer`. `category`/`asset`
+ * are plain ids (not nested) — same "id, not nested" convention as
+ * `Reservation.asset`/`StockItem.asset`.
+ *
+ * **Known gap (flagged for backend-engineer):** there is no
+ * `GET /api/v1/expense-categories` (or similar) endpoint in this slice
+ * (`apps.projects.tests.test_project_hub_tenant_isolation.
+ * TestCrossTenantExpenseCategoryReference` docstring: "`ExpenseCategory` has
+ * no dedicated CRUD endpoint in this slice") — the only way a category is
+ * reachable from the client is by numeric id, on `Expense.category` itself.
+ * Until that endpoint exists, the Expense form/ledger can only show/accept a
+ * category **id**, not its name (see `ExpensesTab`'s own comment for the
+ * workaround this forces). */
+export interface Expense {
+  id: number;
+  project: number;
+  category: number | null;
+  amount: string;
+  currency: string;
+  date: string;
+  vendor: string;
+  invoice_number: string;
+  description: string;
+  asset: number | null;
+  created_by: number | null;
+  attachments: ExpenseAttachment[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /projects/{id}/expenses` / `PATCH /expenses/{id}` request body.
+ * `project`/`created_by` are server-derived (URL/session) — never
+ * client-writable (`apps.projects.serializers.ExpenseSerializer.Meta.
+ * read_only_fields`). */
+export interface ExpenseWritePayload {
+  category?: number | null;
+  amount: string;
+  currency?: string;
+  date: string;
+  vendor?: string;
+  invoice_number?: string;
+  description?: string;
+  asset?: number | null;
+}
+
+/** `GET /projects/{id}/expenses` query params (`apps.projects.api.
+ * ExpenseFilterSet`). `project` itself is fixed by the URL, not a filter. */
+export interface ExpenseListParams extends ListParams {
+  category?: number;
+  date_from?: string;
+  date_to?: string;
+}
+
+/** `GET /api/v1/expense-categories` (list row) / `GET /api/v1/
+ * expense-categories/{id}` (detail) — a small follow-up endpoint added after
+ * the M7 frontend slice flagged its absence (`apps.projects.models.
+ * ExpenseCategory`: tenant-wide config, "Equipment"/"Consumables"/etc.).
+ * Read-only, gated by `project.view`; ordered by `name`; active-only by
+ * default (`?include_inactive=true` to include retired categories — see
+ * `ExpenseCategoryListParams`). This is what lets `ExpenseFormModal`/
+ * `ExpensesTab` show a real name instead of a bare `Expense.category` id. */
+export interface ExpenseCategory {
+  id: number;
+  name: string;
+  is_active: boolean;
+}
+
+/** `GET /api/v1/expense-categories` query params. `include_inactive`
+ * defaults to `false` server-side (active-only) — only set it `true` when a
+ * caller specifically needs to resolve a retired category's name (e.g. an
+ * older expense still referencing one via `SET_NULL`-safe FK). */
+export interface ExpenseCategoryListParams extends ListParams {
+  include_inactive?: boolean;
+}
+
+/** `ProjectDocument.Kind` choices (`backend/apps/projects/models.py::
+ * ProjectDocument.Kind`). */
+export type ProjectDocumentKind = "proposal" | "contract" | "progress_report" | "other";
+
+/** `GET/POST /projects/{id}/documents` row shape (`apps.projects.
+ * serializers.ProjectDocumentSerializer`) — read-only wire shape; creation is
+ * always via the dedicated multipart upload action (see `api.
+ * uploadProjectDocument`), same pattern as asset `Attachment`. */
+export interface ProjectDocument {
+  id: number;
+  project: number;
+  kind: ProjectDocumentKind;
+  storage_key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded_by: number | null;
   created_at: string;
 }
 

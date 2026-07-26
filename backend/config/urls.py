@@ -13,16 +13,31 @@ from django.http import JsonResponse
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from apps.accounts.api import CsrfView, LoginView, LogoutView, MeView, UserViewSet
+from apps.accounts.api import (
+    ChangePasswordView,
+    CsrfView,
+    LoginView,
+    LogoutView,
+    MeView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
+    UserViewSet,
+)
 from apps.assets.api import AssetResolveView, AssetViewSet
 from apps.audit.api import AuditLogViewSet
-from apps.catalog.api import CategoryViewSet, LocationViewSet, ProjectViewSet, TagViewSet
+from apps.catalog.api import CategoryViewSet, LocationViewSet, TagViewSet
 from apps.dashboard.api import DashboardSummaryView
 from apps.imports.api import ImportCommitView, ImportDetailView, ImportUploadView
 from apps.imports.exports import AssetExportView
 from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
 from apps.notifications.api import EmailSettingsView, NotificationPrefViewSet
+from apps.projects.api import (
+    ExpenseCategoryViewSet,
+    ExpenseViewSet,
+    ProjectDocumentViewSet,
+    ProjectViewSet,
+)
 from apps.rbac.api import MembershipViewSet, RoleViewSet
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
@@ -31,7 +46,24 @@ from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
 router = DefaultRouter()
 router.register("categories", CategoryViewSet, basename="category")
 router.register("locations", LocationViewSet, basename="location")
+# M7 (docs/tasks/M7-project-grants.md): `apps.projects.api.ProjectViewSet` is
+# the SOLE owner of the `/api/v1/projects` route — it supersedes (and is
+# contract-compatible with, for list/create) `apps.catalog.api.
+# ProjectViewSet`, which stays defined but UNREGISTERED (see
+# `apps.projects.api` module docstring "Route ownership"). `expenses`/
+# `documents` are separate top-level resources for their own
+# retrieve/update/destroy routes; list/create for both live nested under
+# `/projects/{id}/expenses` and `/projects/{id}/documents` respectively
+# (custom actions on `ProjectViewSet`), never registered as their own
+# router prefix, so a client can never list/create either without a project
+# context.
 router.register("projects", ProjectViewSet, basename="project")
+router.register("expenses", ExpenseViewSet, basename="expense")
+router.register("documents", ProjectDocumentViewSet, basename="project-document")
+# Frontend follow-up (`docs/tasks/M7-project-grants.md`): read-only reference
+# data for the expense form's category picker (name-to-id resolution) — no
+# create/update/delete, see `apps.projects.api.ExpenseCategoryViewSet`.
+router.register("expense-categories", ExpenseCategoryViewSet, basename="expense-category")
 router.register("tags", TagViewSet, basename="tag")
 router.register("assets", AssetViewSet, basename="asset")
 router.register("stock", StockItemViewSet, basename="stock-item")
@@ -75,7 +107,20 @@ urlpatterns = [
     path("api/v1/auth/csrf", CsrfView.as_view(), name="auth-csrf"),
     path("api/v1/auth/login", LoginView.as_view(), name="auth-login"),
     path("api/v1/auth/logout", LogoutView.as_view(), name="auth-logout"),
+    # Forgot-password (unauthenticated): request a reset link, then confirm it.
+    path(
+        "api/v1/auth/password-reset/request",
+        PasswordResetRequestView.as_view(),
+        name="auth-password-reset-request",
+    ),
+    path(
+        "api/v1/auth/password-reset/confirm",
+        PasswordResetConfirmView.as_view(),
+        name="auth-password-reset-confirm",
+    ),
     path("api/v1/me", MeView.as_view(), name="me"),
+    # Self-service password change (authenticated).
+    path("api/v1/me/password", ChangePasswordView.as_view(), name="me-password"),
     # T5.5: a single non-CRUD aggregate endpoint, a plain `path()` rather
     # than a router registration (see `apps.dashboard.api` module docstring).
     path("api/v1/dashboard/summary", DashboardSummaryView.as_view(), name="dashboard-summary"),

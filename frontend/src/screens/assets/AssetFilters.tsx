@@ -27,6 +27,11 @@ interface AssetFiltersProps {
   locationOptions: SelectOption[];
   projectOptions: SelectOption[];
   tagOptions: SelectOption[];
+  /** `false` when embedded in a single project's own context (the M7
+   * project hub's Assets tab, `AssetListView`'s `showProjectFilter` prop) —
+   * hides the redundant "Project" dropdown entirely rather than rendering
+   * it disabled/empty, since every row is already fixed to that one project. */
+  showProjectFilter?: boolean;
 }
 
 const IS_CONSUMABLE_OPTIONS: SelectOption[] = [
@@ -49,6 +54,7 @@ export function AssetFilters({
   locationOptions,
   projectOptions,
   tagOptions,
+  showProjectFilter = true,
 }: AssetFiltersProps) {
   const set = <K extends keyof AssetFiltersValue>(key: K, v: AssetFiltersValue[K]) =>
     onChange({ ...value, [key]: v });
@@ -84,16 +90,18 @@ export function AssetFilters({
           w={180}
           aria-label="Filter by location"
         />
-        <Select
-          placeholder="Project"
-          data={projectOptions}
-          value={value.projectId}
-          onChange={(v) => set("projectId", v)}
-          clearable
-          searchable
-          w={160}
-          aria-label="Filter by project"
-        />
+        {showProjectFilter && (
+          <Select
+            placeholder="Project"
+            data={projectOptions}
+            value={value.projectId}
+            onChange={(v) => set("projectId", v)}
+            clearable
+            searchable
+            w={160}
+            aria-label="Filter by project"
+          />
+        )}
         <Select
           placeholder="Tag"
           data={tagOptions}

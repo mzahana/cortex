@@ -1,6 +1,7 @@
 import {
   IconBell,
   IconBox,
+  IconBriefcase,
   IconCalendarEvent,
   IconCategory,
   IconClipboardList,
@@ -12,8 +13,8 @@ import {
   IconPackages,
   IconPrinter,
   IconQrcode,
-  IconSitemap,
   IconUserCircle,
+  IconUserCog,
   IconUsers,
   type Icon,
 } from "@tabler/icons-react";
@@ -25,6 +26,7 @@ import {
   hasAuditViewPermission,
   hasImportRunPermission,
   hasPermission,
+  hasProjectViewPermission,
   hasUserManagePermission,
 } from "../api/permissions";
 
@@ -37,6 +39,11 @@ export interface NavItem {
    * Dashboard button stack showed/hid (CLAUDE.md: never the security
    * boundary — the server re-checks). `undefined` = always shown. */
   hidden?: (me: Me | null | undefined) => boolean;
+  /** Desktop sidebar section caption this item renders under (see
+   * `AppLayout`'s grouping). `undefined` = ungrouped, rendered above every
+   * section with no caption (just Dashboard). Purely visual — has no bearing
+   * on the mobile tab bar / "More" sheet, which stay flat lists. */
+  section?: "Workflow" | "You" | "Tools" | "Admin";
 }
 
 /**
@@ -47,27 +54,50 @@ export interface NavItem {
  * nothing here becomes unreachable on a phone.
  */
 export const NAV_ITEMS: NavItem[] = [
+  // Overview
   { to: "/", label: "Dashboard", icon: IconLayoutDashboard, testId: "nav-dashboard" },
-  { to: "/assets", label: "Assets", icon: IconBox, testId: "nav-assets" },
-  { to: "/scan", label: "Scan", icon: IconQrcode, testId: "nav-scan" },
-  { to: "/stock", label: "Stock", icon: IconPackages, testId: "nav-stock" },
-  { to: "/reservations", label: "Reservations", icon: IconCalendarEvent, testId: "nav-reservations" },
-  { to: "/approvals", label: "Approvals", icon: IconClipboardList, testId: "nav-approvals" },
-  { to: "/my-items", label: "My Items", icon: IconUserCircle, testId: "nav-my-items" },
-  { to: "/notifications", label: "Notifications", icon: IconBell, testId: "nav-notifications" },
+  // Core inventory workflow, in the order a lab tech actually moves through
+  // it: find/browse an asset, scan its QR label, track consumable stock,
+  // reserve time on gear, and approve/route those requests.
+  { to: "/assets", label: "Assets", icon: IconBox, testId: "nav-assets", section: "Workflow" },
+  { to: "/scan", label: "Scan", icon: IconQrcode, testId: "nav-scan", section: "Workflow" },
+  { to: "/stock", label: "Stock", icon: IconPackages, testId: "nav-stock", section: "Workflow" },
+  {
+    to: "/reservations",
+    label: "Reservations",
+    icon: IconCalendarEvent,
+    testId: "nav-reservations",
+    section: "Workflow",
+  },
+  {
+    to: "/approvals",
+    label: "Approvals",
+    icon: IconClipboardList,
+    testId: "nav-approvals",
+    section: "Workflow",
+  },
+  // Personal / project-scoped views
+  { to: "/my-items", label: "My Items", icon: IconUserCircle, testId: "nav-my-items", section: "You" },
+  {
+    to: "/projects",
+    label: "Projects",
+    icon: IconBriefcase,
+    testId: "nav-projects",
+    hidden: (me) => !hasProjectViewPermission(me),
+    section: "You",
+  },
+  { to: "/notifications", label: "Notifications", icon: IconBell, testId: "nav-notifications", section: "You" },
+  // Every signed-in user can reach their own account to change their password
+  // (no permission gate — self-service).
+  { to: "/account", label: "Account", icon: IconUserCog, testId: "nav-account", section: "You" },
+  // Operational tools
   {
     to: "/labels",
     label: "Print Labels",
     icon: IconPrinter,
     testId: "nav-labels",
     hidden: (me) => !hasAnyAssetPermission(me, LABEL_GENERATE),
-  },
-  {
-    to: "/audit",
-    label: "Audit Log",
-    icon: IconHistory,
-    testId: "nav-audit",
-    hidden: (me) => !hasAuditViewPermission(me),
+    section: "Tools",
   },
   {
     to: "/import",
@@ -75,16 +105,47 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconFileImport,
     testId: "nav-import",
     hidden: (me) => !hasImportRunPermission(me),
+    section: "Tools",
   },
-  { to: "/admin/categories", label: "Categories & Fields", icon: IconCategory, testId: "nav-admin-categories" },
-  { to: "/admin/locations", label: "Locations", icon: IconMapPin, testId: "nav-admin-locations" },
-  { to: "/admin/projects", label: "Projects", icon: IconSitemap, testId: "nav-admin-projects" },
+  {
+    to: "/audit",
+    label: "Audit Log",
+    icon: IconHistory,
+    testId: "nav-audit",
+    hidden: (me) => !hasAuditViewPermission(me),
+    section: "Tools",
+  },
+  // Tenant admin / configuration
+  {
+    to: "/admin/categories",
+    label: "Categories & Fields",
+    icon: IconCategory,
+    testId: "nav-admin-categories",
+    section: "Admin",
+  },
+  {
+    to: "/admin/locations",
+    label: "Locations",
+    icon: IconMapPin,
+    testId: "nav-admin-locations",
+    section: "Admin",
+  },
+  // NOTE (M7, `docs/tasks/M7-project-grants.md`): the pre-M7 thin Admin CRUD
+  // page (`/admin/projects`, `ProjectsScreen`/`ProjectFormModal` — name/lead/
+  // is_active only) is deliberately DROPPED from nav here, superseded by the
+  // top-level `/projects` hub above: that hub's own list screen now covers
+  // the SAME create/delete (Admin-only `tenant.manage`, unchanged contract)
+  // plus the full M7 grant surface, so keeping both nav entries would be two
+  // competing "projects" experiences (CLAUDE.md/task brief). The route/
+  // component are left in place (unregistered from nav only, see `App.tsx`)
+  // rather than deleted, in case a direct link is bookmarked.
   {
     to: "/admin/users",
     label: "Users & Roles",
     icon: IconUsers,
     testId: "nav-admin-users",
     hidden: (me) => !hasUserManagePermission(me),
+    section: "Admin",
   },
   {
     to: "/admin/email-settings",
@@ -96,6 +157,7 @@ export const NAV_ITEMS: NavItem[] = [
     // `tenant.manage` (`EmailSettingsScreen` doc comment) — there is no
     // read-only view for a non-admin, so hide the nav entry entirely.
     hidden: (me) => !hasPermission(me, TENANT_MANAGE),
+    section: "Admin",
   },
 ];
 

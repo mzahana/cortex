@@ -2,6 +2,9 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { Alert, Button, Center, Loader, Stack, Text, Title } from "@mantine/core";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { LoginScreen } from "./screens/LoginScreen";
+import { ForgotPasswordScreen } from "./screens/ForgotPasswordScreen";
+import { ResetPasswordScreen } from "./screens/ResetPasswordScreen";
+import { AccountScreen } from "./screens/AccountScreen";
 import { DashboardScreen } from "./screens/dashboard/DashboardScreen";
 import { CategoriesScreen } from "./screens/admin/CategoriesScreen";
 import { LocationsScreen } from "./screens/admin/LocationsScreen";
@@ -20,6 +23,8 @@ import { LabelsScreen } from "./screens/labels/LabelsScreen";
 import { ImportScreen } from "./screens/import/ImportScreen";
 import { UsersRolesScreen } from "./screens/admin/UsersRolesScreen";
 import { EmailSettingsScreen } from "./screens/admin/EmailSettingsScreen";
+import { ProjectsListScreen } from "./screens/projects/ProjectsListScreen";
+import { ProjectHubScreen } from "./screens/projects/ProjectHubScreen";
 
 /** Distinct "backend unreachable" full-screen state (T1.5 note 6, carried
  * from M0): a network failure / 5xx on the initial `/me` call is not the
@@ -95,6 +100,28 @@ function AppRoutes() {
           <RedirectIfAuthed>
             <LoginScreen />
           </RedirectIfAuthed>
+        }
+      />
+      {/* Forgot-password request is only relevant when signed out; bounce
+          already-authed users home like /login. */}
+      <Route
+        path="/forgot-password"
+        element={
+          <RedirectIfAuthed>
+            <ForgotPasswordScreen />
+          </RedirectIfAuthed>
+        }
+      />
+      {/* Reset-confirm is reachable from an emailed link — do NOT wrap it in
+          RedirectIfAuthed: a signed-in user following their own reset link
+          should still be able to complete it. */}
+      <Route path="/reset-password" element={<ResetPasswordScreen />} />
+      <Route
+        path="/account"
+        element={
+          <RequireAuth>
+            <AccountScreen />
+          </RequireAuth>
         }
       />
       <Route
@@ -174,6 +201,22 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <MyItemsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/projects"
+        element={
+          <RequireAuth>
+            <ProjectsListScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/projects/:id"
+        element={
+          <RequireAuth>
+            <ProjectHubScreen />
           </RequireAuth>
         }
       />

@@ -40,6 +40,16 @@ AUDIT_VIEW = "audit.view"
 TENANT_MANAGE = "tenant.manage"
 NOTIFY_SELF = "notify.self"
 
+# M7 (Project & Grant Management, docs/tasks/M7-project-grants.md, rbac.md §3
+# additions). `project.manage`/`expense.*` are the 🟡-scoped keys that make
+# the Project Lead's grant/budget access hers-and-only-hers (evaluated
+# against the SPECIFIC project id, never "leads somewhere") — see
+# `apps.projects.permissions` for where that check actually happens.
+PROJECT_VIEW = "project.view"
+PROJECT_MANAGE = "project.manage"
+EXPENSE_VIEW = "expense.view"
+EXPENSE_MANAGE = "expense.manage"
+
 # `key -> human label`, used by the seed migration to create `Permission` rows.
 PERMISSION_LABELS: dict[str, str] = {
     ASSET_VIEW: "View inventory / assets",
@@ -67,6 +77,10 @@ PERMISSION_LABELS: dict[str, str] = {
     AUDIT_VIEW: "View audit log",
     TENANT_MANAGE: "Manage tenant settings",
     NOTIFY_SELF: "Configure own notifications",
+    PROJECT_VIEW: "View project hub (budget, expenses, documents)",
+    PROJECT_MANAGE: "Manage project budget/grant metadata & documents",
+    EXPENSE_VIEW: "View project expenses/invoices",
+    EXPENSE_MANAGE: "Create/edit/delete project expenses & invoice scans",
 }
 
 # --- System roles (docs/rbac.md §2) -----------------------------------------
@@ -112,6 +126,10 @@ ADMIN_PERMISSIONS: frozenset[str] = frozenset(
         AUDIT_VIEW,
         TENANT_MANAGE,
         NOTIFY_SELF,
+        PROJECT_VIEW,
+        PROJECT_MANAGE,
+        EXPENSE_VIEW,
+        EXPENSE_MANAGE,
     }
 )
 
@@ -143,6 +161,15 @@ PROJECT_LEAD_PERMISSIONS: frozenset[str] = frozenset(
         ROLE_ASSIGN,  # footnote 3: within their own project only
         AUDIT_VIEW,  # footnote 4: their project's assets only
         NOTIFY_SELF,
+        # M7: all 🟡 — granted here, but ONLY ever effective for a Membership
+        # scoped to the specific project being acted on (never "any project
+        # this user leads somewhere else") — see
+        # `apps.rbac.services.get_effective_permissions`/
+        # `apps.projects.permissions` for the enforcement.
+        PROJECT_VIEW,
+        PROJECT_MANAGE,
+        EXPENSE_VIEW,
+        EXPENSE_MANAGE,
     }
 )
 
@@ -157,6 +184,10 @@ MEMBER_PERMISSIONS: frozenset[str] = frozenset(
         CHECKOUT_MANAGE,  # footnote 2: may require approval per category config
         ISSUE_REPORT,
         NOTIFY_SELF,
+        # M7 matrix: Member gets `project.view` tenant-wide (browse projects/
+        # see the hub) but NOT the financial `expense.*`/`project.manage` keys
+        # unless separately granted a ProjectLead membership.
+        PROJECT_VIEW,
     }
 )
 
@@ -164,6 +195,7 @@ VIEWER_PERMISSIONS: frozenset[str] = frozenset(
     {
         ASSET_VIEW,
         NOTIFY_SELF,
+        PROJECT_VIEW,
     }
 )
 

@@ -67,12 +67,17 @@ Legend: ✅ allowed · 🟡 scoped (only within the user's project) · ➖ denie
 | View audit log (`audit.view`) | ✅ | 🟡⁴ | ➖ | ➖ |
 | Manage tenant settings (`tenant.manage`) | ✅ | ➖ | ➖ | ➖ |
 | Configure own notifications (`notify.self`) | ✅ | ✅ | ✅ | ✅ |
+| View a project (metadata, its assets) (`project.view`) | ✅ | 🟡 | ✅⁵ | ✅⁵ |
+| Manage a project (grant metadata, budget, documents, report) (`project.manage`) | ✅ | 🟡 | ➖ | ➖ |
+| View project financials (budget, spend, expenses, invoices, documents) (`expense.view`) | ✅ | 🟡 | ➖ | ➖ |
+| Manage expenses / invoices (`expense.manage`) | ✅ | 🟡 | ➖ | ➖ |
 
 Footnotes:
 1. Member may attach photos to assets they currently hold or are editing via a report.
 2. Member checkout may require approval depending on the category's `requires_approval` flag (see below).
 3. Project Lead may add/remove members and assign the **Member** role **only within their own project**; cannot create Admins.
 4. Project Lead sees audit entries for their project's assets only.
+5. **`project.view` is tenant-wide non-financial visibility only** (M7): a Member/Viewer may see that a project exists, its grant metadata *except* financial figures, and its assets. **All financial data — `budget_total`, spend/remaining, the expense/invoice ledger, and project documents (proposal/contract/progress reports) — is gated behind project-scoped `expense.view`**, i.e. only that project's Lead (🟡) and tenant Admins. The project detail endpoint redacts (nulls) financial fields rather than 403-ing so the non-financial view still renders. Project **create/delete** stay Admin-only (`tenant.manage`); a project delete cascades the whole financial ledger and writes a single before/after `AuditLog` snapshot of everything destroyed.
 
 ## 4. Approval configuration (per category)
 
@@ -96,4 +101,10 @@ Reservation/checkout approval is **configurable per category** via
 - **Least privilege.** New users default to **Member**; elevated roles are granted
   explicitly.
 - **Auditable.** Every `*.approve`, `*.override`, `user.manage`, `role.assign`,
-  `stock.adjust`, and `asset.retire` writes an `AuditLog` entry.
+  `stock.adjust`, and `asset.retire` writes an `AuditLog` entry. Password
+  actions are audited too, each under its own action string (never containing
+  password material): `user.password_change` (self-service change),
+  `user.password_reset` (an admin resetting another user), and
+  `user.password_reset_request` / `user.password_reset_confirm` (the
+  forgot-password flow; both written with `actor=None` since the request is
+  unauthenticated).

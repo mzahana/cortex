@@ -18,8 +18,12 @@
 | GET | `/api/v1/auth/csrf` | Plant the CSRF cookie before login (see below) |
 | POST | `/api/v1/auth/login` | Session login |
 | POST | `/api/v1/auth/logout` | Logout |
+| POST | `/api/v1/auth/password-reset/request` | Forgot-password: email a reset link (unauthenticated) |
+| POST | `/api/v1/auth/password-reset/confirm` | Forgot-password: set a new password from a reset token (unauthenticated) |
 | GET | `/api/v1/me` | Current user, memberships, effective permissions |
+| POST | `/api/v1/me/password` | Self-service: change own password |
 | GET/POST/PATCH | `/api/v1/users` `/{id}` | User admin (scoped) |
+| POST | `/api/v1/users/{id}/reset-password` | Admin: regenerate a user's password (Admin-only) |
 | GET/POST | `/api/v1/memberships` | Assign role/scope |
 | GET | `/api/v1/roles`, `/api/v1/permissions` | RBAC reference |
 
@@ -50,6 +54,42 @@
 
 - `POST /api/v1/auth/logout` — authenticated, CSRF-enforced (session
   already exists). No body. `204 No Content`; clears the session.
+
+**Password management (added post-MVP — build against this):**
+
+- `POST /api/v1/me/password` — authenticated, CSRF-enforced. Self-service
+  password change. Body `{ "current_password": "...", "new_password": "..." }`.
+  Verifies the current password and runs the new one through Django's
+  `AUTH_PASSWORD_VALIDATORS`; the session stays valid (auth hash refreshed).
+  `204` on success; `400` (RFC-7807) with `errors.current_password` if the
+  current password is wrong, or `errors.new_password` if the new one is too
+  weak. Throttled (`password_change` scope). Audited `user.password_change`.
+
+- `POST /api/v1/users/{id}/reset-password` — Admin-only (**tenant-wide**
+  `user.manage`, same gate as user creation). No body. Regenerates a
+  server-side one-time password and returns it exactly once:
+  `{ "id", "email", "name", "password" }` (same handling contract as
+  `POST /api/v1/users` — reveal once, never persist/log). A cross-tenant id
+  `404`s. Audited `user.password_reset` (never contains the password).
+
+- `POST /api/v1/auth/password-reset/request` — **unauthenticated**,
+  CSRF-enforced, throttled (`password_reset` scope). Body
+  `{ "tenant": "<slug>", "email": "..." }` (`tenant` disambiguates the
+  per-tenant-unique email, same reviewed R4 exception as login). ALWAYS
+  returns `200` with a generic body — `{"detail": "If an account matches that
+  tenant and email, a password-reset link has been sent."}` — whether or not
+  the account exists (no user enumeration). On a match it emails a one-time
+  link (`{FRONTEND_BASE_URL}/reset-password?token=...&tenant=...`) via the
+  `EmailProvider`. Audited `user.password_reset_request` on a match.
+
+- `POST /api/v1/auth/password-reset/confirm` — **unauthenticated**,
+  CSRF-enforced, throttled (`password_reset` scope). Body
+  `{ "tenant": "<slug>", "token": "...", "new_password": "..." }`. Consumes a
+  live (unused, unexpired) single-use token and sets the new password. `204`
+  on success; `400` (`invalid-reset-token`) if the link is bad/expired/used or
+  the tenant doesn't match; `400` with `errors.new_password` if the new
+  password is too weak (in which case the token is **not** consumed and the
+  link can be retried). Audited `user.password_reset_confirm`.
 
 - `GET /api/v1/me` — authenticated. Response body:
   ```json
@@ -100,7 +140,7 @@
 | PATCH/DELETE | `/api/v1/categories/{cat_id}/fields/{field_id}` | Edit / delete a single custom field def |
 | POST | `/api/v1/categories/{id}/fields/reorder` | Bulk-reorder a category's field defs |
 | CRUD | `/api/v1/locations` | Location tree |
-| CRUD | `/api/v1/projects` | Projects |
+| CRUD | `/api/v1/projects` | Projects — list/detail/PATCH is the M7 grant hub (see "Projects & grants" below); create/delete stay Admin (`tenant.manage`) |
 | GET | `/api/v1/tags` | Tags |
 
 **Custom field def edit/delete/reorder (M1 follow-up — contract):**
@@ -167,6 +207,20 @@
 | POST | `/api/v1/checkouts/{id}/checkin` | Check in with condition |
 | POST | `/api/v1/checkouts/{id}/override-return` | Force return |
 | GET | `/api/v1/checkouts?open=true&overdue=true` | Open / overdue items |
+
+### Projects & grants (M7)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/PATCH | `/api/v1/projects/{id}` | Detail incl. budget rollup (`budget_total`, `spent`, `remaining`, `spend_by_category[]`). **Financial fields return `null` unless the caller holds project-scoped `expense.view`** (redaction, not 403); PATCH of grant/budget fields needs `project.manage` (🟡). |
+| GET | `/api/v1/projects/{id}/assets` | The project's assets — same paginated list/serializer as `/assets`, filtered to the project. |
+| GET/POST | `/api/v1/projects/{id}/expenses` | Itemized expense ledger (paginated, filter by category/date). Create needs `expense.manage` (🟡). |
+| GET/PATCH/DELETE | `/api/v1/expenses/{id}` | Single expense (retrieve/update/delete only — list/create are nested under a project). |
+| GET/POST | `/api/v1/expenses/{id}/attachment` | Invoice scan (multipart → storage backend). |
+| GET/POST | `/api/v1/projects/{id}/documents` | Proposal/contract/progress-report files. Reads gated by project-scoped `expense.view`; writes by `project.manage`. |
+| DELETE | `/api/v1/documents/{id}` | Delete a project document. |
+| POST | `/api/v1/projects/{id}/report` | Enqueues the audit-report PDF (budget, spend-by-category, itemized expenses, asset inventory, document appendix) → returns a job id; poll `/api/v1/jobs/{id}` and download. Gated by `expense.view` (🟡) — same as seeing the numbers. |
+| GET | `/api/v1/projects/{id}/export.csv?fields=...` | Streamed, field-selectable expense/asset export, RBAC-scoped to the project. |
 
 ### Maintenance, labels, import/export, dashboard
 | Method | Path | Purpose |

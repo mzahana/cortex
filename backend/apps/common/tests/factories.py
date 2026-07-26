@@ -32,13 +32,15 @@ override: its `Meta.default_manager_name` is already `all_objects` (T0.4).
 
 from __future__ import annotations
 
+import datetime
+
 import factory
 import factory.django
 
 from apps.accounts.models import User
 from apps.assets.models import Asset
 from apps.catalog.models import Category, CustomFieldDef, Location, Tag
-from apps.projects.models import Project
+from apps.projects.models import Expense, ExpenseCategory, Project
 from apps.rbac.models import Membership, Role
 from apps.rbac.permission_keys import ROLE_MEMBER
 from apps.stock.models import StockItem
@@ -102,6 +104,44 @@ class ProjectFactory(factory.django.DjangoModelFactory):
     tenant = factory.SubFactory(TenantFactory)
     name = factory.Sequence(lambda n: f"Test Project {n}")
     is_active = True
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        return model_class.all_objects.create(*args, **kwargs)
+
+
+class ExpenseCategoryFactory(factory.django.DjangoModelFactory):
+    """`ExpenseCategory` (M7) is a `TenantScopedModel`; see module docstring
+    for why this creates through `.all_objects`."""
+
+    class Meta:
+        model = ExpenseCategory
+
+    tenant = factory.SubFactory(TenantFactory)
+    name = factory.Sequence(lambda n: f"Test Expense Category {n}")
+    is_active = True
+
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        return model_class.all_objects.create(*args, **kwargs)
+
+
+class ExpenseFactory(factory.django.DjangoModelFactory):
+    """`Expense` (M7) is a `TenantScopedModel`, project-scoped; see module
+    docstring for why this creates through `.all_objects`. `tenant` defaults
+    from `project.tenant` (same rule `AssetFactory` follows for `category`)
+    -- callers passing an explicit `project=` should match its `tenant=`.
+    """
+
+    class Meta:
+        model = Expense
+
+    tenant = factory.SelfAttribute("project.tenant")
+    project = factory.SubFactory(ProjectFactory)
+    amount = "100.00"
+    currency = "USD"
+    date = factory.LazyFunction(datetime.date.today)
+    vendor = factory.Sequence(lambda n: f"Vendor {n}")
 
     @classmethod
     def _create(cls, model_class, *args, **kwargs):

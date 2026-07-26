@@ -20,15 +20,25 @@ import { ConfirmDeleteModal } from "../../components/ConfirmDeleteModal";
 import { ProjectFormModal } from "./ProjectFormModal";
 
 /**
- * Admin: Projects. Was entirely missing from the frontend despite
- * `apps.catalog.api.ProjectViewSet` being a full CRUD endpoint from M1 --
- * discovered as a real gap while wiring the Users & Roles screen's
+ * Admin: Projects (thin CRUD). Was entirely missing from the frontend
+ * despite `apps.catalog.api.ProjectViewSet` being a full CRUD endpoint from
+ * M1 -- discovered as a real gap while wiring the Users & Roles screen's
  * project-scope picker (a Member/Project-Lead membership can only be
  * scoped to a Project that already exists, and there was no UI to create
  * one). Flat list, not a tree (`Project` has no parent/child concept,
  * unlike Category/Location) -- gated by `tenant.manage`, the closest
  * documented analog for Project writes (see `ProjectViewSet`'s own
  * docstring; rbac.md has no dedicated `project.manage` key).
+ *
+ * **SUPERSEDED by the M7 project hub (`docs/tasks/M7-project-grants.md`)**:
+ * `screens/projects/ProjectsListScreen.tsx` (top-level `/projects`, gated by
+ * `project.view`) now covers this exact same create/delete contract (same
+ * `api.createProject`/`api.deleteProject`, unchanged) PLUS the full grant/
+ * budget/expense/document surface, so it is the primary destination and this
+ * page was dropped from nav (`layout/nav.ts`) to avoid two competing
+ * "projects" experiences. Left in place (route still registered in
+ * `App.tsx`) rather than deleted, in case of a bookmarked direct link — not
+ * reachable from anywhere in the UI otherwise.
  */
 export function ProjectsScreen() {
   const { me } = useAuth();

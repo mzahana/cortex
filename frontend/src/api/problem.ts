@@ -63,3 +63,27 @@ export function isProblemDetails(value: unknown): value is ProblemDetails {
     "title" in value
   );
 }
+
+/**
+ * Flatten a problem's `errors` map (DRF-style `{ field: [msg, ...] }`) into the
+ * `{ field: "msg" }` shape Mantine's `form.setErrors` expects, joining multiple
+ * messages per field. Returns `null` when there are no field errors, so callers
+ * can fall back to a top-level error message. Non-string entries are coerced
+ * defensively (the server always sends string arrays, but the type is
+ * `unknown`).
+ */
+export function fieldErrorsFromProblem(
+  problem: ProblemDetails,
+): Record<string, string> | null {
+  const errors = problem.errors;
+  if (!errors || typeof errors !== "object") return null;
+  const out: Record<string, string> = {};
+  for (const [field, value] of Object.entries(errors)) {
+    if (Array.isArray(value)) {
+      out[field] = value.map(String).join(" ");
+    } else if (value != null) {
+      out[field] = String(value);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
