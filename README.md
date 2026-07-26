@@ -16,6 +16,17 @@ Each lab or team gets its own private, separate space.
 
 ---
 
+## Screenshots
+
+<p>
+  <img src="docs/images/screenshot-dashboard.png" alt="Cortex dashboard" width="70%">
+</p>
+<p>
+  <img src="docs/images/screenshot-login.png" alt="Cortex login screen" width="30%">
+</p>
+
+---
+
 ## What you can do with it
 
 | Area | What it gives you |

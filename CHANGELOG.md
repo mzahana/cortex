@@ -10,6 +10,11 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+### Added
+
+- **README screenshots** — added a "Screenshots" section to `README.md` showing
+  the login screen and dashboard, images under `docs/images/`.
+
 ## [0.10.0] - 2026-07-27
 
 ### Added
