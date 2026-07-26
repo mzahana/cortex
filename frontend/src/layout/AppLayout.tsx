@@ -227,6 +227,9 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
                   </ActionIcon>
                 </Tooltip>
               </Group>
+              <Text ta="center" c="dimmed" size="10px" mt="xs">
+                © {new Date().getFullYear()} Mohamed Abdelkader · Apache-2.0
+              </Text>
             </Box>
           </Stack>
         </AppShell.Navbar>
@@ -303,6 +306,9 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
               style={{ borderRadius: "var(--mantine-radius-md)" }}
             />
             </Stack>
+            <Text ta="center" c="dimmed" size="10px">
+              © {new Date().getFullYear()} Mohamed Abdelkader · Apache-2.0
+            </Text>
           </Stack>
         </Drawer>
       )}

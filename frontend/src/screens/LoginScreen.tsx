@@ -161,6 +161,19 @@ export function LoginScreen() {
               </Stack>
             </form>
           </Paper>
+
+          <Text ta="center" c="dimmed" size="xs" mt="lg">
+            © {new Date().getFullYear()} Mohamed Abdelkader · Cortex is open-source
+            software under the{" "}
+            <Anchor
+              href="https://www.apache.org/licenses/LICENSE-2.0"
+              target="_blank"
+              rel="noopener noreferrer"
+              size="xs"
+            >
+              Apache License 2.0
+            </Anchor>
+          </Text>
         </Container>
       </Center>
     </Box>
