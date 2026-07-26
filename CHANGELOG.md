@@ -10,6 +10,14 @@ milestones bump the minor version until the first production release (`1.0.0`).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-26
+
+### Added
+
+- **Open-source license** — Cortex is now licensed under Apache License 2.0
+  (`LICENSE`, `NOTICE`). Copyright and license are surfaced in the UI (login
+  screen, desktop sidebar, mobile "More" sheet) and in the README.
+
 ## [0.9.0] - 2026-07-26
 
 ### Added

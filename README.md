@@ -12,6 +12,8 @@ Each lab or team gets its own private, separate space.
 **Status:** ready to use (the full first version is complete). See
 [`CHANGELOG.md`](CHANGELOG.md) for what's included.
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 ---
 
 ## What you can do with it
@@ -155,3 +157,10 @@ development, running tests, rebuilding after code changes, the repository
 layout, and the design docs — lives in the
 **[developer guide](docs/development.md)**. The project's ground rules for code
 changes are in [`CLAUDE.md`](CLAUDE.md).
+
+## License
+
+Copyright © 2026 Mohamed Abdelkader.
+
+Cortex is open-source software licensed under the
+[Apache License, Version 2.0](LICENSE).
