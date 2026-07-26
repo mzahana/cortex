@@ -26,7 +26,12 @@ from apps.rbac.services import user_has_permission, user_has_permission_in_any_s
 USER_ACTION_PERMISSION_MAP: dict[str, str] = {
     "list": USER_MANAGE,
     "create": USER_MANAGE,
+    "reset_password": USER_MANAGE,
 }
+
+# Actions that mint/replace credentials for an account tenant-wide — require a
+# TENANT-WIDE `user.manage` grant (Admin), never a project-scoped one.
+_ADMIN_ONLY_USER_ACTIONS = frozenset({"create", "reset_password"})
 
 
 class UserManagementPermission(BasePermission):
@@ -39,12 +44,14 @@ class UserManagementPermission(BasePermission):
         if action not in USER_ACTION_PERMISSION_MAP:
             return False  # fail-closed: unmapped action
 
-        if action == "create":
+        if action in _ADMIN_ONLY_USER_ACTIONS:
             # Admin-only: `project=None` only matches a TENANT-WIDE
             # membership's grant (see `apps.rbac.services.
             # get_effective_permissions` — a project-scoped membership never
             # contributes when `project=None`), i.e. exactly the
-            # `MembershipPermission` create-time Admin semantics.
+            # `MembershipPermission` create-time Admin semantics. Resetting
+            # ANOTHER user's password is a tenant-wide credential action, so it
+            # gets the same Admin gate as minting a new account.
             return user_has_permission(user, USER_MANAGE, project=None)
 
         # list: any scope (tenant-wide OR project-scoped) suffices.

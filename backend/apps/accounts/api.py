@@ -29,12 +29,18 @@ doesn't reveal which case occurred.
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.contrib.auth import login as django_login
 from django.contrib.auth import logout as django_logout
+from django.contrib.auth import update_session_auth_hash
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
 from django.utils.decorators import method_decorator
+from django.utils.http import urlencode
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from rest_framework import mixins, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.filters import BaseFilterBackend, OrderingFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -44,6 +50,7 @@ from rest_framework.views import APIView
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
 from apps.common.pagination import BoundedPageNumberPagination
+from apps.notifications.services import enqueue_transactional_email
 from apps.rbac.models import Membership
 from apps.rbac.permission_keys import USER_MANAGE
 from apps.tenancy.context import tenant_context
@@ -53,8 +60,27 @@ from apps.tenancy.models import Tenant
 from . import lockout
 from .models import User
 from .permissions import UserManagementPermission
-from .serializers import CreateUserSerializer, LoginSerializer, UserSerializer
-from .services import create_user_with_generated_password
+from .serializers import (
+    ChangePasswordSerializer,
+    CreateUserSerializer,
+    ForgotPasswordRequestSerializer,
+    LoginSerializer,
+    PasswordResetConfirmSerializer,
+    UserSerializer,
+)
+from .services import (
+    USER_PASSWORD_CHANGE,
+    USER_PASSWORD_RESET,
+    USER_PASSWORD_RESET_CONFIRM,
+    USER_PASSWORD_RESET_REQUEST,
+    claim_reset_token,
+    create_password_reset_token,
+    create_user_with_generated_password,
+    peek_live_reset_token,
+    reset_user_password,
+    set_user_password,
+    validate_new_password,
+)
 
 PROBLEM_BASE = "https://cortex.example.com/problems"
 
@@ -311,6 +337,257 @@ class MeView(APIView):
         return Response(_serialize_me(user, user.tenant), status=status.HTTP_200_OK)
 
 
+def _weak_password_response(exc: DjangoValidationError) -> Response:
+    """Map Django's `AUTH_PASSWORD_VALIDATORS` failure to an RFC-7807 400 whose
+    `errors.new_password` carries the human-readable messages (the frontend
+    surfaces them as field errors)."""
+    return problem_response(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        title="Password does not meet requirements",
+        detail="The new password was rejected by the password policy.",
+        type_=f"{PROBLEM_BASE}/validation-error",
+        errors={"new_password": list(exc.messages)},
+    )
+
+
+class ChangePasswordView(APIView):
+    """`POST /api/v1/me/password` — the signed-in user changes their OWN
+    password. Requires the current password (re-auth), then validates + sets
+    the new one and refreshes the session auth hash so the user stays logged
+    in. Audited under `user.password_change` (actor == subject); the audit
+    entry never contains password material.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_change"
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        if not serializer.is_valid():
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Invalid payload",
+                detail="current_password and new_password are both required.",
+                type_=f"{PROBLEM_BASE}/validation-error",
+                errors=serializer.errors,
+            )
+
+        # `request.user` already runs inside the current tenant context
+        # (CurrentTenantMiddleware); refetch through the unscoped manager the
+        # same way MeView does, purely to hold a concrete instance to mutate.
+        user = User.all_objects.get(pk=request.user.pk)
+
+        if not user.check_password(serializer.validated_data["current_password"]):
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Current password is incorrect",
+                detail="The current password you entered is incorrect.",
+                type_=f"{PROBLEM_BASE}/validation-error",
+                errors={"current_password": ["Incorrect password."]},
+            )
+
+        try:
+            set_user_password(user, serializer.validated_data["new_password"])
+        except DjangoValidationError as exc:
+            return _weak_password_response(exc)
+
+        # Keep the current session valid after the password (and thus the
+        # session auth hash) changes — without this the user is logged out.
+        update_session_auth_hash(request, user)
+
+        write_audit_log(
+            tenant_id=user.tenant_id,
+            actor=request.user,
+            action=USER_PASSWORD_CHANGE,
+            entity_type="user",
+            entity_id=user.id,
+            before=None,
+            after={"id": user.id, "email": user.email},
+            ip=client_ip(request),
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _password_reset_generic_response() -> Response:
+    """Deliberately identical whether or not the email matched a real account
+    (no user-enumeration): the caller is told "if that account exists, a link
+    is on its way" every time."""
+    return Response(
+        {
+            "detail": (
+                "If an account matches that tenant and email, a password-reset "
+                "link has been sent."
+            )
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class PasswordResetRequestView(APIView):
+    """`POST /api/v1/auth/password-reset/request` — unauthenticated. Body
+    `{tenant, email}`. Mints a one-time token for a matching active user and
+    emails the reset link via the `EmailProvider` (async). ALWAYS returns the
+    same generic 200 (no enumeration).
+
+    **Timing:** every request pays exactly one Argon2 dummy-hash cost up front,
+    regardless of hit/miss. Unlike `LoginView` (whose hit path pays a real
+    `check_password`), a forgot-password hit does no password verification at
+    all — so without this the *miss* path (which pays the dummy hash) would be
+    the SLOWER one, an inverted enumeration oracle. Paying unconditionally
+    makes that dominant cost equal on both paths; the hit path's remaining
+    extra work (a couple of small INSERTs, the actual send deferred to
+    `on_commit`/Celery) is negligible beside Argon2. Response body/status are
+    byte-identical either way, and the endpoint is throttled.
+    """
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset"
+
+    def post(self, request):
+        serializer = ForgotPasswordRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Invalid payload",
+                detail="tenant and email are both required.",
+                type_=f"{PROBLEM_BASE}/validation-error",
+                errors=serializer.errors,
+            )
+
+        tenant_slug = serializer.validated_data["tenant"]
+        email = User.all_objects.normalize_email(serializer.validated_data["email"])
+
+        # Pay the (dominant) Argon2 cost once, unconditionally — see the class
+        # docstring for why this goes here rather than only on the miss paths.
+        _pay_dummy_hashing_cost(email)
+
+        tenant = Tenant.objects.filter(slug=tenant_slug).first()
+        if tenant is None:
+            return _password_reset_generic_response()
+
+        with tenant_context(tenant.id):
+            user = User.all_objects.filter(tenant=tenant, email=email).first()
+            if user is None or not user.is_active:
+                return _password_reset_generic_response()
+
+            raw_token = create_password_reset_token(user)
+            reset_url = "{base}/reset-password?{qs}".format(
+                base=settings.FRONTEND_BASE_URL.rstrip("/"),
+                qs=urlencode({"token": raw_token, "tenant": tenant.slug}),
+            )
+            # Security-critical, so NOT gated by NotificationPref (optional=False):
+            # a user who can't sign in must always be able to receive this.
+            enqueue_transactional_email(
+                tenant_id=tenant.id,
+                event_type="password_reset",
+                template_id="password-reset",
+                to=user.email,
+                params={
+                    "name": user.get_full_name(),
+                    "reset_url": reset_url,
+                    "tenant_name": tenant.name,
+                },
+                user=user,
+                optional=False,
+                tags=["password-reset"],
+            )
+            write_audit_log(
+                tenant_id=tenant.id,
+                actor=None,
+                action=USER_PASSWORD_RESET_REQUEST,
+                entity_type="user",
+                entity_id=user.id,
+                before=None,
+                after={"id": user.id, "email": user.email},
+                ip=client_ip(request),
+            )
+
+        return _password_reset_generic_response()
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class PasswordResetConfirmView(APIView):
+    """`POST /api/v1/auth/password-reset/confirm` — unauthenticated. Body
+    `{tenant, token, new_password}`. Resolves the tenant from the slug (so RLS
+    can see the token row), consumes a live token, validates + sets the new
+    password, and audits it under `user.password_reset_confirm`.
+    """
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset"
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Invalid payload",
+                detail="tenant, token, and new_password are all required.",
+                type_=f"{PROBLEM_BASE}/validation-error",
+                errors=serializer.errors,
+            )
+
+        tenant_slug = serializer.validated_data["tenant"]
+        raw_token = serializer.validated_data["token"]
+        new_password = serializer.validated_data["new_password"]
+
+        tenant = Tenant.objects.filter(slug=tenant_slug).first()
+        if tenant is None:
+            return _invalid_reset_token_response()
+
+        with tenant_context(tenant.id):
+            token = peek_live_reset_token(raw_token)
+            if token is None:
+                return _invalid_reset_token_response()
+
+            user = token.user
+            # Validate the new password BEFORE consuming the single-use token,
+            # so a rejected-weak password leaves the link usable for a retry.
+            try:
+                validate_new_password(user, new_password)
+            except DjangoValidationError as exc:
+                return _weak_password_response(exc)
+
+            # Claim the token + set the password + audit as one unit: if the
+            # password write fails after the claim, the claim rolls back too, so
+            # the single-use link stays usable rather than being silently burned.
+            # `claim_reset_token`'s conditional `UPDATE ... WHERE used_at IS NULL`
+            # keeps concurrent confirms race-safe (only one wins the claim).
+            with transaction.atomic():
+                if not claim_reset_token(token):
+                    return _invalid_reset_token_response()
+
+                set_user_password(user, new_password)
+
+                write_audit_log(
+                    tenant_id=tenant.id,
+                    actor=None,
+                    action=USER_PASSWORD_RESET_CONFIRM,
+                    entity_type="user",
+                    entity_id=user.id,
+                    before=None,
+                    after={"id": user.id, "email": user.email},
+                    ip=client_ip(request),
+                )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _invalid_reset_token_response() -> Response:
+    return problem_response(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        title="Invalid or expired reset link",
+        detail="This password-reset link is invalid, has expired, or was already used.",
+        type_=f"{PROBLEM_BASE}/invalid-reset-token",
+    )
+
+
 class UserSearchFilter(BaseFilterBackend):
     """`?search=` — plain case-insensitive substring match on `email`/`name`.
 
@@ -345,12 +622,14 @@ class UserViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Gener
     Tenant scoping (golden-path step 2): `get_queryset()` builds
     `User.objects...` (tenant-scoped, fail-closed manager) fresh per request.
 
-    RBAC (golden-path step 3): `UserManagementPermission` — `create` is
-    Admin-only (tenant-wide `user.manage`); `list` is any scope.
+    RBAC (golden-path step 3): `UserManagementPermission` — `create` and
+    `reset_password` are Admin-only (tenant-wide `user.manage`); `list` is any
+    scope.
 
     No `retrieve`/`update`/`destroy` route is exposed here — this endpoint's
-    only job is (a) mint a new account and (b) let an existing `user.manage`
-    holder discover a user id to hand to `POST /api/v1/memberships`.
+    only job is (a) mint a new account, (b) let an existing `user.manage`
+    holder discover a user id to hand to `POST /api/v1/memberships`, and
+    (c) `reset_password`: regenerate another user's password (Admin-only).
     """
 
     permission_classes = [UserManagementPermission]
@@ -410,3 +689,30 @@ class UserViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, viewsets.Gener
         payload = UserSerializer(created.user).data
         payload["password"] = created.initial_password
         return Response(payload, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="reset-password")
+    def reset_password(self, request, pk=None):
+        """`POST /api/v1/users/{id}/reset-password` — Admin regenerates another
+        user's password. `get_object()` resolves the id through the tenant-
+        scoped queryset, so a cross-tenant id 404s (R4) before any reset. The
+        fresh one-time password is returned in the body exactly ONCE (same
+        contract/handling as create), and never reaches the audit log
+        (`_user_snapshot` is id/email/name only).
+        """
+        user = self.get_object()
+        new_password = reset_user_password(user)
+
+        write_audit_log(
+            tenant_id=user.tenant_id,
+            actor=request.user,
+            action=USER_PASSWORD_RESET,
+            entity_type="user",
+            entity_id=user.id,
+            before=None,
+            after=_user_snapshot(user),
+            ip=client_ip(request),
+        )
+
+        payload = UserSerializer(user).data
+        payload["password"] = new_password
+        return Response(payload, status=status.HTTP_200_OK)
