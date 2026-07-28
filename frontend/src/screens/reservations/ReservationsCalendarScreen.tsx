@@ -9,6 +9,7 @@ import {
   Loader,
   SegmentedControl,
   Stack,
+  Tabs,
   Text,
 } from "@mantine/core";
 import { Calendar } from "@mantine/dates";
@@ -19,19 +20,26 @@ import type { Reservation } from "../../api/types";
 import { useReservationList } from "./useReservationList";
 import { dayKey, isSameDay, rangeFor, shiftReferenceDate, type CalendarViewMode } from "./dateRange";
 import { ReservationListItem } from "./ReservationListItem";
+import { ReservationsListPanel } from "./ReservationsListPanel";
 import { CreateReservationModal } from "./CreateReservationModal";
 
 /**
- * Reservations Calendar (T3.4, `docs/api-and-ui.md`: "Month/week/day; create/
- * approve; conflict feedback"). Mobile-first agenda: a month grid (dot =
- * has-reservations) for orientation, a week strip, and a day agenda for the
- * actual list/act-on-it view — the day agenda is what an approver actually
- * uses one-handed on a phone. Server-side `GET /reservations?from&to` drives
- * every view (never "all reservations").
+ * Reservations Calendar + List (T3.4, `docs/api-and-ui.md`: "Month/week/day;
+ * create/approve; conflict feedback"; List view added post-MVP, user-
+ * requested: clicking through the calendar to find one specific reservation
+ * to approve/cancel doesn't scale). A top-level `Tabs` picks between the two
+ * — "Calendar" (this screen's original month/week/day agenda, unchanged) and
+ * "List" (`ReservationsListPanel`: a filterable, paginated table/list of the
+ * same underlying reservations, filters + row actions only, no new backend
+ * endpoint). Kept as one screen/one route (`/reservations`) rather than a
+ * second route so both views share the same nav entry and back-button
+ * behavior — a user picking between "find it on a calendar" and "find it in
+ * a list" is switching *view*, not *destination*.
  */
 export function ReservationsCalendarScreen() {
   const { me } = useAuth();
 
+  const [view, setView] = useState<"calendar" | "list">("calendar");
   const [mode, setMode] = useState<CalendarViewMode>("month");
   const [referenceDate, setReferenceDate] = useState<Date>(new Date());
   const [selectedDay, setSelectedDay] = useState<Date>(new Date());
@@ -104,9 +112,11 @@ export function ReservationsCalendarScreen() {
     <AppLayout
       title="Reservations"
       actions={
-        <Text size="sm" c="dimmed">
-          {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
-        </Text>
+        view === "calendar" ? (
+          <Text size="sm" c="dimmed">
+            {totalCount !== null ? `${items.length} of ${totalCount}` : ""}
+          </Text>
+        ) : null
       }
     >
         <Stack gap="sm" pb={72}>
@@ -116,6 +126,21 @@ export function ReservationsCalendarScreen() {
             </Alert>
           )}
 
+          <Tabs value={view} onChange={(v) => setView((v as "calendar" | "list") ?? "calendar")}>
+            <Tabs.List grow>
+              <Tabs.Tab value="calendar" data-testid="reservations-tab-calendar">
+                Calendar
+              </Tabs.Tab>
+              <Tabs.Tab value="list" data-testid="reservations-tab-list">
+                List
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs>
+
+          {view === "list" && <ReservationsListPanel me={me} />}
+
+          {view === "calendar" && (
+            <>
           <SegmentedControl
             fullWidth
             value={mode}
@@ -282,6 +307,8 @@ export function ReservationsCalendarScreen() {
             <Text size="xs" c="dimmed" ta="center">
               Showing {items.length} of {totalCount} in this range — narrow the range to see the rest.
             </Text>
+          )}
+            </>
           )}
         </Stack>
 
