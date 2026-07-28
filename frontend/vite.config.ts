@@ -1,11 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import pkg from "./package.json";
 
 // Same-origin `/api/v1` in production (nginx proxies it to `web`). In local
 // `vite dev` (outside docker), proxy `/api` to the backend so the typed
 // client's relative base path works unchanged in both modes.
 export default defineConfig({
+  // Single source of truth for the UI's displayed platform version is
+  // `package.json`, bumped alongside `CHANGELOG.md` releases — replaced at
+  // build time so no runtime fetch/import is needed.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   plugins: [
     react(),
     // T4.2: installable PWA shell + offline app-shell cache. `manifest:

@@ -228,7 +228,8 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
                 </Tooltip>
               </Group>
               <Text ta="center" c="dimmed" size="10px" mt="xs">
-                © {new Date().getFullYear()} Mohamed Abdelkader · Apache-2.0
+                Cortex v{__APP_VERSION__} · © {new Date().getFullYear()} Mohamed Abdelkader ·
+                Apache-2.0
               </Text>
             </Box>
           </Stack>
@@ -307,7 +308,8 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
             />
             </Stack>
             <Text ta="center" c="dimmed" size="10px">
-              © {new Date().getFullYear()} Mohamed Abdelkader · Apache-2.0
+              Cortex v{__APP_VERSION__} · © {new Date().getFullYear()} Mohamed Abdelkader ·
+              Apache-2.0
             </Text>
           </Stack>
         </Drawer>

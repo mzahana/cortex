@@ -8,12 +8,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versions map to milestones in `docs/tasks/`: **M0** → `0.1.0`, and subsequent
 milestones bump the minor version until the first production release (`1.0.0`).
 
+`frontend/package.json`'s `version` field is the single source of truth for the
+version shown in the app UI (footer of the login screen and the sidebar/"More"
+sheet) — it is inlined at build time via `vite.config.ts`'s `__APP_VERSION__`
+define. **Bump `frontend/package.json`'s `version` to match every new entry
+added here** so the displayed version never drifts from the changelog.
+
 ## [Unreleased]
+
+## [0.11.0] - 2026-07-28
 
 ### Added
 
 - **README screenshots** — added a "Screenshots" section to `README.md` showing
   the login screen and dashboard, images under `docs/images/`.
+- **Reservations: List view** — a new "List" tab alongside the existing
+  Calendar on the Reservations screen (`ReservationsListPanel`), giving a
+  filterable (status, asset), sortable, server-side-paginated table/list
+  alternative for finding one specific reservation to act on, rather than
+  clicking through the month/week/day agenda. Same `GET /api/v1/reservations`
+  endpoint and the same `ReservationListItem` rows (approve/reject/cancel/
+  checkout/checkin, permission-gated) as the Calendar view — no new backend
+  endpoint, no client-side "load all reservations".
+- **Email: built-in transactional content, no Brevo dashboard templates** —
+  `BrevoProvider` now builds the subject/HTML/text for every transactional
+  email (password reset, overdue reminder, low-stock alert, reservation
+  confirmed, approval request, approval decision) locally
+  (`apps.notifications.content`) and sends it via Brevo's inline-content API,
+  instead of requiring a numeric Brevo dashboard template id per notification
+  type. A non-technical admin now only needs an API key + verified sender to
+  get real transactional email sending working. Added `BREVO_REPLY_TO` env
+  var; `.env.example` and `docs/deployment-runbook.md` §2 rewritten for the
+  new setup (env-only or fully-via-UI paths).
+- **Email: "Send test email" on Admin → Email Settings** — new
+  `POST /api/v1/notifications/email-settings/test` (`tenant.manage`, tightly
+  throttled at `5/min` since it sends synchronously on the request thread)
+  lets a tenant admin verify their saved Brevo API key/sender immediately
+  after saving, instead of waiting for a real domain event. Always sends to
+  the caller's own email using the tenant's already-saved settings; every
+  attempt (success or failure) is recorded in `EmailLog` (`event_type=
+  "test_email"`).
+- **Reservations: auto-expire stale bookings** — new hourly Celery beat task
+  `apps.reservations.expire_stale_reservations` sweeps every `pending`/
+  `approved` reservation whose window has fully elapsed to `expired`,
+  dropping it out of `Reservation.ACTIVE_STATUSES` so the window it held up
+  is freed for re-booking without a manual cancel.
+
+### Fixed
+
+- **Reservation-backed checkout didn't enforce the reservation's time window
+  (code-review finding)** — `POST /checkouts` with a `reservation` id now
+  requires `now` to be inside that reservation's `[start_at, end_at)` window;
+  checking out ahead of `start_at` or after `end_at` is rejected with a `400`
+  (no grace period past `end_at` yet — documented default, `docs/risks.md`
+  §3). A new terminal `Reservation.Status.COMPLETED` (set on checkin,
+  `fulfilled` → `completed`) lets a user reuse their own already-approved
+  window for a second checkout after an early return, without needing
+  re-approval, still bounded by the original `end_at`.
+- **A `fulfilled` reservation whose checkout was already checked in could
+  block its window forever** — checking a reservation-backed checkout back in
+  now moves the reservation `fulfilled` → `completed`, dropping it out of the
+  no-overlap exclusion constraint so the window is free to rebook. A backfill
+  migration (`0004`) applies the same transition retroactively to any
+  reservation whose linked checkout was already checked in before this
+  release.
+- **Walk-up checkout could silently defeat another user's active
+  reservation (code-review finding, blocking)** — `POST /checkouts` without a
+  `reservation` id is now rejected with a `400` if another user holds an
+  active (`pending`/`approved`/`fulfilled`) reservation on that asset covering
+  the current time; a caller's own reservation never blocks their own
+  walk-up, and a `reservation.approve` holder in that asset's scope may
+  bypass this specific check.
+- **Reservation approve/reject/cancel race conditions (code-review
+  findings)** — `approve_reservation`, `reject_reservation`, and
+  `cancel_reservation` now lock the reservation row and re-assert its status
+  under that lock before writing a terminal transition, closing a window
+  where a concurrent action (e.g. a checkout converting the reservation to
+  `fulfilled`, or a competing cancel/reject) could be silently overwritten,
+  potentially resurrecting a terminal reservation back into the no-overlap
+  exclusion constraint or freeing a window the asset was still physically
+  checked out under.
 
 ## [0.10.0] - 2026-07-27
 
