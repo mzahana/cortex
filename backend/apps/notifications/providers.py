@@ -18,6 +18,7 @@ email just because `DEBUG` flips.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import urllib.error
@@ -28,6 +29,8 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from django.conf import settings
 from django.utils.module_loading import import_string
+
+from .content import build_email_content
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only, avoids any
     # module-level circular import between `providers.py` and `models.py`.
@@ -70,6 +73,18 @@ class EmailProvider(Protocol):
         tasks.send_transactional_email`), never the request/response cycle."""
         ...
 
+    def send_test_email(self, *, to: str, tenant_name: str, triggered_by: str) -> SendResult:
+        """Send ONE plain, hardcoded diagnostic email -- used only by
+        `apps.notifications.api.EmailSettingsTestView` ("Send test email" on
+        Admin -> Email Settings) to let an admin verify their saved API
+        key/sender actually work. Sends fixed subject/body content directly,
+        the same "build the content locally, POST inline `htmlContent`" shape
+        `send_transactional` now also uses for the 6 real business emails
+        (`apps.notifications.content.build_email_content`) -- this one just
+        never varies by notification type. Raises `EmailSendError` on any
+        failure, same contract as `send_transactional`."""
+        ...
+
 
 class ConsoleProvider:
     """Dev/test implementation (`docs/architecture.md` §6): logs the
@@ -92,6 +107,18 @@ class ConsoleProvider:
             to,
             tags or [],
             params,
+            message_id,
+        )
+        return SendResult(provider_message_id=message_id, raw={"console": True})
+
+    def send_test_email(self, *, to: str, tenant_name: str, triggered_by: str) -> SendResult:
+        message_id = f"console-test-{uuid.uuid4()}"
+        logger.info(
+            "ConsoleProvider: would send TEST email to=%s tenant_name=%s triggered_by=%s "
+            "message_id=%s",
+            to,
+            tenant_name,
+            triggered_by,
             message_id,
         )
         return SendResult(provider_message_id=message_id, raw={"console": True})
@@ -155,18 +182,90 @@ class BrevoProvider:
                 "docs/risks.md §3) -- refusing to attempt a send."
             )
 
+        if not self._sender:
+            # Same "fail closed with a clear message" posture as
+            # `send_test_email` below: Brevo's inline-content API requires an
+            # explicit `sender` (no per-template dashboard default to fall
+            # back on, unlike the old `templateId` payload).
+            raise EmailSendError(
+                "BrevoProvider: no sender email configured -- refusing to send. Set "
+                "'Sender email' on the tenant's Admin -> Email Settings screen (or "
+                "BREVO_SENDER_EMAIL in the operator's env) first."
+            )
+
+        try:
+            subject, html_content, text_content = build_email_content(template_id, params)
+        except KeyError:
+            # Fail closed: an internal slug this app never actually sends
+            # (`apps.notifications.content`'s builder map is the exhaustive
+            # list) -- surfaces as `EmailSendError` -> the Celery task's
+            # retry -> eventually `failed`, same contract as any other send
+            # failure (see the missing-`api_key`/`sender` checks above).
+            raise EmailSendError(
+                f"BrevoProvider: no built-in email content for template_id {template_id!r} -- "
+                "refusing to send. This is an internal slug mismatch (a call site is using a "
+                "slug apps.notifications.content.build_email_content doesn't know), not "
+                "something an admin can fix via configuration."
+            ) from None
+
         payload: dict[str, Any] = {
-            "templateId": template_id,
+            "sender": {"email": self._sender},
             "to": [{"email": to}],
-            "params": params,
+            "subject": subject,
+            "htmlContent": html_content,
         }
-        if self._sender:
-            payload["sender"] = {"email": self._sender}
+        if text_content:
+            payload["textContent"] = text_content
         if self._reply_to:
             payload["replyTo"] = {"email": self._reply_to}
         if tags:
             payload["tags"] = tags
 
+        return self._post(payload)
+
+    def send_test_email(self, *, to: str, tenant_name: str, triggered_by: str) -> SendResult:
+        if not self._api_key:
+            raise EmailSendError(
+                "BrevoProvider selected but BREVO_API_KEY is not set (Q6 unanswered, "
+                "docs/risks.md §3) -- refusing to attempt a send."
+            )
+        if not self._sender:
+            # Brevo's API requires a `sender` (either explicit here, or a
+            # verified default tied to the account/key) -- `send_transactional`
+            # only adds `sender` to the payload when set (Brevo could in
+            # principle fall back to an account default there too), but a
+            # test send has no such fallback to lean on implicitly: if the
+            # admin hasn't saved a sender address yet, failing closed here
+            # with a clear message is more useful than a generic Brevo 400.
+            raise EmailSendError(
+                "BrevoProvider: no sender email configured -- refusing to send a test "
+                "email. Set 'Sender email' on the tenant's Admin -> Email Settings "
+                "screen (or BREVO_SENDER_EMAIL in the operator's env) first."
+            )
+
+        # `tenant_name`/`triggered_by` are admin/user-controlled display strings
+        # (tenant settings, account name) -- escape before interpolating into
+        # HTML, same as every value `content.py`'s builders interpolate.
+        safe_tenant_name = html.escape(tenant_name, quote=True)
+        safe_triggered_by = html.escape(triggered_by, quote=True)
+        payload: dict[str, Any] = {
+            "sender": {"email": self._sender},
+            "to": [{"email": to}],
+            "subject": "Cortex test email",
+            "htmlContent": (
+                f"<p>This is a test email from <strong>Cortex</strong> for tenant "
+                f"<strong>{safe_tenant_name}</strong>, triggered by {safe_triggered_by}.</p>"
+                "<p>If you received this, your Brevo API key and sender configuration "
+                "are working.</p>"
+            ),
+            "tags": ["test-email"],
+        }
+        if self._reply_to:
+            payload["replyTo"] = {"email": self._reply_to}
+
+        return self._post(payload)
+
+    def _post(self, payload: dict[str, Any]) -> SendResult:
         request = urllib.request.Request(
             self.API_URL,
             data=json.dumps(payload).encode("utf-8"),

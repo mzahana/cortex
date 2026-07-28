@@ -48,6 +48,12 @@ export function EmailSettingsScreen() {
   const [formError, setFormError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ sentTo: string; provider: string } | null>(
+    null,
+  );
+
   const form = useForm<FormValues>({
     initialValues: {
       provider: "console",
@@ -166,6 +172,32 @@ export function EmailSettingsScreen() {
     }
   };
 
+  // NOT gated on `has_api_key`: a tenant can validly run Brevo through the
+  // OPERATOR's global API key (no own key configured — see `providers.py`).
+  // That tenant can never satisfy an `has_api_key` check, so gating on it
+  // would silently block a supported configuration from ever being
+  // testable. The server's own fail-closed 400 (missing key) is sufficient
+  // feedback either way.
+  const canSendTest = !!settings && settings.provider === "brevo";
+
+  const handleSendTest = async () => {
+    setTestError(null);
+    setTestResult(null);
+    setTesting(true);
+    try {
+      const result = await api.sendTestEmail();
+      setTestResult({ sentTo: result.sent_to, provider: result.provider });
+    } catch (err) {
+      setTestError(
+        err instanceof ApiError
+          ? err.problem.detail ?? err.problem.title
+          : "Unable to reach the server. Please try again.",
+      );
+    } finally {
+      setTesting(false);
+    }
+  };
+
   return (
     <AppLayout title="Email Settings">
       <Stack gap="md" maw={520}>
@@ -277,6 +309,46 @@ export function EmailSettingsScreen() {
                 </Button>
               </Stack>
             </form>
+
+            <Stack gap="xs" mt="md">
+              {testResult && (
+                <Alert
+                  color="teal"
+                  withCloseButton
+                  onClose={() => setTestResult(null)}
+                  data-testid="email-settings-test-success"
+                >
+                  Test email sent to {testResult.sentTo} via {testResult.provider}.
+                </Alert>
+              )}
+              {testError && (
+                <Alert
+                  color="red"
+                  withCloseButton
+                  onClose={() => setTestError(null)}
+                  data-testid="email-settings-test-error"
+                >
+                  {testError}
+                </Alert>
+              )}
+              <Button
+                type="button"
+                variant="light"
+                fullWidth
+                loading={testing}
+                disabled={!canSendTest}
+                onClick={() => void handleSendTest()}
+                data-testid="email-settings-test-button"
+              >
+                Send test email
+              </Button>
+              {!canSendTest && (
+                <Text c="dimmed" size="xs">
+                  Save the Brevo provider first, then send a test email to verify your
+                  API key and sender address.
+                </Text>
+              )}
+            </Stack>
           </Card>
         )}
       </Stack>

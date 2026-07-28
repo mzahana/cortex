@@ -28,6 +28,7 @@ import type {
   CustomFieldDefUpdatePayload,
   DashboardSummary,
   EmailSettings,
+  EmailSettingsTestResult,
   EmailSettingsUpdate,
   Expense,
   ExpenseAttachment,
@@ -1112,6 +1113,18 @@ export const api = {
     return request<EmailSettings>("/notifications/email-settings", {
       method: "PATCH",
       body: payload,
+    });
+  },
+
+  /** `POST /api/v1/notifications/email-settings/test` — requires
+   * `tenant.manage`. No request body; the server always sends to the caller's
+   * own email using whatever is already saved for the tenant (not unsaved
+   * form values). Rejects with a 400 problem+json (e.g. no API key or no
+   * sender email configured) — same `ApiError` handling as every other
+   * write in this module. */
+  async sendTestEmail(): Promise<EmailSettingsTestResult> {
+    return request<EmailSettingsTestResult>("/notifications/email-settings/test", {
+      method: "POST",
     });
   },
 

@@ -31,7 +31,11 @@ from apps.imports.api import ImportCommitView, ImportDetailView, ImportUploadVie
 from apps.imports.exports import AssetExportView
 from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
-from apps.notifications.api import EmailSettingsView, NotificationPrefViewSet
+from apps.notifications.api import (
+    EmailSettingsTestView,
+    EmailSettingsView,
+    NotificationPrefViewSet,
+)
 from apps.projects.api import (
     ExpenseAttachmentViewSet,
     ExpenseCategoryViewSet,
@@ -144,6 +148,11 @@ urlpatterns = [
         "api/v1/notifications/email-settings",
         EmailSettingsView.as_view(),
         name="email-settings",
+    ),
+    path(
+        "api/v1/notifications/email-settings/test",
+        EmailSettingsTestView.as_view(),
+        name="email-settings-test",
     ),
     path("api/v1/labels/generate", LabelGenerateView.as_view(), name="label-generate"),
     path("api/v1/jobs/<uuid:job_id>", JobRetrieveView.as_view(), name="job-detail"),

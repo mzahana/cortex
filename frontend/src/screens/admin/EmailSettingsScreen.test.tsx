@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../test/render";
 import { EmailSettingsScreen } from "./EmailSettingsScreen";
-import { api } from "../../api/client";
+import { api, ApiError } from "../../api/client";
 import type { EmailSettings, Me } from "../../api/types";
 
 vi.mock("../../api/client", async () => {
@@ -13,6 +13,7 @@ vi.mock("../../api/client", async () => {
     api: {
       getEmailSettings: vi.fn(),
       updateEmailSettings: vi.fn(),
+      sendTestEmail: vi.fn(),
     },
   };
 });
@@ -68,6 +69,7 @@ beforeEach(() => {
   mockMe = null;
   mockedApi.getEmailSettings.mockReset();
   mockedApi.updateEmailSettings.mockReset();
+  mockedApi.sendTestEmail.mockReset();
 });
 
 describe("EmailSettingsScreen", () => {
@@ -158,5 +160,106 @@ describe("EmailSettingsScreen", () => {
     await waitFor(() => expect(mockedApi.updateEmailSettings).toHaveBeenCalledTimes(1));
     const payload = mockedApi.updateEmailSettings.mock.calls[0][0];
     expect(payload.api_key).toBe("");
+  });
+
+  it("surfaces a field validation error from the server on save", async () => {
+    mockMe = makeMe({ permissions: ["tenant.manage"] });
+    mockedApi.getEmailSettings.mockResolvedValue(makeSettings({ provider: "brevo" }));
+    mockedApi.updateEmailSettings.mockRejectedValue(
+      new ApiError({
+        type: "about:blank",
+        title: "Bad Request",
+        status: 400,
+        detail: "Validation failed.",
+        errors: {
+          sender_email: ["Enter a valid email address."],
+        },
+      }),
+    );
+
+    renderScreen();
+    await waitFor(() => expect(mockedApi.getEmailSettings).toHaveBeenCalled());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("email-settings-submit"));
+
+    await waitFor(() => expect(mockedApi.updateEmailSettings).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/Enter a valid email address\./)).toBeInTheDocument();
+  });
+
+  it("disables the test-email button when no Brevo API key is saved yet", async () => {
+    mockMe = makeMe({ permissions: ["tenant.manage"] });
+    mockedApi.getEmailSettings.mockResolvedValue(
+      makeSettings({ provider: "console", has_api_key: false }),
+    );
+
+    renderScreen();
+    await waitFor(() => expect(mockedApi.getEmailSettings).toHaveBeenCalled());
+
+    expect(await screen.findByTestId("email-settings-test-button")).toBeDisabled();
+  });
+
+  it("enables the test-email button once Brevo + an API key are saved", async () => {
+    mockMe = makeMe({ permissions: ["tenant.manage"] });
+    mockedApi.getEmailSettings.mockResolvedValue(
+      makeSettings({ provider: "brevo", has_api_key: true, api_key_last4: "1234" }),
+    );
+
+    renderScreen();
+    await waitFor(() => expect(mockedApi.getEmailSettings).toHaveBeenCalled());
+
+    expect(await screen.findByTestId("email-settings-test-button")).toBeEnabled();
+  });
+
+  it("clicking the test-email button sends the test email and shows a success alert, without saving the form", async () => {
+    mockMe = makeMe({ permissions: ["tenant.manage"] });
+    mockedApi.getEmailSettings.mockResolvedValue(
+      makeSettings({ provider: "brevo", has_api_key: true, api_key_last4: "1234" }),
+    );
+    mockedApi.sendTestEmail.mockResolvedValue({
+      status: "sent",
+      provider: "BrevoProvider",
+      sent_to: "admin@example.test",
+    });
+
+    renderScreen();
+    await waitFor(() => expect(mockedApi.getEmailSettings).toHaveBeenCalled());
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("email-settings-test-button"));
+
+    await waitFor(() => expect(mockedApi.sendTestEmail).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId("email-settings-test-success")).toHaveTextContent(
+      "Test email sent to admin@example.test via BrevoProvider.",
+    );
+    expect(mockedApi.updateEmailSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows an error alert distinct from the save form error when the test send fails", async () => {
+    mockMe = makeMe({ permissions: ["tenant.manage"] });
+    mockedApi.getEmailSettings.mockResolvedValue(
+      makeSettings({ provider: "brevo", has_api_key: true, api_key_last4: "1234" }),
+    );
+    mockedApi.sendTestEmail.mockRejectedValue(
+      new ApiError({
+        type: "about:blank",
+        title: "Bad Request",
+        status: 400,
+        detail: "No Brevo API key configured.",
+      }),
+    );
+
+    renderScreen();
+    await waitFor(() => expect(mockedApi.getEmailSettings).toHaveBeenCalled());
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("email-settings-test-button"));
+
+    await waitFor(() => expect(mockedApi.sendTestEmail).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId("email-settings-test-error")).toHaveTextContent(
+      "No Brevo API key configured.",
+    );
+    expect(screen.queryByTestId("email-settings-form-error")).not.toBeInTheDocument();
+    expect(mockedApi.updateEmailSettings).not.toHaveBeenCalled();
   });
 });

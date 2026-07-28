@@ -33,6 +33,70 @@ or the load test (T6.6, a separate artifact under `tests/load/*`).
 
 ---
 
+## 0a. Quick start — testing on a laptop (not the NAS)
+
+This is the fast path for trying a real Cloudflare-Tunnel deploy from a
+laptop before committing to the full Synology runbook below. It reuses the
+exact same `docker-compose.yml`/`cloudflared` wiring the NAS deploy uses —
+nothing laptop-specific in the compose files — so this is also useful as a
+staging rehearsal. Skips: DSM/Container Manager (§3), Brevo SPF/DKIM/DMARC
+(§2, only matters for real outbound email), and the TLS/WAF hardening
+dashboard settings (§1a, optional but recommended once you're past a
+one-off test).
+
+1. **Prerequisites:** Docker + Docker Compose installed locally, and a
+   domain you control added to a Cloudflare account (free plan is enough —
+   without a domain in your account you can't create a Public Hostname
+   route in step 3).
+2. **Create the tunnel:** Cloudflare dashboard → **Zero Trust → Networks →
+   Tunnels → Create a tunnel** → connector type **Cloudflared** → name it
+   (e.g. `cortex-laptop-test`) → on **Install and run connector**, choose
+   **Docker**. Cloudflare shows a `docker run cloudflare/cloudflared ...
+   --token eyJ...` command — **don't run it**; copy only the token value.
+   The repo's `docker-compose.yml` already defines the `cloudflared`
+   service (`command: ["tunnel", "run"]`, reads `TUNNEL_TOKEN` from
+   `.env`), so that command is already wired for you.
+3. **Route the tunnel** — on the same tunnel, go to **Published
+   applications** (or the **Hostname routes** tab) → add a route:
+   - **Subdomain:** e.g. `cortex`
+   - **Domain:** your domain, from the dropdown
+   - **Path:** leave blank (matches all paths)
+   - **Service → Type:** `HTTP`
+   - **Service → URL:** `nginx:80` — **not** `localhost` or the
+     `docker-compose.override.yml` host-port mapping (e.g. `8080`).
+     `cloudflared` and `nginx` share the compose network, so it resolves
+     `nginx` by the compose service name; a host port is irrelevant here.
+
+   Cloudflare auto-creates the DNS record — no manual DNS step.
+4. **Configure `.env`** (copy from `.env.example` if you don't have one
+   yet; never commit it). At minimum, set these four to the hostname from
+   step 3, plus the token from step 2:
+   ```
+   ALLOWED_HOSTS=cortex.yourdomain.com
+   CSRF_TRUSTED_ORIGINS=https://cortex.yourdomain.com
+   FRONTEND_BASE_URL=https://cortex.yourdomain.com
+   TUNNEL_TOKEN=<paste the token from step 2>
+   ```
+   `FRONTEND_BASE_URL` is easy to miss — it's only used to build the
+   password-reset link, so nothing breaks loudly if you skip it, but leave
+   it unset and reset emails will link to `http://localhost`.
+5. **Bring the stack up:**
+   ```
+   docker compose build
+   docker compose up -d
+   ```
+6. **Verify:** visit `https://cortex.yourdomain.com`. TLS is terminated at
+   the Cloudflare edge, so this is a secure context — camera/QR features
+   work immediately, no local cert needed.
+
+**Treat the tunnel token as a secret** — anyone with it can run traffic
+through your tunnel. Don't commit it, don't paste it anywhere it'll persist
+(chat logs, tickets) without treating it as leaked afterward. If it does end
+up somewhere persistent, rotate it from **Zero Trust → Networks → Tunnels →
+your tunnel → Configure → Rotate token**.
+
+---
+
 ## 1. Cloudflare Zero Trust — create the Tunnel
 
 Cortex uses the **token-based tunnel** pattern: no local `config.yml`, no
@@ -115,21 +179,76 @@ switch back to the regular dashboard for your zone):
 
 ---
 
-## 2. Brevo sender domain — SPF / DKIM / DMARC (F9 deliverability)
+## 2. Brevo — transactional templates, sender domain, and wiring
 
-Needed so transactional email (invites, due-date reminders, etc., via the
-`EmailProvider`/Brevo integration) reliably lands in the inbox instead of
-spam. Do this in **two places**: Brevo's dashboard (which tells you the
-exact values) and your DNS zone (Cloudflare, since your domain is already
-there) — DNS record **types/names below are templated**; the **values** you
-must copy verbatim from your own Brevo account (they are per-account and
-Brevo will reject/not-verify made-up values).
+Needed so transactional email (password resets, reservation confirmations,
+approval requests/decisions, overdue reminders, low-stock alerts, via the
+`EmailProvider`/`BrevoProvider` integration) actually sends and lands in the
+inbox instead of spam or a `failed` `EmailLog` row. `BrevoProvider` builds
+the subject/HTML/text for all 6 of these locally
+(`apps.notifications.content.build_email_content`) and sends it inline via
+Brevo's `api/smtp/email` endpoint — **no Brevo dashboard template, and no
+numeric template ID, is ever required.** All you need is an API key and a
+verified sender address:
+
+1. §2b below — decide env-only vs. per-tenant-UI configuration, and set it.
+2. §2c below — sender-domain SPF/DKIM/DMARC, for deliverability (optional
+   for a first test, required before real traffic).
+
+### 2b. Wire the API key, sender, and reply-to — two paths
+
+**Path A — env-only** (single-tenant / simplest): in `.env`, set
+`NOTIFICATION_EMAIL_PROVIDER=apps.notifications.providers.BrevoProvider`
+(the default is `ConsoleProvider`, which only logs — no real send happens
+until you opt in), plus:
+```
+BREVO_API_KEY=<Brevo dashboard → SMTP & API → API Keys → Generate a new API key>
+BREVO_SENDER_EMAIL=<the verified sender address from §2c, or a single-sender-verified address>
+BREVO_REPLY_TO=<optional reply-to address>
+```
+Restart the stack (`docker compose up -d web worker beat` — **not**
+`restart`, which does not pick up a rebuilt image/new env for these
+long-running services) to pick up the new `.env`.
+
+**Path B — fully via the Cortex UI** (recommended for a single-tenant
+deploy too, and required for multi-tenant, where each tenant admin brings
+their own Brevo account) — **requires one one-time `.env` var first**:
+`EMAIL_SETTINGS_ENCRYPTION_KEY`, a Fernet key used to encrypt the per-tenant
+API key at rest (`apps.notifications.crypto`). Generate one and set it
+before anyone uses this screen, or every save 500s
+(`ImproperlyConfigured: EMAIL_SETTINGS_ENCRYPTION_KEY is not set`):
+```
+docker compose run --rm web python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+Put the output in `.env` as `EMAIL_SETTINGS_ENCRYPTION_KEY=...` and
+`docker compose up -d web worker beat` (recreate, not `restart`). Then: log
+in as a user with the `tenant.manage` permission → **Admin → Email
+Settings** → set **Provider: Brevo**, **Sender email**, **Reply-to**, and
+**Brevo API key** → **Save**. Then use the **Send test email** button on
+the same screen to confirm your API key/sender work — it sends to your own
+login email and reports pass/fail immediately. This writes to a
+per-tenant `EmailSettings` row (encrypted API key) that `BrevoProvider`
+prefers over the env vars above for that tenant's sends — no restart
+needed, no `NOTIFICATION_EMAIL_PROVIDER` env change either (the per-tenant
+row's `provider="brevo"` is what selects `BrevoProvider` for that tenant
+regardless of the global env default).
+
+### 2c. Sender domain — SPF / DKIM / DMARC (F9 deliverability)
+
+Recommended before sending real traffic (not required to get a first test
+email through — single-sender verification in Brevo, without full domain
+auth, is enough for that). Do this in **two places**: Brevo's dashboard
+(which tells you the exact values) and your DNS zone (Cloudflare, since
+your domain is already there) — DNS record **types/names below are
+templated**; the **values** you must copy verbatim from your own Brevo
+account (they are per-account and Brevo will reject/not-verify made-up
+values).
 
 1. **Brevo dashboard → Senders, Domains & Dedicated IPs → Domains → Add a
    domain** → enter `example.com` (or a subdomain you're dedicating to
    mail, e.g. `mail.example.com` — either works; keep it consistent with
-   `DEFAULT_FROM_EMAIL`/`BREVO_REPLY_TO` in `.env`, e.g.
-   `Cortex <cortex@example.com>`).
+   `BREVO_SENDER_EMAIL`/`BREVO_REPLY_TO` in `.env`, e.g.
+   `cortex@example.com`).
 2. Brevo shows **three record blocks** to add. Templated shape (replace
    `<...>` with what Brevo's UI actually shows for your account — these
    values differ per account/domain and are not guessable):
@@ -176,9 +295,8 @@ Brevo will reject/not-verify made-up values).
 4. Back in Brevo, click **Verify** / **Authenticate domain** — Brevo checks
    the DNS records it can see and marks the domain verified once SPF+DKIM
    resolve (DNS propagation can take a few minutes to a few hours).
-5. Update `.env`: `DEFAULT_FROM_EMAIL` and `BREVO_REPLY_TO` to use the
-   now-verified domain (see `.env.example`'s placeholders for the exact
-   variable names).
+5. Update `BREVO_SENDER_EMAIL` (§2b Path A) or the tenant's **Sender email**
+   (§2b Path B) to an address on the now-verified domain.
 
 ---
 
@@ -257,7 +375,9 @@ Docker Desktop/engine storage-location setting in DSM, not a compose change.
     password than the owner DB password above (this is the RLS-subject
     runtime role, see `.env.example`'s comment on why this must stay
     separate from the owner role).
-  - `BREVO_API_KEY`, `DEFAULT_FROM_EMAIL`, `BREVO_REPLY_TO` — from §2.
+  - `NOTIFICATION_EMAIL_PROVIDER`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`,
+    `BREVO_REPLY_TO` — from §2 (skip if using §2b Path B, per-tenant UI
+    configuration, instead).
   - `TUNNEL_TOKEN` — from §1 step 3.
   - `DJANGO_SETTINGS_MODULE=config.settings.prod` (already the
     `.env.example` default — leave as-is).

@@ -162,6 +162,7 @@ def scan_overdue_checkouts() -> int:
                     params={
                         "checkout_id": checkout.id,
                         "asset_id": checkout.asset_id,
+                        "asset_name": checkout.asset.name if checkout.asset else None,
                         "due_at": checkout.due_at.isoformat(),
                     },
                     user=checkout.user,
@@ -223,6 +224,7 @@ def scan_low_stock() -> int:
                         params={
                             "stock_item_id": stock_item.id,
                             "asset_id": stock_item.asset_id,
+                            "asset_name": stock_item.asset.name if stock_item.asset else None,
                             "quantity_on_hand": stock_item.quantity_on_hand,
                             "reorder_threshold": stock_item.reorder_threshold,
                         },

@@ -69,6 +69,7 @@ def notify_reservation_confirmed(sender, **kwargs) -> None:
     user = _get_user(kwargs["user_id"])
     if user is None:
         return
+    asset = _get_asset(kwargs["asset_id"])
     enqueue_transactional_email(
         tenant_id=kwargs["tenant_id"],
         event_type=EVENT_RESERVATION_CONFIRMED,
@@ -77,6 +78,7 @@ def notify_reservation_confirmed(sender, **kwargs) -> None:
         params={
             "reservation_id": kwargs["reservation_id"],
             "asset_id": kwargs["asset_id"],
+            "asset_name": asset.name if asset is not None else None,
             "start_at": kwargs["start_at"].isoformat(),
             "end_at": kwargs["end_at"].isoformat(),
         },
@@ -95,6 +97,7 @@ def notify_approval_request(sender, **kwargs) -> None:
     asset = _get_asset(kwargs["asset_id"])
     if asset is None:
         return
+    requester = _get_user(kwargs["user_id"])
     approvers = users_with_permission_in_project_scope(RESERVATION_APPROVE, asset.project_id)
     for approver in approvers:
         enqueue_transactional_email(
@@ -105,7 +108,9 @@ def notify_approval_request(sender, **kwargs) -> None:
             params={
                 "reservation_id": kwargs["reservation_id"],
                 "asset_id": kwargs["asset_id"],
+                "asset_name": asset.name,
                 "requester_id": kwargs["user_id"],
+                "requester_name": (requester.get_full_name() if requester is not None else None),
                 "start_at": kwargs["start_at"].isoformat(),
                 "end_at": kwargs["end_at"].isoformat(),
             },
@@ -120,6 +125,7 @@ def notify_approval_decision(sender, **kwargs) -> None:
     user = _get_user(kwargs["user_id"])
     if user is None:
         return
+    asset = _get_asset(kwargs["asset_id"])
     enqueue_transactional_email(
         tenant_id=kwargs["tenant_id"],
         event_type=EVENT_APPROVAL_DECISION,
@@ -128,6 +134,7 @@ def notify_approval_decision(sender, **kwargs) -> None:
         params={
             "reservation_id": kwargs["reservation_id"],
             "asset_id": kwargs["asset_id"],
+            "asset_name": asset.name if asset is not None else None,
             "approved": kwargs["approved"],
             "note": kwargs["note"],
         },
@@ -157,6 +164,7 @@ def notify_low_stock_crossed(sender, **kwargs) -> None:
             params={
                 "stock_item_id": kwargs["stock_item_id"],
                 "asset_id": kwargs["asset_id"],
+                "asset_name": asset.name,
                 "previous_quantity": kwargs["previous_quantity"],
                 "new_quantity": kwargs["new_quantity"],
                 "reorder_threshold": kwargs["reorder_threshold"],

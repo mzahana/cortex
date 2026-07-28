@@ -58,7 +58,6 @@ class TestEmailSettingsTenantIsolation:
     def test_tenant_b_never_sees_or_edits_tenant_as_row(self, client):
         tenant_a = TenantFactory()
         tenant_b = TenantFactory()
-        admin_a = _admin(tenant_a)
         admin_b = _admin(tenant_b)
 
         # Tenant A already has a configured row, including a real secret.
@@ -196,9 +195,7 @@ class TestEmailSettingsSecretHandling:
 
         put_resp = client.put(
             URL,
-            data=json.dumps(
-                {"provider": "brevo", "sender_email": "a@b.test", "api_key": secret}
-            ),
+            data=json.dumps({"provider": "brevo", "sender_email": "a@b.test", "api_key": secret}),
             content_type="application/json",
         )
         assert put_resp.status_code == 200, put_resp.content
@@ -224,16 +221,14 @@ class TestEmailSettingsSecretHandling:
 
         resp = client.put(
             URL,
-            data=json.dumps(
-                {"provider": "brevo", "sender_email": "a@b.test", "api_key": secret}
-            ),
+            data=json.dumps({"provider": "brevo", "sender_email": "a@b.test", "api_key": secret}),
             content_type="application/json",
         )
         assert resp.status_code == 200, resp.content
 
-        entry = AuditLog.all_objects.filter(
-            tenant=tenant, action="email_settings.update"
-        ).latest("created_at")
+        entry = AuditLog.all_objects.filter(tenant=tenant, action="email_settings.update").latest(
+            "created_at"
+        )
         before_str = json.dumps(entry.before)
         after_str = json.dumps(entry.after)
         assert secret not in before_str

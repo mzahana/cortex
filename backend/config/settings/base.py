@@ -214,6 +214,16 @@ REST_FRAMEWORK = {
         # confirm) — auth-sensitive, so tight dedicated buckets like `login`.
         "password_change": "10/min",
         "password_reset": "5/min",
+        # `EmailSettingsTestView` (`apps.notifications.api`) sends a real
+        # outbound HTTP call SYNCHRONOUSLY on the request thread (a
+        # deliberate, narrow exception to "slow work runs in Celery", see
+        # that view's docstring) -- the generic 1000/min `user` rate would
+        # let a handful of concurrent calls occupy every sync Gunicorn
+        # worker platform-wide (a cross-tenant availability risk
+        # `tenant.manage`-gating alone doesn't contain, since the worker
+        # pool is shared). Tight dedicated bucket, same posture as
+        # `login`/`password_reset` above.
+        "email_test": "5/min",
     },
 }
 
@@ -309,6 +319,7 @@ NOTIFICATION_EMAIL_PROVIDER = env.str(
 # never committed (docs/deployment.md).
 BREVO_API_KEY = env.str("BREVO_API_KEY", default="")
 BREVO_SENDER_EMAIL = env.str("BREVO_SENDER_EMAIL", default="")
+BREVO_REPLY_TO = env.str("BREVO_REPLY_TO", default="")
 
 # Per-tenant email settings (tenant admins can configure provider/sender/
 # Brevo API key from the UI, `apps.notifications.models.EmailSettings`,

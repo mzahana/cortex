@@ -719,13 +719,17 @@ export interface ReorderRequestUpdatePayload {
 
 /** `Reservation.Status` choices (`backend/apps/reservations/models.py::
  * Reservation.Status`). `ACTIVE_STATUSES` (the ones that participate in the
- * F4 no-overlap exclusion constraint) are `pending`/`approved`/`fulfilled`. */
+ * F4 no-overlap exclusion constraint) are `pending`/`approved`/`fulfilled`.
+ * `completed` is a terminal status set when a `fulfilled` reservation's
+ * checkout is checked in — the asset was used and returned, and (unlike
+ * `fulfilled`) its time window is free for others to rebook. */
 export type ReservationStatus =
   | "pending"
   | "approved"
   | "rejected"
   | "cancelled"
   | "fulfilled"
+  | "completed"
   | "expired";
 
 /** `GET /api/v1/reservations` (list row / calendar feed item) / detail —
@@ -962,6 +966,17 @@ export interface EmailSettingsUpdate {
   sender_email: string;
   reply_to: string;
   api_key?: string;
+}
+
+/** `POST /api/v1/notifications/email-settings/test` response — always sends
+ * to the logged-in caller's own email using the tenant's already-saved
+ * settings (no request body). `provider` is the resolved provider class
+ * name (e.g. `"BrevoProvider"`/`"ConsoleProvider"`), not the
+ * `"console"|"brevo"` slug. */
+export interface EmailSettingsTestResult {
+  status: "sent";
+  provider: string;
+  sent_to: string;
 }
 
 // --- Audit log (T5.3/T5.6; `apps.audit.api`/`apps.audit.serializers`) —

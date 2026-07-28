@@ -32,6 +32,11 @@ class EmailSettingsSerializer(serializers.ModelSerializer):
 
     Field omitted entirely from the request body -> key left untouched.
     `api_key=""` (explicitly blank) -> clears the stored key.
+
+    No Brevo template ids to configure: transactional emails always send
+    built-in content (`apps.notifications.content.build_email_content`) --
+    the API key + sender address above are the only things an admin needs
+    to set for real email to work.
     """
 
     has_api_key = serializers.SerializerMethodField()
