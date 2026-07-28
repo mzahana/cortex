@@ -109,18 +109,42 @@ services:
 Then run `docker compose up -d` again and open **http://localhost:8080** in
 your browser.
 
-**5. Create your first login.** There's no "sign up" button — the first admin
-account is created with a short setup command. Follow the ready-to-paste steps
-in the [deployment runbook, §3c](docs/deployment-runbook.md#3c-first-time-bring-up)
-(they work the same on your computer as on a server). In short, you run:
+**5. Create your first login.** There's no "sign up" button — the first tenant
+(your lab) and its admin account are created with a short setup command:
 
 ```bash
 docker compose exec web python manage.py shell
 ```
 
-and paste the block from that section, replacing the lab name, email, and
-password with your own. Then log in with your **lab name, email, and
-password**.
+Then paste this block, replacing the slug, name, email, and password with
+your own:
+
+```python
+from apps.tenancy.models import Tenant
+from apps.accounts.models import User
+from apps.rbac.models import Membership, Role
+from apps.rbac.permission_keys import ROLE_ADMIN
+from apps.tenancy.context import tenant_context
+
+tenant = Tenant.objects.create(slug="your-lab-slug", name="Your Lab Name")
+
+with tenant_context(tenant.id):
+    admin_user = User.all_objects.create_superuser(
+        tenant=tenant,
+        email="admin@your-real-domain.com",
+        password="<a real, strong password — change immediately after first login>",
+    )
+    membership = Membership.all_objects.get(user=admin_user, project__isnull=True)
+    admin_role = Role.all_objects.get(tenant=tenant, key=ROLE_ADMIN)
+    membership.role = admin_role
+    membership.save(update_fields=["role"])
+
+print(f"Created tenant {tenant.slug!r} with admin {admin_user.email!r}")
+```
+
+Exit the shell (`exit()`), then log in with your **lab slug, email, and
+password**. (Full details, including a demo-only seed command for local
+testing, are in the [deployment runbook, §3c](docs/deployment-runbook.md#3c-first-time-bring-up).)
 
 ---
 
