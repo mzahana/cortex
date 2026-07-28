@@ -76,8 +76,8 @@ interface WeekSegment {
  * cross-row lane memory) — visually it can "jump" vertically at a week
  * boundary. Given real overlap for a single asset is rare (the F4 exclusion
  * constraint prevents two *active* — pending/approved/fulfilled —
- * reservations from overlapping; only historical rejected/cancelled/expired
- * rows can stack against an active one or each other), this was judged an
+ * reservations from overlapping; only historical rejected/cancelled/completed/
+ * expired rows can stack against an active one or each other), this was judged an
  * acceptable simplification rather than a full interval-graph coloring. */
 function assignLanes(segments: Omit<WeekSegment, "lane">[]): WeekSegment[] {
   const sorted = [...segments].sort((a, b) => a.colStart - b.colStart || b.colSpan - a.colSpan);
@@ -150,8 +150,11 @@ export function AssetReservationMonthCalendar({ assetId, me }: AssetReservationM
         // Hide dead-end statuses per the "muted or hidden" requirement —
         // rejected/expired bookings never held the asset, so they'd just be
         // visual noise on a month grid meant for "when is this asset busy".
-        // Cancelled is kept but muted (it *was* an active hold until
-        // someone backed out — still informative context).
+        // Cancelled and completed are kept but muted: cancelled *was* an
+        // active hold until someone backed out, and completed *was* an
+        // active hold that has since been checked in — in both cases the
+        // window is free again for others to rebook, but the bar is still
+        // informative context, not a current/active booking.
         if (r.status === "rejected" || r.status === "expired") continue;
         const { start, endExclusive } = reservationDaySpan(r);
         const segStart = start.getTime() > rowStart.getTime() ? start : rowStart;
@@ -308,7 +311,7 @@ function ReservationBar({ segment, me }: { segment: WeekSegment; me: Me }) {
             top: lane * (BAR_HEIGHT + BAR_GAP),
             height: BAR_HEIGHT,
             background: `var(--mantine-color-${color}-6)`,
-            opacity: reservation.status === "cancelled" ? 0.5 : 1,
+            opacity: reservation.status === "cancelled" || reservation.status === "completed" ? 0.5 : 1,
             borderRadius: 4,
             borderTopLeftRadius: continuesBefore ? 0 : 4,
             borderBottomLeftRadius: continuesBefore ? 0 : 4,

@@ -19,6 +19,7 @@ export const STATUS_COLORS: Record<ReservationStatus, string> = {
   rejected: "red",
   cancelled: "gray",
   fulfilled: "green",
+  completed: "gray",
   expired: "gray",
 };
 
@@ -78,7 +79,14 @@ export function ReservationListItem({ reservation, asset, me, onChanged }: Reser
   // makes) — this component only ever offers check-in for the requester's
   // own booking, mirroring `AssetDetailScreen`'s "my open checkout" pattern.
   const canCheckout = hasAssetPermission(me, CHECKOUT_MANAGE, projectId);
-  const isCheckoutRelevant = reservation.status === "approved" && (isOwn || canCheckout);
+  // `completed` (product decision, bug fix): a reservation that already went
+  // through one fulfil/return cycle mid-window can back a second checkout
+  // while `now` is still inside its original window (server-enforced in
+  // `CheckoutSerializer`, `RESERVATION_CHECKOUT_STATUSES`) — without this the
+  // Check out button would vanish after the first return even though the API
+  // still accepts it for the rest of the window.
+  const isCheckoutRelevant =
+    (reservation.status === "approved" || reservation.status === "completed") && (isOwn || canCheckout);
 
   // Resolve "is there already an open checkout for THIS reservation" via the
   // dedicated `?reservation=&open=true` filter (Contract 2) — no client-side
@@ -145,18 +153,30 @@ export function ReservationListItem({ reservation, asset, me, onChanged }: Reser
     }
   };
 
-  // No client-side time-window gate here: the server's own checkout
-  // validation (`CheckoutSerializer.validate`, `backend/apps/reservations/
-  // checkout.py`) never checks `start_at`/`end_at` at all — it only requires
-  // `approved`/`fulfilled` status, caller ownership, and a matching asset.
-  // For a `requires_approval` category this reservation row is the ONLY path
-  // to checkout (direct Asset Detail checkout is server-rejected without a
-  // reservation), so gating the button on a window the server doesn't
-  // enforce created a real dead-end (e.g. arriving early, or shortly after
-  // `end_at` before the reservation expires/is cancelled). The server is the
-  // sole authority on timing; this only decides eligibility + no duplicate
-  // open checkout.
+  // The server (`CheckoutSerializer.validate`, `backend/apps/reservations/
+  // checkout.py`) now enforces that a reservation-backed checkout only
+  // happens within the half-open window `[start_at, end_at)` — checking out
+  // ahead of `start_at` or after `end_at` gets a 400, surfaced via
+  // `rowError` above (docs/api-and-ui.md, docs/features.md). There is
+  // currently no grace period past `end_at` (documented default, not yet a
+  // confirmed product decision — see `docs/risks.md` §3). This button stays
+  // visible AND enabled (never a hard client-side block, CLAUDE.md: UI
+  // gating is convenience only, the server is the real boundary) — it is
+  // only hinted outside the window below, since `now`/`isWithinReservation
+  // Window` are computed once at render with nothing re-triggering a
+  // re-render as time passes, and rely on the device's local clock, so a
+  // hard `disabled` here could strand a `requires_approval` checkout (the
+  // only checkout path for those categories) past the window's start with a
+  // stale, un-clickable button.
+  const now = Date.now();
+  const isWithinReservationWindow =
+    new Date(reservation.start_at).getTime() <= now && now < new Date(reservation.end_at).getTime();
   const showCheckoutButton = isCheckoutRelevant && !openCheckout && !!asset && !asset.is_consumable;
+  const checkoutWindowHint = !isWithinReservationWindow
+    ? now < new Date(reservation.start_at).getTime()
+      ? "Checkout window hasn't started yet"
+      : "Checkout window has ended"
+    : null;
   // Check-in is self-service only (mirrors `AssetDetailScreen`'s
   // `handleCheckIn`) — a scoped approver who isn't the holder must use the
   // Asset Detail / My Items override flow instead, not this row.
@@ -221,11 +241,17 @@ export function ReservationListItem({ reservation, asset, me, onChanged }: Reser
             <Button
               size="xs"
               variant="filled"
+              title={checkoutWindowHint ?? undefined}
               onClick={() => setCheckoutModalOpen(true)}
               data-testid={`checkout-from-reservation-${reservation.id}`}
             >
               Check out
             </Button>
+          )}
+          {showCheckoutButton && checkoutWindowHint && (
+            <Text size="xs" c="dimmed">
+              {checkoutWindowHint}
+            </Text>
           )}
           {showCheckinButton && (
             <Button

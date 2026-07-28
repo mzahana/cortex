@@ -19,13 +19,22 @@ enforced at the DB level by a GiST EXCLUDE constraint (added in `0002`, needs th
         WHERE (status IN ('pending', 'approved', 'fulfilled'))
 
 The WHERE clause restricts participation to the ACTIVE statuses only
-(`ACTIVE_STATUSES` below) — a `cancelled`/`rejected`/`expired` reservation drops
-out of the constraint so the freed window can be re-booked. `ACTIVE_STATUSES` is
-the single source of truth for that set: the T3.2 service layer's conflict
-pre-check MUST key off the SAME tuple the DB constraint's WHERE clause uses, so
-the app-level check and the DB backstop can never disagree (same
-"central invariant, DB is the backstop" relationship as tenant RLS). If you edit
-this tuple, edit the constraint WHERE clause in migration `0002` to match.
+(`ACTIVE_STATUSES` below) — a `cancelled`/`rejected`/`expired`/`completed`
+reservation drops out of the constraint so the freed window can be re-booked.
+`ACTIVE_STATUSES` is the single source of truth for that set: the T3.2 service
+layer's conflict pre-check MUST key off the SAME tuple the DB constraint's
+WHERE clause uses, so the app-level check and the DB backstop can never
+disagree (same "central invariant, DB is the backstop" relationship as tenant
+RLS). If you edit this tuple, edit the constraint WHERE clause in migration
+`0002` to match.
+
+`fulfilled` -> `completed` transition (checkin/override-return, T3.3's
+`apps.reservations.checkout.perform_checkin`): when a reservation-backed
+checkout is checked back in, the reservation moves from `fulfilled` to the
+terminal `completed` status, dropping it out of `ACTIVE_STATUSES` so the
+window it held is freed for re-booking. Until that checkin happens, a
+`fulfilled` reservation still blocks (see the constraint/pre-check note
+above) — this is intentional: the asset is physically out.
 
 ## `Checkout.is_overdue` is derived, never stored (`docs/data-model.md` §2)
 
@@ -63,12 +72,14 @@ class Reservation(TenantScopedModel):
         CANCELLED = "cancelled", "Cancelled"
         FULFILLED = "fulfilled", "Fulfilled"
         EXPIRED = "expired", "Expired"
+        COMPLETED = "completed", "Completed"
 
     # The statuses that PARTICIPATE in the no-overlap exclusion constraint
     # (`0002`'s WHERE clause). A reservation in any other status (rejected,
-    # cancelled, expired) drops out of the constraint so its window can be
-    # re-booked. Single source of truth: the T3.2 conflict pre-check keys off
-    # this exact set, and `0002`'s constraint WHERE clause mirrors it.
+    # cancelled, expired, completed) drops out of the constraint so its
+    # window can be re-booked. Single source of truth: the T3.2 conflict
+    # pre-check keys off this exact set, and `0002`'s constraint WHERE clause
+    # mirrors it.
     ACTIVE_STATUSES: tuple[str, ...] = (
         Status.PENDING,
         Status.APPROVED,

@@ -59,3 +59,10 @@
 11. **Barcode vs QR** — confirm QR-only for MVP (recommended) or do any existing
     assets already carry 1-D barcodes we must read?
 12. **Data retention** — any policy for audit log / retired assets retention?
+13. **Checkout grace period around a reservation's window** — a reservation-
+    backed checkout is now enforced server-side to occur within
+    `[start_at, end_at)` (`CheckoutSerializer.validate`, `apps/reservations/
+    checkout.py`, code-review fix). MVP default: **no grace period** — arriving
+    even a minute after `end_at` requires rebooking a new window. Confirm
+    whether a short grace window (e.g. 15 min past `end_at`) is wanted, or
+    whether the current strict behavior is fine.

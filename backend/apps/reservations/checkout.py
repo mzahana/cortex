@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import mixins, serializers, status, viewsets
@@ -55,12 +55,22 @@ from apps.rbac.services import (
 )
 
 from .models import Checkout, Reservation
+from .services import RESERVATION_NO_OVERLAP_CONSTRAINT, ReservationConflict, _violated_constraint_name
 
 # Reservation statuses a `POST /checkouts` may reference (task instructions:
 # "validate the reservation belongs to the requesting user and is in an
-# approved/fulfilled state if provided").
+# approved/fulfilled state if provided"). Includes `completed` (product
+# decision, bug fix): if a user checked an asset out early and returned it
+# mid-window (`fulfilled` -> `completed`, `perform_checkin` below), they may
+# check it out again under that SAME reservation as long as `timezone.now()`
+# is still inside `[start_at, end_at)` -- the time-window check below applies
+# uniformly regardless of which of these statuses the reservation is in, so
+# this does not let a `completed` reservation be reused past its original
+# window. This is the SAME set `create()`'s TOCTOU re-check under the
+# reservation's `select_for_update()` lock must use -- never let that
+# re-check drift into its own separate tuple.
 RESERVATION_CHECKOUT_STATUSES: frozenset[str] = frozenset(
-    {Reservation.Status.APPROVED, Reservation.Status.FULFILLED}
+    {Reservation.Status.APPROVED, Reservation.Status.FULFILLED, Reservation.Status.COMPLETED}
 )
 
 # Asset states a durable asset may be checked out FROM. Deliberately
@@ -77,6 +87,37 @@ CHECKOUT_ELIGIBLE_ASSET_STATUSES: frozenset[str] = frozenset(
 # Permission (two-phase scoped pattern, same template as
 # apps.assets.permissions.AssetPermission / apps.stock.permissions.*)
 # --------------------------------------------------------------------------
+
+
+def _other_user_active_reservation_conflict_exists(*, asset: Asset, user_id: int, at: Any) -> bool:
+    """Walk-up-checkout guard (code-review finding, product decision:
+    blocking): is there any OTHER user's ACTIVE (`Reservation.
+    ACTIVE_STATUSES`) reservation for this asset whose half-open window
+    `[start_at, end_at)` covers `at` (normally `timezone.now()`)?
+
+    Only reservations belonging to a DIFFERENT user block -- a user is
+    never blocked from walking up against their OWN active reservation
+    covering right now (arguably they "should" check out through that
+    reservation instead, but there is nothing to protect them from here;
+    the whole point of this guard is protecting *other* users' scheduled
+    windows from being defeated by an uncoordinated walk-up, same reasoning
+    the `0002` GiST exclusion constraint itself uses -- it reasons about
+    asset+window only, never about who owns the conflicting rows). This
+    intentionally mirrors `apps.reservations.services._check_conflict`'s
+    `ACTIVE_STATUSES` + overlap test, narrowed to a single instant instead
+    of a window and to "any other user" instead of "any reservation at
+    all".
+    """
+    return (
+        Reservation.objects.filter(
+            asset=asset,
+            status__in=Reservation.ACTIVE_STATUSES,
+            start_at__lte=at,
+            end_at__gt=at,
+        )
+        .exclude(user_id=user_id)
+        .exists()
+    )
 
 
 def _resolve_target_project_id_for_asset(asset_id) -> tuple[bool, int | None]:
@@ -234,7 +275,8 @@ class CheckoutSerializer(serializers.ModelSerializer):
         asset: Asset = attrs["asset"]
         due_at = attrs.get("due_at")
 
-        if due_at is not None and due_at <= timezone.now():
+        now = timezone.now()
+        if due_at is not None and due_at <= now:
             raise serializers.ValidationError({"due_at": "due_at must be in the future."})
 
         reservation: Reservation | None = attrs.get("reservation")
@@ -250,6 +292,73 @@ class CheckoutSerializer(serializers.ModelSerializer):
             if reservation.status not in RESERVATION_CHECKOUT_STATUSES:
                 raise serializers.ValidationError(
                     {"reservation": "This reservation is not approved/fulfilled."}
+                )
+            # Checkout must happen within the approved window, half-open
+            # `[start_at, end_at)` -- same convention `_check_conflict` in
+            # `apps.reservations.services` uses for overlap
+            # (`start_at__lt=end_at, end_at__gt=start_at`), so "exactly
+            # start_at" is in-window (checkout right at slot start is fine)
+            # and "exactly end_at" is not (the window has just ended). This
+            # stops a member with a future-dated APPROVED reservation from
+            # walking up and checking the asset out immediately, which would
+            # defeat the point of scheduling.
+            if now < reservation.start_at:
+                raise serializers.ValidationError(
+                    {
+                        "reservation": (
+                            "This reservation's checkout window hasn't started yet "
+                            f"(starts {reservation.start_at.isoformat()}). Cancel it if you "
+                            "no longer need it, or check out once the window begins."
+                        )
+                    }
+                )
+            if now >= reservation.end_at:
+                raise serializers.ValidationError(
+                    {
+                        "reservation": (
+                            "This reservation's checkout window has already passed "
+                            f"(ended {reservation.end_at.isoformat()}). Rebook a new window "
+                            "if you still need this asset."
+                        )
+                    }
+                )
+        else:
+            # Walk-up checkout (code-review finding, product decision:
+            # BLOCKING). Without a `reservation`, nothing previously checked
+            # this asset against OTHER users' active reservations at all --
+            # a walk-up checkout could silently defeat another user's
+            # scheduled window. Reject if any OTHER user holds an ACTIVE
+            # reservation on this asset covering right now; a reservation
+            # belonging to the SAME user does not block (see
+            # `_other_user_active_reservation_conflict_exists`'s docstring
+            # for why). Re-checked again under the asset's
+            # `select_for_update()` lock in `create()` below (same TOCTOU
+            # discipline as every other check in this serializer).
+            #
+            # **Approver bypass** (product decision, consistent with the
+            # `requires_approval` gate a few lines below which already lets
+            # an approver bypass the "must have an approved/fulfilled
+            # reservation" requirement): someone holding `reservation.approve`
+            # in this asset's project scope is the trusted approver role
+            # itself and may walk up and check the asset out even over
+            # another user's active reservation -- e.g. to reassign it, or to
+            # hand it to the reservation holder in person. This bypass must
+            # be applied identically here and in `create()`'s re-check under
+            # the asset lock.
+            can_bypass_walkup_conflict = user_has_permission(
+                user, RESERVATION_APPROVE, project=asset.project_id
+            )
+            if not can_bypass_walkup_conflict and _other_user_active_reservation_conflict_exists(
+                asset=asset, user_id=user.id, at=now
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "reservation": (
+                            "Another user holds an active reservation on this asset "
+                            "for the current time. Check out from your own reservation "
+                            "if you have one, or wait until this window ends."
+                        )
+                    }
                 )
 
         # docs/rbac.md §4 + footnote 2: a category configured
@@ -297,6 +406,35 @@ class CheckoutSerializer(serializers.ModelSerializer):
 
             checked_out_at = timezone.now()
             reservation: Reservation | None = validated_data.get("reservation")
+
+            if reservation is None:
+                # TOCTOU re-check (code-review finding, same discipline as
+                # the reservation-status re-check below): `validate()` ran
+                # its walk-up-vs-other-user's-reservation check unlocked,
+                # before this `select_for_update()` on the asset. A
+                # conflicting reservation could have been approved/created
+                # in the gap between `validate()` and this lock; re-run the
+                # same check now that concurrent checkouts on this asset are
+                # serialized, so a genuine race is still caught as a clean
+                # 400 rather than silently permitted. Same
+                # `reservation.approve` bypass as `validate()` above -- must
+                # stay consistent between the two.
+                can_bypass_walkup_conflict = user_has_permission(
+                    user, RESERVATION_APPROVE, project=locked_asset.project_id
+                )
+                if not can_bypass_walkup_conflict and _other_user_active_reservation_conflict_exists(
+                    asset=locked_asset, user_id=user.id, at=checked_out_at
+                ):
+                    raise serializers.ValidationError(
+                        {
+                            "reservation": (
+                                "Another user holds an active reservation on this asset "
+                                "for the current time. Check out from your own reservation "
+                                "if you have one, or wait until this window ends."
+                            )
+                        }
+                    )
+
             checkout = Checkout.objects.create(
                 tenant=locked_asset.tenant,
                 asset=locked_asset,
@@ -321,14 +459,58 @@ class CheckoutSerializer(serializers.ModelSerializer):
                 # `Reservation.ACTIVE_STATUSES` on purpose: the asset really
                 # is unavailable for this window until checked back in, so
                 # the window must keep blocking new reservations exactly the
-                # way an `approved` one does -- only cancellation (not the
-                # exclusion constraint) is what changes once fulfilled.
+                # way an `approved` one does. Checking the asset back in
+                # (`perform_checkin` below) is what changes this next --
+                # it moves the reservation `fulfilled` -> `completed`,
+                # dropping it out of `ACTIVE_STATUSES` and freeing the
+                # window for re-booking.
                 # Lock the reservation row so a concurrent
                 # cancel-in-flight sees this write (or vice versa) rather
                 # than racing past each other.
                 locked_reservation = Reservation.objects.select_for_update().get(pk=reservation.pk)
+                # TOCTOU hardening (code-review finding): `validate()` above
+                # read `reservation.status` unlocked, before this
+                # `select_for_update()`. Since `COMPLETED` was added, a
+                # concurrent request could have already checked this same
+                # reservation-backed checkout back in (moving it
+                # `fulfilled` -> `completed`) between this request's
+                # `validate()` and this lock -- or the window could have
+                # been cancelled -- so the status actually held under the
+                # lock must be re-asserted eligible before blindly
+                # overwriting it back to `fulfilled`. Without this, a stale
+                # read could resurrect a completed reservation or collide
+                # with a since-rebooked overlapping window, surfacing as an
+                # unhandled `IntegrityError` (500) instead of a clean 400.
+                if locked_reservation.status not in RESERVATION_CHECKOUT_STATUSES:
+                    raise serializers.ValidationError(
+                        {
+                            "reservation": (
+                                "This reservation is no longer approved/fulfilled "
+                                f"(now '{locked_reservation.status}'); it cannot be used "
+                                "to check out this asset."
+                            )
+                        }
+                    )
                 locked_reservation.status = Reservation.Status.FULFILLED
-                locked_reservation.save(update_fields=["status", "updated_at"])
+                # A `completed` reservation being reused (product decision:
+                # re-checkout within its own original window) was, while
+                # `completed`, OUTSIDE `Reservation.ACTIVE_STATUSES` -- so
+                # someone else could legitimately have booked an overlapping
+                # window on this asset in the meantime. Writing this row back
+                # to `fulfilled` re-enters it into the `0002` GiST exclusion
+                # index and can collide with that new booking. Translate that
+                # specific constraint violation into the same clean
+                # `ReservationConflict` 409 `create_reservation` raises,
+                # instead of letting it fall through to the generic
+                # `IntegrityError` -> "duplicate value" 409 (code-review
+                # finding: a booking conflict must never surface as a
+                # nonsense "duplicate value" message).
+                try:
+                    locked_reservation.save(update_fields=["status", "updated_at"])
+                except IntegrityError as exc:
+                    if _violated_constraint_name(exc) == RESERVATION_NO_OVERLAP_CONSTRAINT:
+                        raise ReservationConflict() from exc
+                    raise
 
         return checkout
 
@@ -345,9 +527,12 @@ class CheckinSerializer(serializers.Serializer):
 # --------------------------------------------------------------------------
 
 
-def perform_checkin(*, checkout: Checkout, checkin_condition: str) -> tuple[Checkout, bool]:
-    """Free the asset and close the checkout. Idempotent: calling this on an
-    already-checked-in `Checkout` is a no-op (returns the existing row
+def perform_checkin(
+    *, checkout: Checkout, checkin_condition: str
+) -> tuple[Checkout, bool, dict | None]:
+    """Free the asset, close the checkout, and (if this checkout originated
+    from a reservation) complete that reservation. Idempotent: calling this
+    on an already-checked-in `Checkout` is a no-op (returns the existing row
     unchanged) rather than erroring or double-freeing/double-auditing — the
     caller (the view) uses the returned `already_checked_in` flag to skip
     writing a duplicate AuditLog entry, same "no-op, no duplicate audit"
@@ -357,12 +542,30 @@ def perform_checkin(*, checkout: Checkout, checkin_condition: str) -> tuple[Chec
     checkin/override-return calls on the same checkout serialize and the
     second sees `checked_in_at` already set), then the `Asset` row before
     freeing it — same row-lock-first pattern as
-    `apps.stock.services.apply_stock_txn`.
+    `apps.stock.services.apply_stock_txn`. The `Reservation` row (if any) is
+    locked last, mirroring the lock order `CheckoutSerializer.create` uses
+    for the reverse (`approved`/`pending` -> `fulfilled`) transition.
+
+    **`fulfilled` -> `completed` (bug fix, F4):** a reservation-backed
+    checkout's `Reservation` stays `fulfilled` (and therefore
+    `ACTIVE_STATUSES`-blocking, per the `0002` GiST exclusion constraint)
+    until the asset is actually checked back in. Without this transition the
+    window would block forever, even long after the asset was returned and
+    freed to `AVAILABLE` -- this closes that gap. Only a `fulfilled`
+    reservation is moved; anything else (no reservation, or one already
+    `completed`/`cancelled` some other way) is left untouched.
+
+    Returns `(checkout, already_checked_in, reservation_transition)` where
+    `reservation_transition` is `None` unless this call just moved a
+    reservation `fulfilled` -> `completed`, in which case it's
+    `{"id": ..., "before_status": "fulfilled", "after_status": "completed"}`
+    for the caller (the view) to fold into its checkin/override-return
+    `AuditLog` entry.
     """
     with transaction.atomic():
         locked_checkout = Checkout.objects.select_for_update().get(pk=checkout.pk)
         if locked_checkout.checked_in_at is not None:
-            return locked_checkout, True  # already_checked_in: idempotent no-op
+            return locked_checkout, True, None  # already_checked_in: idempotent no-op
 
         locked_checkout.checked_in_at = timezone.now()
         locked_checkout.checkin_condition = checkin_condition
@@ -377,7 +580,21 @@ def perform_checkin(*, checkout: Checkout, checkin_condition: str) -> tuple[Chec
             locked_asset.status = Asset.Status.AVAILABLE
             locked_asset.save(update_fields=["status", "updated_at"])
 
-    return locked_checkout, False
+        reservation_transition: dict | None = None
+        if locked_checkout.reservation_id is not None:
+            locked_reservation = Reservation.objects.select_for_update().get(
+                pk=locked_checkout.reservation_id
+            )
+            if locked_reservation.status == Reservation.Status.FULFILLED:
+                locked_reservation.status = Reservation.Status.COMPLETED
+                locked_reservation.save(update_fields=["status", "updated_at"])
+                reservation_transition = {
+                    "id": locked_reservation.id,
+                    "before_status": Reservation.Status.FULFILLED,
+                    "after_status": Reservation.Status.COMPLETED,
+                }
+
+    return locked_checkout, False, reservation_transition
 
 
 # --------------------------------------------------------------------------
@@ -497,12 +714,33 @@ class CheckoutViewSet(
         body.is_valid(raise_exception=True)
 
         before = {"checked_in_at": None, "asset_status": checkout.asset.status}
-        updated, already_checked_in = perform_checkin(
+        updated, already_checked_in, reservation_transition = perform_checkin(
             checkout=checkout, checkin_condition=body.validated_data["checkin_condition"]
         )
 
         if not already_checked_in:
             assert updated.checked_in_at is not None  # perform_checkin always sets it here
+            after = {
+                "checked_in_at": updated.checked_in_at.isoformat(),
+                "checkin_condition": updated.checkin_condition,
+            }
+            # If this checkin also completed the originating reservation
+            # (fulfilled -> completed, F4 bug fix), fold that transition
+            # into this SAME checkout audit entry rather than a separate
+            # audit call -- `apps.reservations.api`'s own
+            # approve/reject/cancel actions already write their own
+            # `entity_type="reservation"` entries for direct reservation
+            # actions; this one is a side effect of the checkin, not a
+            # reservation endpoint being hit.
+            if reservation_transition is not None:
+                before["reservation"] = {
+                    "id": reservation_transition["id"],
+                    "status": reservation_transition["before_status"],
+                }
+                after["reservation"] = {
+                    "id": reservation_transition["id"],
+                    "status": reservation_transition["after_status"],
+                }
             write_audit_log(
                 tenant_id=updated.tenant_id,
                 actor=request.user,
@@ -510,10 +748,7 @@ class CheckoutViewSet(
                 entity_type="checkout",
                 entity_id=updated.id,
                 before=before,
-                after={
-                    "checked_in_at": updated.checked_in_at.isoformat(),
-                    "checkin_condition": updated.checkin_condition,
-                },
+                after=after,
                 ip=client_ip(request),
             )
             # T5.5: `currently_out`/`overdue` are the most visibly stale
@@ -530,12 +765,29 @@ class CheckoutViewSet(
         body.is_valid(raise_exception=True)
 
         before = {"checked_in_at": None, "asset_status": checkout.asset.status}
-        updated, already_checked_in = perform_checkin(
+        updated, already_checked_in, reservation_transition = perform_checkin(
             checkout=checkout, checkin_condition=body.validated_data["checkin_condition"]
         )
 
         if not already_checked_in:
             assert updated.checked_in_at is not None  # perform_checkin always sets it here
+            after = {
+                "checked_in_at": updated.checked_in_at.isoformat(),
+                "checkin_condition": updated.checkin_condition,
+            }
+            # See the `checkin` action's identical comment: fold the
+            # originating reservation's fulfilled -> completed transition
+            # (F4 bug fix) into this same audit entry rather than a
+            # separate reservation-entity audit call.
+            if reservation_transition is not None:
+                before["reservation"] = {
+                    "id": reservation_transition["id"],
+                    "status": reservation_transition["before_status"],
+                }
+                after["reservation"] = {
+                    "id": reservation_transition["id"],
+                    "status": reservation_transition["after_status"],
+                }
             # Always audited (docs/rbac.md §5, CLAUDE.md: every
             # `*.override` writes an AuditLog entry) — under the
             # `checkout.override` key specifically, distinct from a plain
@@ -548,10 +800,7 @@ class CheckoutViewSet(
                 entity_type="checkout",
                 entity_id=updated.id,
                 before=before,
-                after={
-                    "checked_in_at": updated.checked_in_at.isoformat(),
-                    "checkin_condition": updated.checkin_condition,
-                },
+                after=after,
                 ip=client_ip(request),
             )
             invalidate_tenant_dashboard(updated.tenant_id)

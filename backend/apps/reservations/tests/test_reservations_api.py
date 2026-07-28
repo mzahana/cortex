@@ -306,6 +306,123 @@ class TestScopedApproval:
         )
         assert entries.filter(action="reservation.cancel").count() == 1
 
+    def test_cancel_rejects_reservation_that_became_fulfilled_under_the_lock(self, client):
+        """Code-review finding: `cancel_reservation`'s original unlocked
+        read-then-`save()` trusted the in-memory `reservation.status` it was
+        handed. Race: a concurrent checkout takes the row lock and flips
+        `approved` -> `fulfilled` and commits; a `cancel_reservation` call
+        holding a now-STALE in-memory instance (still showing `approved`)
+        must not blindly overwrite that to `cancelled` -- it must re-read
+        under its own lock and reject. `stale_reservation` below models
+        exactly that: its in-memory `.status` is `approved` (so the cheap
+        unlocked pre-check alone would have let it through), while the DB
+        row is actually `fulfilled`."""
+        from rest_framework.exceptions import ValidationError
+
+        from apps.reservations.services import cancel_reservation
+
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+            stale_reservation = Reservation.objects.get(pk=reservation.pk)
+            assert stale_reservation.status == Reservation.Status.APPROVED
+
+            # Simulate a concurrent checkout winning the race and committing
+            # `approved` -> `fulfilled` first.
+            reservation.status = Reservation.Status.FULFILLED
+            reservation.save(update_fields=["status"])
+
+            with pytest.raises(ValidationError) as excinfo:
+                cancel_reservation(reservation=stale_reservation, actor=member)
+            assert "fulfilled" in str(excinfo.value).lower()
+
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.FULFILLED  # untouched, not cancelled
+
+
+class TestApproveRejectRace:
+    """Code-review finding, same class of bug `cancel_reservation` was
+    hardened against: `approve_reservation`/`reject_reservation` used to
+    trust the in-memory `reservation.status` handed in by the caller and do
+    a blind `save()`. A concurrent `cancel_reservation` that locks the row
+    and commits `cancelled` first must not be silently overwritten back to
+    `approved`/`rejected` by a stale unlocked read here -- that would
+    resurrect a cancelled reservation into `Reservation.ACTIVE_STATUSES`."""
+
+    def test_approve_rejects_reservation_that_became_cancelled_under_the_lock(self, client):
+        from rest_framework.exceptions import ValidationError
+
+        from apps.reservations.services import approve_reservation
+
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() + timedelta(hours=1),
+                end_at=timezone.now() + timedelta(hours=3),
+                status=Reservation.Status.PENDING,
+            )
+            stale_reservation = Reservation.objects.get(pk=reservation.pk)
+            assert stale_reservation.status == Reservation.Status.PENDING
+
+            # Simulate a concurrent cancel winning the race and committing
+            # `pending` -> `cancelled` first.
+            reservation.status = Reservation.Status.CANCELLED
+            reservation.save(update_fields=["status"])
+
+            with pytest.raises(ValidationError) as excinfo:
+                approve_reservation(reservation=stale_reservation, actor=admin)
+            assert "cancelled" in str(excinfo.value).lower()
+
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.CANCELLED  # untouched
+
+    def test_reject_rejects_reservation_that_became_cancelled_under_the_lock(self, client):
+        from rest_framework.exceptions import ValidationError
+
+        from apps.reservations.services import reject_reservation
+
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() + timedelta(hours=1),
+                end_at=timezone.now() + timedelta(hours=3),
+                status=Reservation.Status.PENDING,
+            )
+            stale_reservation = Reservation.objects.get(pk=reservation.pk)
+
+            reservation.status = Reservation.Status.CANCELLED
+            reservation.save(update_fields=["status"])
+
+            with pytest.raises(ValidationError) as excinfo:
+                reject_reservation(reservation=stale_reservation, actor=admin)
+            assert "cancelled" in str(excinfo.value).lower()
+
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.CANCELLED  # untouched
+
 
 class TestPerUserReservationLimit:
     def test_per_user_active_reservation_cap_is_enforced(self, client, settings):

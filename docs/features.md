@@ -26,6 +26,7 @@ Acceptance criteria are given for MVP items.
 ### F5. Check-in / check-out
 - Check out (optionally from a reservation) with due date; check in with condition notes; open-items view; **overdue detection**.
 - **Acceptance:** Checking out sets asset `in_use` and creates an open checkout; checking in records condition and frees the asset; an item past `due_at` is flagged overdue and appears on the dashboard.
+- **Reservation-window enforcement (code-review fix):** a reservation-backed checkout is only accepted while `now` is inside that reservation's `[start_at, end_at)` window — before `start_at` or at/after `end_at` is a `400`, with **no grace period** past `end_at` (documented default per `docs/risks.md` §3, not a confirmed product decision). An early return mid-window (`fulfilled` → `completed`) can be reused for a second checkout under the same reservation while still inside its original window, without re-approval. A walk-up checkout (no reservation) is rejected if another user holds an active reservation on the asset covering `now` — unless the caller holds `reservation.approve` in that asset's scope; the caller's own reservation never blocks their own walk-up. Stale unactioned reservations past their window are auto-`expired` hourly. See `docs/api-and-ui.md`'s Reservations & checkout table for the API-level detail.
 
 ### F6. Mobile PWA + QR scanning + photo capture
 - Installable PWA; **camera QR scan** opens the exact asset; **camera photo capture** attaches to the record. Requires the HTTPS/secure-context deployment (see `deployment.md`).

@@ -94,7 +94,7 @@ erDiagram
 - **ReorderRequest** — lightweight reorder workflow: `stock_item_id, requested_by, quantity, status(open|approved|ordered|received|cancelled), note`.
 
 ### Reservations & checkout
-- **Reservation** — durable-asset booking: `asset_id, user_id, project_id(nullable), start_at, end_at, status(pending|approved|rejected|cancelled|fulfilled|expired), approver_id, approval_note`. Conflict detection via exclusion constraint on overlapping `[start_at, end_at)` per asset for active statuses.
+- **Reservation** — durable-asset booking: `asset_id, user_id, project_id(nullable), start_at, end_at, status(pending|approved|rejected|cancelled|fulfilled|completed|expired), approver_id, approval_note`. Conflict detection via exclusion constraint on overlapping `[start_at, end_at)` per asset for active statuses. `fulfilled -> completed` happens on checkin (the fulfilled reservation's checkout is checked in), marking a terminal "used and returned" state and freeing its `[start_at, end_at)` window for others to rebook.
 - **Checkout** — actual possession: `asset_id, user_id, reservation_id(nullable), checked_out_at, due_at, checked_in_at, checkout_condition, checkin_condition, is_overdue`. Open checkout = `checked_in_at NULL`.
 
 ### Maintenance & calibration

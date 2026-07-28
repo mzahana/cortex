@@ -220,6 +220,19 @@ def approve_reservation(*, reservation: Reservation, actor, note: str = "") -> R
     having let the request through) -- same "service re-validates, not just
     the permission layer" posture as `apps.stock.services.
     apply_reorder_transition`.
+
+    **Race (same class of bug `cancel_reservation` was hardened against):**
+    a naive unlocked read-then-`save()` here could read `reservation.status`
+    as `pending`, lose a race to a concurrent `cancel_reservation` (or
+    `reject_reservation`) that locks the row and flips it to `cancelled`/
+    `rejected`, and then overwrite that terminal status back to `approved`
+    after commit -- resurrecting a cancelled/rejected reservation into
+    `Reservation.ACTIVE_STATUSES` and reopening the `0002` GiST exclusion
+    constraint's window. Fixed with the SAME balance `cancel_reservation`
+    strikes: a cheap unlocked pre-check first (so the common-case rejection
+    of an already-decided reservation doesn't pay for a lock), then
+    `select_for_update()` and a re-assertion of `pending` under the lock
+    before writing `approved`.
     """
     if reservation.status != Reservation.Status.PENDING:
         raise serializers.ValidationError(
@@ -230,21 +243,39 @@ def approve_reservation(*, reservation: Reservation, actor, note: str = "") -> R
                 )
             }
         )
-    reservation.status = Reservation.Status.APPROVED
-    reservation.approver = actor
-    reservation.approval_note = note
-    reservation.save(update_fields=["status", "approver", "approval_note", "updated_at"])
 
-    _emit_approval_decision_on_commit(reservation, approved=True, actor=actor, note=note)
-    _emit_reservation_confirmed_on_commit(reservation)
-    return reservation
+    with transaction.atomic():
+        locked_reservation = Reservation.objects.select_for_update().get(pk=reservation.pk)
+        if locked_reservation.status != Reservation.Status.PENDING:
+            raise serializers.ValidationError(
+                {
+                    "status": (
+                        f"Only a 'pending' reservation can be approved (this one is "
+                        f"'{locked_reservation.status}')."
+                    )
+                }
+            )
+        locked_reservation.status = Reservation.Status.APPROVED
+        locked_reservation.approver = actor
+        locked_reservation.approval_note = note
+        locked_reservation.save(update_fields=["status", "approver", "approval_note", "updated_at"])
+
+    _emit_approval_decision_on_commit(locked_reservation, approved=True, actor=actor, note=note)
+    _emit_reservation_confirmed_on_commit(locked_reservation)
+    return locked_reservation
 
 
 def reject_reservation(*, reservation: Reservation, actor, note: str = "") -> Reservation:
     """`reservation.approve` decision: `pending` -> `rejected`. Frees the
     window immediately (a `rejected` reservation drops out of
     `Reservation.ACTIVE_STATUSES`, so the `0002` exclusion constraint no
-    longer holds it, and the app-level conflict pre-check ignores it too)."""
+    longer holds it, and the app-level conflict pre-check ignores it too).
+
+    **Race:** same hardening as `approve_reservation` above -- lock the row
+    and re-assert `pending` under the lock before writing `rejected`, so a
+    concurrent cancel can never be resurrected back into
+    `Reservation.ACTIVE_STATUSES` by a stale unlocked read here.
+    """
     if reservation.status != Reservation.Status.PENDING:
         raise serializers.ValidationError(
             {
@@ -254,27 +285,65 @@ def reject_reservation(*, reservation: Reservation, actor, note: str = "") -> Re
                 )
             }
         )
-    reservation.status = Reservation.Status.REJECTED
-    reservation.approver = actor
-    reservation.approval_note = note
-    reservation.save(update_fields=["status", "approver", "approval_note", "updated_at"])
 
-    _emit_approval_decision_on_commit(reservation, approved=False, actor=actor, note=note)
-    return reservation
+    with transaction.atomic():
+        locked_reservation = Reservation.objects.select_for_update().get(pk=reservation.pk)
+        if locked_reservation.status != Reservation.Status.PENDING:
+            raise serializers.ValidationError(
+                {
+                    "status": (
+                        f"Only a 'pending' reservation can be rejected (this one is "
+                        f"'{locked_reservation.status}')."
+                    )
+                }
+            )
+        locked_reservation.status = Reservation.Status.REJECTED
+        locked_reservation.approver = actor
+        locked_reservation.approval_note = note
+        locked_reservation.save(update_fields=["status", "approver", "approval_note", "updated_at"])
+
+    _emit_approval_decision_on_commit(locked_reservation, approved=False, actor=actor, note=note)
+    return locked_reservation
 
 
 def cancel_reservation(*, reservation: Reservation, actor) -> Reservation:
     """Cancel a still-active (`pending`/`approved`) reservation. `fulfilled`
-    (already converted to a T3.3 checkout), `rejected`, `cancelled`, and
-    `expired` reservations are not cancellable -- there is nothing left to
-    free, or (fulfilled) the T3.3 checkout lifecycle owns ending it now."""
+    (already converted to a T3.3 checkout -- the checkout lifecycle owns
+    ending it now, see `apps.reservations.checkout.perform_checkin`),
+    `rejected`, `cancelled`, `expired`, and `completed` reservations are not
+    cancellable -- there is nothing left to free.
+
+    **Race (code-review finding):** `CheckoutSerializer.create` takes a
+    `select_for_update()` lock on the `Reservation` row when converting
+    `approved`/`pending` -> `fulfilled` (`apps.reservations.checkout`). A
+    naive unlocked read-then-`save()` here could read the row as
+    `approved`, lose a race to a concurrent checkout that locks the row and
+    flips it to `fulfilled`, and then overwrite that `fulfilled` ->
+    `cancelled` after commit -- freeing the `0002` GiST exclusion
+    constraint's window while the asset is still physically checked out
+    with an open `Checkout`. Fixed the same way
+    `CheckoutSerializer.create`'s TOCTOU guard does: a cheap unlocked
+    pre-check first (so the common-case rejection of an already-terminal
+    reservation doesn't pay for a lock), then `select_for_update()` and a
+    re-assertion of the status under the lock before writing `cancelled`.
+    """
     if reservation.status not in (Reservation.Status.PENDING, Reservation.Status.APPROVED):
         raise serializers.ValidationError(
             {"status": (f"A '{reservation.status}' reservation cannot be cancelled.")}
         )
-    reservation.status = Reservation.Status.CANCELLED
-    reservation.save(update_fields=["status", "updated_at"])
-    return reservation
+
+    with transaction.atomic():
+        locked_reservation = Reservation.objects.select_for_update().get(pk=reservation.pk)
+        if locked_reservation.status not in (
+            Reservation.Status.PENDING,
+            Reservation.Status.APPROVED,
+        ):
+            raise serializers.ValidationError(
+                {"status": (f"A '{locked_reservation.status}' reservation cannot be cancelled.")}
+            )
+        locked_reservation.status = Reservation.Status.CANCELLED
+        locked_reservation.save(update_fields=["status", "updated_at"])
+    return locked_reservation
 
 
 # --- Domain events (transaction.on_commit, same pattern as

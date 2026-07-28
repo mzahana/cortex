@@ -41,6 +41,14 @@ app.conf.beat_schedule = {
         "task": "apps.notifications.scan_low_stock",
         "schedule": crontab(minute=0),
     },
+    # Bug fix: `Reservation.Status.EXPIRED` existed on the model since T3.1
+    # but nothing ever set it. Same hourly "sweep and reconcile" cadence as
+    # the two notification scans above (`apps.reservations.tasks.
+    # expire_stale_reservations` docstring for the full reasoning).
+    "reservations-expire-stale": {
+        "task": "apps.reservations.expire_stale_reservations",
+        "schedule": crontab(minute=0),
+    },
 }
 
 

@@ -208,6 +208,28 @@
 | POST | `/api/v1/checkouts/{id}/override-return` | Force return |
 | GET | `/api/v1/checkouts?open=true&overdue=true` | Open / overdue items |
 
+**Reservation window is enforced at checkout (code-review fix):** `POST
+/checkouts` with a `reservation` id is only accepted while `now` is inside
+that reservation's half-open window `[start_at, end_at)` — checking out
+before `start_at` or at/after `end_at` is a `400`. There is currently **no
+grace period** past `end_at` (documented default, not a confirmed product
+decision — see `docs/risks.md` §3; flag if a grace period is wanted). The
+reservation may be `approved`, `fulfilled`, or `completed` — `completed`
+covers checking out again under the SAME reservation after an early return
+mid-window (`fulfilled` → `completed` on checkin), so a holder doesn't need
+re-approval to reuse their own already-approved window; this reuse cannot
+extend past the reservation's original `end_at`. A walk-up checkout (no
+`reservation` supplied) is rejected with a `400` if another user holds an
+active (`pending`/`approved`/`fulfilled`) reservation on that asset covering
+`now`; a reservation belonging to the caller themselves never blocks their
+own walk-up, and anyone holding `reservation.approve` in that asset's scope
+may bypass this specific check (same bypass the `requires_approval` category
+gate already grants that role) — the reservation-window check above is
+unaffected by this bypass. Stale `pending`/`approved` reservations whose
+window has fully elapsed are swept hourly by a Celery beat task
+(`apps.reservations.expire_stale_reservations`) to `expired`, freeing the
+window and the holder's active-reservation cap without a manual cancel.
+
 ### Projects & grants (M7)
 
 | Method | Path | Notes |

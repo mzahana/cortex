@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
@@ -26,6 +27,7 @@ from apps.common.tests.factories import (
     upgrade_tenant_wide_role,
 )
 from apps.rbac.permission_keys import ROLE_ADMIN, ROLE_PROJECT_LEAD
+from apps.reservations.checkout import CheckoutSerializer
 from apps.reservations.models import Checkout, Reservation
 from apps.tenancy.context import tenant_context
 
@@ -450,6 +452,296 @@ class TestReservationLinkedCheckout:
             assert asset.status == Asset.Status.AVAILABLE  # never checked out
 
 
+class TestFulfilledReservationCompletesOnCheckin:
+    """Bug fix (F4 gap): a `fulfilled` reservation must free its window once
+    the asset is actually checked back in, not stay `fulfilled` forever.
+    `checkin`/`override-return` now move it to the new terminal `completed`
+    status (dropped from `Reservation.ACTIVE_STATUSES`), while
+    `test_fulfilled_reservation_window_still_blocks_a_new_overlapping_reservation`
+    (above) proves the window still blocks BEFORE checkin -- these two tests
+    together pin the full before/after behavior."""
+
+    def test_checkin_completes_the_reservation_and_frees_the_window(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        other_member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        start = timezone.now() - timedelta(minutes=5)
+        end = timezone.now() + timedelta(hours=2)
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=start,
+                end_at=end,
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        checkout_response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert checkout_response.status_code == 201, checkout_response.content
+        checkout_id = checkout_response.json()["id"]
+
+        checkin_response = client.post(
+            f"/api/v1/checkouts/{checkout_id}/checkin/",
+            data=json.dumps({"checkin_condition": "returned in good shape"}),
+            content_type="application/json",
+        )
+        assert checkin_response.status_code == 200, checkin_response.content
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.COMPLETED
+            asset.refresh_from_db()
+            assert asset.status == Asset.Status.AVAILABLE
+
+            log = AuditLog.objects.filter(entity_type="checkout", entity_id=checkout_id).latest(
+                "created_at"
+            )
+            assert log.after["reservation"] == {
+                "id": reservation.id,
+                "status": Reservation.Status.COMPLETED,
+            }
+            assert log.before["reservation"] == {
+                "id": reservation.id,
+                "status": Reservation.Status.FULFILLED,
+            }
+
+        # The window is genuinely free now: another user can book the same
+        # (or an overlapping) window without a 409, unlike the still-fulfilled
+        # case in `test_fulfilled_reservation_window_still_blocks_a_new_overlapping_reservation`.
+        _login(client, tenant, other_member)
+        rebooking_response = client.post(
+            "/api/v1/reservations/",
+            data=json.dumps(
+                {
+                    "asset": asset.id,
+                    "start_at": _iso(start + timedelta(minutes=30)),
+                    "end_at": _iso(end + timedelta(minutes=30)),
+                }
+            ),
+            content_type="application/json",
+        )
+        assert rebooking_response.status_code == 201, rebooking_response.content
+
+    def test_override_return_also_completes_the_reservation(self, client):
+        tenant = TenantFactory()
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        checkout_response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert checkout_response.status_code == 201, checkout_response.content
+        checkout_id = checkout_response.json()["id"]
+
+        _login(client, tenant, admin)
+        override_response = client.post(
+            f"/api/v1/checkouts/{checkout_id}/override-return/",
+            data=json.dumps({"checkin_condition": "force-returned"}),
+            content_type="application/json",
+        )
+        assert override_response.status_code == 200, override_response.content
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.COMPLETED
+
+    def test_walk_up_checkout_with_no_reservation_checkin_is_unaffected(self, client):
+        """No reservation linked -- `perform_checkin` must not touch anything
+        reservation-related and the audit `before`/`after` must not gain a
+        `reservation` key."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        checkout_response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        checkout_id = checkout_response.json()["id"]
+
+        checkin_response = client.post(
+            f"/api/v1/checkouts/{checkout_id}/checkin/",
+            data=json.dumps({"checkin_condition": "fine"}),
+            content_type="application/json",
+        )
+        assert checkin_response.status_code == 200, checkin_response.content
+
+        with tenant_context(tenant.id):
+            log = AuditLog.objects.filter(entity_type="checkout", entity_id=checkout_id).latest(
+                "created_at"
+            )
+            assert "reservation" not in log.before
+            assert "reservation" not in log.after
+
+
+class TestCheckoutWindowEnforcement:
+    """Checkout of a reservation-backed asset is only allowed within the
+    approved window `[start_at, end_at)` — checking out ahead of a
+    future-dated APPROVED reservation, or after its window has already
+    closed, must be rejected rather than silently allowed. A walk-up
+    checkout (no `reservation`) has no window to check and is unaffected."""
+
+    def test_checkout_before_start_at_is_rejected(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() + timedelta(hours=2),
+                end_at=timezone.now() + timedelta(hours=4),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert response.status_code == 400, response.content
+        assert "reservation" in response.json()["errors"]
+
+        with tenant_context(tenant.id):
+            asset.refresh_from_db()
+            assert asset.status == Asset.Status.AVAILABLE  # never checked out
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.APPROVED  # unchanged
+
+    def test_checkout_exactly_at_start_at_succeeds(self, client):
+        """Pin `timezone.now()` to EXACTLY `reservation.start_at` for the
+        whole request (login + POST) so the real wall clock advancing past
+        `start_at` before `validate()` runs can't hide a true off-by-one at
+        the boundary -- a real login+POST without patching `now()` doesn't
+        actually test "exactly at start_at" (code-review finding)."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        start = timezone.now()
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=start,
+                end_at=start + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        with patch("django.utils.timezone.now", return_value=start):
+            _login(client, tenant, member)
+            payload = _checkout_payload(asset, due_at=start + timedelta(days=1))
+            payload["reservation"] = reservation.id
+            response = client.post(
+                "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+            )
+        assert response.status_code == 201, response.content
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.FULFILLED
+
+    def test_checkout_exactly_at_end_at_is_rejected(self, client):
+        """The window is half-open `[start_at, end_at)` — exactly `end_at`
+        must be rejected, not accepted. Previously untested at all."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        start = timezone.now() - timedelta(hours=2)
+        end = timezone.now()
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=start,
+                end_at=end,
+                status=Reservation.Status.APPROVED,
+            )
+
+        with patch("django.utils.timezone.now", return_value=end):
+            _login(client, tenant, member)
+            payload = _checkout_payload(asset, due_at=end + timedelta(days=1))
+            payload["reservation"] = reservation.id
+            response = client.post(
+                "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+            )
+        assert response.status_code == 400, response.content
+        assert "reservation" in response.json()["errors"]
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.APPROVED  # unchanged
+
+    def test_checkout_after_end_at_is_rejected(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(hours=4),
+                end_at=timezone.now() - timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert response.status_code == 400, response.content
+        assert "reservation" in response.json()["errors"]
+
+        with tenant_context(tenant.id):
+            asset.refresh_from_db()
+            assert asset.status == Asset.Status.AVAILABLE  # never checked out
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.APPROVED  # unchanged
+
+    def test_walk_up_checkout_has_no_window_to_check(self, client):
+        """No `reservation` supplied -- the window check must not apply."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+
+        _login(client, tenant, member)
+        response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+
+
 class TestAssetAndReservationFilters:
     """`?asset=<id>`/`?reservation=<id>` manual query-param filters on
     `GET /checkouts` (added alongside `?open=`/`?overdue=`): non-numeric
@@ -638,3 +930,322 @@ class TestCrossTenantIsolation:
 
         override_response = client.post(f"/api/v1/checkouts/{other_checkout.id}/override-return/")
         assert override_response.status_code in (403, 404), override_response.content
+
+
+class TestCheckoutCreateToctouReservationStatusRecheck:
+    """Code-review finding: `CheckoutSerializer.create`'s re-assertion that
+    `locked_reservation.status in RESERVATION_CHECKOUT_STATUSES` (under the
+    row lock) had zero test coverage — only `validate()`'s unlocked read was
+    exercised. Directly drives the serializer so the reservation's status can
+    be flipped in the DB AFTER `validate()` passes but BEFORE `create()`
+    re-reads it under `select_for_update()`, simulating the genuine
+    concurrent-request race this guard exists for."""
+
+    def test_create_rejects_when_reservation_is_cancelled_between_validate_and_lock(self, client):
+        """`COMPLETED` was moved INTO `RESERVATION_CHECKOUT_STATUSES` (bug
+        fix, product decision: a `completed` reservation may re-back a new
+        checkout within its original window), so it no longer models an
+        ineligible status for this TOCTOU race -- `CANCELLED` (a status that
+        stays ineligible in every case) is used here instead to keep
+        exercising the same re-check under the lock."""
+        from rest_framework.exceptions import ValidationError
+        from rest_framework.test import APIRequestFactory
+
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        request = APIRequestFactory().post("/api/v1/checkouts/")
+        request.user = member
+
+        with tenant_context(tenant.id):
+            serializer = CheckoutSerializer(
+                data={
+                    "asset": asset.id,
+                    "due_at": _iso(timezone.now() + timedelta(days=1)),
+                    "reservation": reservation.id,
+                },
+                context={"request": request},
+            )
+            assert serializer.is_valid(), serializer.errors
+
+            # Simulate a concurrent request cancelling this SAME
+            # reservation-backed checkout in the gap between this
+            # `validate()` having already passed and `create()`'s own
+            # `select_for_update()` lock below.
+            reservation.status = Reservation.Status.CANCELLED
+            reservation.save(update_fields=["status"])
+
+            with pytest.raises(ValidationError) as excinfo:
+                serializer.save()
+            assert "reservation" in excinfo.value.detail
+
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.CANCELLED  # untouched by the reject
+            assert not Checkout.objects.filter(reservation_id=reservation.id).exists()
+
+
+class TestWalkUpCheckoutVersusOtherUsersReservations:
+    """Code-review finding (product decision: BLOCKING): a walk-up checkout
+    (no `reservation` supplied) previously had NO check against other users'
+    active reservations at all, defeating scheduling entirely. Now blocked
+    against an OTHER user's active reservation covering `now`; the caller's
+    OWN active reservation covering `now` never blocks their own walk-up; and
+    no covering reservation at all is unaffected."""
+
+    def test_walk_up_blocked_when_other_user_holds_active_reservation_covering_now(self, client):
+        tenant = TenantFactory()
+        holder = UserFactory(tenant=tenant)
+        walkup_user = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=holder,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, walkup_user)
+        response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 400, response.content
+        assert "reservation" in response.json()["errors"]
+
+        with tenant_context(tenant.id):
+            asset.refresh_from_db()
+            assert asset.status == Asset.Status.AVAILABLE  # never checked out
+
+    def test_walk_up_allowed_against_callers_own_active_reservation_covering_now(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+
+    def test_walk_up_allowed_when_no_reservation_covers_now(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        other_member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            # Another user's reservation exists, but its window is entirely
+            # in the future -- it doesn't cover `now`, so it must not block.
+            Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=other_member,
+                start_at=timezone.now() + timedelta(hours=3),
+                end_at=timezone.now() + timedelta(hours=5),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+
+    def test_approver_bypasses_walk_up_conflict_with_other_users_reservation(self, client):
+        """Code-review finding, product decision: consistent with the
+        `requires_approval` gate's existing approver bypass, someone holding
+        `reservation.approve` in this asset's project scope may walk up and
+        check out an asset even over another user's active reservation
+        covering `now`."""
+        tenant = TenantFactory()
+        holder = UserFactory(tenant=tenant)
+        admin = UserFactory(tenant=tenant)
+        upgrade_tenant_wide_role(admin, ROLE_ADMIN)  # holds reservation.approve tenant-wide
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=holder,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, admin)
+        response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+
+    def test_project_lead_approver_bypasses_walk_up_conflict_scoped_to_own_project(self, client):
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        holder = UserFactory(tenant=tenant)
+        lead = UserFactory(tenant=tenant)
+        add_project_membership(lead, project, ROLE_PROJECT_LEAD)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            asset.project = project
+            asset.save(update_fields=["project"])
+            Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=holder,
+                start_at=timezone.now() - timedelta(minutes=5),
+                end_at=timezone.now() + timedelta(hours=2),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, lead)
+        response = client.post(
+            "/api/v1/checkouts/",
+            data=json.dumps(_checkout_payload(asset)),
+            content_type="application/json",
+        )
+        assert response.status_code == 201, response.content
+
+
+class TestCheckoutFromCompletedReservation:
+    """Product decision (bug fix): a `completed` reservation (checked out
+    early, returned mid-window, `fulfilled` -> `completed`) may re-back a
+    NEW checkout under that SAME reservation as long as `timezone.now()` is
+    still inside its original `[start_at, end_at)` window -- avoiding a
+    fresh approval cycle for an already-approved window."""
+
+    def test_checkout_from_completed_reservation_succeeds_within_its_window(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        start = timezone.now() - timedelta(hours=1)
+        end = timezone.now() + timedelta(hours=2)
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=start,
+                end_at=end,
+                status=Reservation.Status.COMPLETED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert response.status_code == 201, response.content
+        assert response.json()["reservation"] == reservation.id
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.FULFILLED
+
+    def test_checkout_from_completed_reservation_fails_once_its_window_has_passed(self, client):
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=timezone.now() - timedelta(hours=4),
+                end_at=timezone.now() - timedelta(hours=2),
+                status=Reservation.Status.COMPLETED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert response.status_code == 400, response.content
+        assert "reservation" in response.json()["errors"]
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.COMPLETED  # unchanged
+
+    def test_reuse_of_completed_reservation_against_a_rebooked_window_gets_a_clean_409(self, client):
+        """Code-review finding: while `completed`, a reservation is OUTSIDE
+        `Reservation.ACTIVE_STATUSES` and its window is legitimately
+        rebookable by someone else. If the original holder then tries to
+        reuse it for a second checkout (still inside their own window), and
+        that window now overlaps someone else's `approved` reservation,
+        writing this row back to `fulfilled` collides with the `0002` GiST
+        exclusion constraint. This must surface as the same clean
+        `ReservationConflict` 409 `create_reservation` raises for an
+        ordinary overlapping create -- never the generic `IntegrityError` ->
+        "duplicate value" 409 fallback."""
+        tenant = TenantFactory()
+        member = UserFactory(tenant=tenant)
+        other_member = UserFactory(tenant=tenant)
+        asset = AssetFactory(tenant=tenant, category=CategoryFactory(tenant=tenant))
+        start = timezone.now() - timedelta(hours=1)
+        end = timezone.now() + timedelta(hours=2)
+        with tenant_context(tenant.id):
+            reservation = Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=member,
+                start_at=start,
+                end_at=end,
+                status=Reservation.Status.COMPLETED,
+            )
+            # The window is free while `completed` -- another user can
+            # legitimately book an overlapping slot.
+            Reservation.objects.create(
+                tenant=tenant,
+                asset=asset,
+                user=other_member,
+                start_at=start + timedelta(minutes=30),
+                end_at=end + timedelta(minutes=30),
+                status=Reservation.Status.APPROVED,
+            )
+
+        _login(client, tenant, member)
+        payload = _checkout_payload(asset)
+        payload["reservation"] = reservation.id
+        response = client.post(
+            "/api/v1/checkouts/", data=json.dumps(payload), content_type="application/json"
+        )
+        assert response.status_code == 409, response.content
+        detail = response.json().get("detail", "")
+        assert "overlapping" in detail.lower()
+        assert "duplicate" not in detail.lower()
+
+        with tenant_context(tenant.id):
+            reservation.refresh_from_db()
+            assert reservation.status == Reservation.Status.COMPLETED  # unchanged, rolled back
+            assert not Checkout.objects.filter(reservation=reservation).exists()
