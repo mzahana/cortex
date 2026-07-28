@@ -78,6 +78,16 @@ Lessons from building this repo that aren't obvious from reading the code cold:
   mount).** After ANY backend code change, `docker compose build web` before trusting
   `docker compose run web pytest` — otherwise you silently run stale code. This has
   caused real false-negative/false-positive test runs more than once.
+- **`docker compose restart` does NOT pick up a newly built image for the long-running
+  `web`/`worker`/`beat` services — only `docker compose up -d` (which recreates the
+  container) does.** `restart` just restarts the existing container's process on its
+  existing image layer. After `docker compose build web`, use `docker compose up -d web
+  worker beat` to actually run the new code/migrations, not `restart`. Caught live: a
+  migration that was already applied to the DB (via a fresh one-off `migrate`/`run`
+  container) still wasn't visible to the actively-serving `web` container after
+  `restart`, because `web` itself was still running the old pre-migration image —
+  `django_migrations` looked applied from one angle and not from the other,
+  which is confusing to debug if you don't know to check `up -d` vs `restart` first.
 - **`pytest`/`ruff`/`black`/`mypy` aren't in the base image** — install them per
   invocation: `pip install -r requirements/dev.txt` (run as `-u root`, since the `app`
   user has no shell for `su`). Test settings need

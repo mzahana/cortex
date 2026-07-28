@@ -51,6 +51,10 @@ docker/**/pgdata/
 docker/**/media/
 docker/**/redis-data/
 *.pid
+# Local-only compose overlay (e.g. a laptop's `nginx` host-port mapping for
+# browser testing, docs/deployment-runbook.md §0a) -- never a NAS/prod
+# concern, so never committed.
+docker-compose.override.yml
 
 # --- Editors / OS ---
 .vscode/
