@@ -298,6 +298,14 @@ class TestDashboardSummaryQueryBudget:
                 )
 
         _login(client, tenant, admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache
+        # (a cache-miss `get_or_create` on the FIRST authenticated request
+        # only; `conftest.py::_clear_default_cache` clears it before every
+        # test) before the measured block below, so it doesn't pay that
+        # one-time cost -- otherwise it would undermine the "independent of
+        # row count" guarantee this test protects for a reason unrelated to
+        # row count.
+        client.get(URL)
         with django_assert_max_num_queries(20):
             response = client.get(URL)
         assert response.status_code == 200, response.content
@@ -315,6 +323,9 @@ class TestDashboardSummaryQueryBudget:
                 )
         invalidate_tenant_dashboard(tenant.id)
 
+        # Session-settings cache is already warm from the first request
+        # above (same tenant, well within the 60s TTL), so no extra margin
+        # needed here.
         with django_assert_max_num_queries(20):
             response = client.get(URL)
         assert response.status_code == 200, response.content

@@ -89,6 +89,14 @@ MIDDLEWARE = [
     # lookup on every request past login) — see
     # apps/tenancy/middleware.py::SessionTenantPreloadMiddleware docstring.
     "apps.tenancy.middleware.SessionTenantPreloadMiddleware",
+    # Must come AFTER SessionTenantPreloadMiddleware (needs the
+    # `tenant_context()` it already opened, to read the RLS-protected
+    # `SessionSettings` table for this tenant's idle/absolute timeout
+    # policy), BEFORE AuthenticationMiddleware (an expired session must be
+    # rejected before AuthenticationMiddleware's own `get_user()` query
+    # runs) — see apps/tenancy/middleware.py::SessionTimeoutMiddleware
+    # docstring for the full placement rationale.
+    "apps.tenancy.middleware.SessionTimeoutMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     # Must come AFTER AuthenticationMiddleware: derives the current tenant
     # from `request.user` (session-authenticated), never from client input
@@ -145,7 +153,17 @@ SESSION_CACHE_ALIAS = "default"
 SESSION_COOKIE_NAME = "cortex_sessionid"
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
-SESSION_COOKIE_AGE = env.int("SESSION_COOKIE_AGE", default=60 * 60 * 24 * 7)  # 7 days
+# 7 days. The cache-backed session engine uses this as the Redis key TTL on
+# every session save (SESSION_ENGINE below) — kept deliberately equal to the
+# max configurable `SessionSettings.absolute_timeout_hours` (168h/7d,
+# `apps.tenancy.models`), specifically so it can never silently outlive the
+# app's own max configurable absolute timeout, including for sessions this
+# feature doesn't cover at all (e.g. Django admin at `/django-admin/`, whose
+# sessions never get a `tenant_id` stamped by `apps.accounts.api.LoginView`
+# and so pass through `SessionTimeoutMiddleware` untouched — see that class's
+# docstring). Any env override of `SESSION_COOKIE_AGE` should stay <= this
+# value for the same reason.
+SESSION_COOKIE_AGE = env.int("SESSION_COOKIE_AGE", default=60 * 60 * 24 * 7)
 
 # CSRF cookie must be JS-readable so the SPA can echo it back as a header on
 # writes (docs/api-and-ui.md); it is not the auth token, session cookie is.

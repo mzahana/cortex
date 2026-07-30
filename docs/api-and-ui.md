@@ -55,6 +55,19 @@
 - `POST /api/v1/auth/logout` — authenticated, CSRF-enforced (session
   already exists). No body. `204 No Content`; clears the session.
 
+- **Session idle/absolute timeout (post-MVP, admin-configurable):** every
+  authenticated request (except `POST /api/v1/auth/login` itself) is checked
+  against the tenant's `SessionSettings` (`idle_timeout_minutes`,
+  `absolute_timeout_hours` — see the Admin config table below) by
+  `SessionTimeoutMiddleware`. A session past either bound is flushed
+  server-side and rejected with a distinct RFC-7807 `401`:
+  `{"type": ".../problems/session-expired", "title": "Session expired", "status": 401, "detail": "..."}`.
+  Clients **must distinguish this from a normal auth failure** (e.g. bad
+  credentials, or a `401` for an anonymous request) so they can route the
+  user straight to a "your session expired" re-login rather than a generic
+  error — check `type`, not just the `401` status. Not enforced on
+  Django-admin (`/django-admin/`) sessions — see `deployment-runbook.md`.
+
 **Password management (added post-MVP — build against this):**
 
 - `POST /api/v1/me/password` — authenticated, CSRF-enforced. Self-service
@@ -244,6 +257,13 @@ window and the holder's active-reservation cap without a manual cancel.
 | POST | `/api/v1/projects/{id}/report` | Enqueues the audit-report PDF (budget, spend-by-category, itemized expenses, asset inventory, document appendix) → returns a job id; poll `/api/v1/jobs/{id}` and download. Gated by `expense.view` (🟡) — same as seeing the numbers. |
 | GET | `/api/v1/projects/{id}/export.csv?fields=...` | Streamed, field-selectable expense/asset export, RBAC-scoped to the project. |
 
+### Admin config (single-row-per-tenant settings)
+| Method | Path | Notes |
+|---|---|---|
+| GET/PATCH | `/api/v1/notifications/email-settings` | Provider, sender/reply-to, API key. Admin-only (`tenant.manage`); audited `email_settings.update` on `PATCH`. |
+| POST | `/api/v1/notifications/email-settings/test` | Send a test email through the configured provider. Same gate. |
+| GET/PATCH | `/api/v1/tenancy/session-settings` | Per-tenant session `idle_timeout_minutes` (5–480, default 60) and `absolute_timeout_hours` (1–168, default 24). Admin-only (`tenant.manage`); audited `session_settings.update` on `PATCH`; cached 60s (invalidated on write). |
+
 ### Maintenance, labels, import/export, dashboard
 | Method | Path | Purpose |
 |---|---|---|
@@ -281,6 +301,8 @@ Mobile-first PWA; every screen usable one-handed on a phone.
 | **Admin: Categories & Fields** | Category tree, custom field defs, approval flags |
 | **Admin: Locations** | Location tree |
 | **Admin: Tenant Settings** | Tenant config, notification defaults, sender domain |
+| **Admin: Email Settings** (`/admin/email-settings`) | Provider, sender/reply-to, API key; send test email. Admin-only (`tenant.manage`) |
+| **Admin: Session Settings** (`/admin/session-settings`) | Configure per-tenant idle/absolute session timeout. Admin-only (`tenant.manage`) |
 | **Audit Log** | Filterable immutable history |
 | **My Notifications** | Per-event email preferences |
 | **Profile** | Password, session |

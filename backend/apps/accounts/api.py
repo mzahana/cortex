@@ -36,6 +36,7 @@ from django.contrib.auth import update_session_auth_hash
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.http import urlencode
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
@@ -48,13 +49,17 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.audit.services import client_ip, write_audit_log
-from apps.common.errors import problem_response
+from apps.common.errors import PROBLEM_BASE, problem_response
 from apps.common.pagination import BoundedPageNumberPagination
 from apps.notifications.services import enqueue_transactional_email
 from apps.rbac.models import Membership
 from apps.rbac.permission_keys import USER_MANAGE
 from apps.tenancy.context import tenant_context
-from apps.tenancy.middleware import TENANT_SESSION_KEY
+from apps.tenancy.middleware import (
+    SESSION_LAST_ACTIVITY_KEY,
+    SESSION_LOGIN_AT_KEY,
+    TENANT_SESSION_KEY,
+)
 from apps.tenancy.models import Tenant
 
 from . import lockout
@@ -81,8 +86,6 @@ from .services import (
     set_user_password,
     validate_new_password,
 )
-
-PROBLEM_BASE = "https://cortex.example.com/problems"
 
 
 def _client_ip(request) -> str:
@@ -297,6 +300,14 @@ class LoginView(APIView):
             # it hasn't loaded yet. `login()` above already cycled the
             # session key (fixation protection); this key rides in the new one.
             request.session[TENANT_SESSION_KEY] = tenant.id
+            # Stamp both timeout-tracking timestamps at login (read back by
+            # `apps.tenancy.middleware.SessionTimeoutMiddleware` on every
+            # later request). Same `now` value for both — `login_at` never
+            # changes again for this session, `last_activity` is bumped by
+            # the middleware as the session is used.
+            now = timezone.now().timestamp()
+            request.session[SESSION_LOGIN_AT_KEY] = now
+            request.session[SESSION_LAST_ACTIVITY_KEY] = now
 
             # `tenant` was already fetched above -- pass it straight through
             # rather than letting `_serialize_me` re-derive it via a lazy

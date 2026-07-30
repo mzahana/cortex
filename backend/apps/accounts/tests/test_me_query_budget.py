@@ -47,6 +47,15 @@ def test_me_endpoint_query_count_stays_constant_across_membership_count(
     )
     assert login.status_code == 200
 
+    # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache (a
+    # cache-miss `get_or_create` on the FIRST authenticated request only;
+    # `conftest.py::_clear_default_cache` clears it before every test) before
+    # the measured request below, so the measured call doesn't pay that
+    # one-time cost -- otherwise it would inflate this budget for a reason
+    # unrelated to the "does this scale with memberships" property under
+    # test.
+    client.get("/api/v1/me")
+
     # Generous budget: session/auth machinery (get_user, session load/save)
     # plus the ~3-query `_serialize_me` pass. The point is that this number
     # does NOT grow with the 5 extra memberships added above -- rerunning

@@ -31,6 +31,13 @@ from rest_framework.views import exception_handler as _drf_exception_handler
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
 
+# Shared RFC-7807 `type` URI base for every hand-built problem+json response
+# in the codebase (`apps.accounts.api`'s login/validation errors,
+# `apps.tenancy.middleware`'s `session-expired` 401, ...). Single source of
+# truth so every problem `type` URI is rooted at the same base rather than
+# each module re-declaring its own copy of the same literal.
+PROBLEM_BASE = "https://cortex.example.com/problems"
+
 
 def problem_response(
     *,

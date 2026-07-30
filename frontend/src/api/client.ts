@@ -67,6 +67,8 @@ import type {
   ReservationCreatePayload,
   ReservationListParams,
   Role,
+  SessionSettings,
+  SessionSettingsUpdate,
   StockItem,
   StockItemCreatePayload,
   StockListParams,
@@ -1125,6 +1127,27 @@ export const api = {
   async sendTestEmail(): Promise<EmailSettingsTestResult> {
     return request<EmailSettingsTestResult>("/notifications/email-settings/test", {
       method: "POST",
+    });
+  },
+
+  // --- Session settings (docs/api-and-ui.md; apps.tenancy.api.
+  // SessionSettingsView) --- NOTE: no trailing slash — this is a plain
+  // `path()`-registered singleton, not a router-registered ModelViewSet
+  // collection (see `backend/config/urls.py`'s `session-settings` route).
+
+  /** `GET /api/v1/tenancy/session-settings` — requires `tenant.manage`
+   * (BOTH read and write are gated on it server-side; a non-admin 403s on
+   * this GET too, not just on writes). */
+  async getSessionSettings(): Promise<SessionSettings> {
+    return request<SessionSettings>("/tenancy/session-settings", { method: "GET" });
+  },
+
+  /** `PATCH /api/v1/tenancy/session-settings` — requires `tenant.manage`.
+   * Out-of-bounds values 400 with RFC-7807 field errors. */
+  async updateSessionSettings(payload: SessionSettingsUpdate): Promise<SessionSettings> {
+    return request<SessionSettings>("/tenancy/session-settings", {
+      method: "PATCH",
+      body: payload,
     });
   },
 

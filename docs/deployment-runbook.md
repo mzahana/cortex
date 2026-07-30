@@ -381,6 +381,18 @@ Docker Desktop/engine storage-location setting in DSM, not a compose change.
   - `TUNNEL_TOKEN` — from §1 step 3.
   - `DJANGO_SETTINGS_MODULE=config.settings.prod` (already the
     `.env.example` default — leave as-is).
+  - `SESSION_COOKIE_AGE` (optional — default `604800`, 7 days). **Invariant:
+    must stay ≥ the largest `absolute_timeout_hours` any tenant configures
+    via `/admin/session-settings` (max 168h/7 days, the field's own
+    ceiling).** `SESSION_ENGINE` is Redis-cache-backed, and this value is the
+    Redis key TTL on every session save — if it's shorter than a tenant's
+    configured absolute timeout, Redis silently evicts the session before
+    `SessionTimeoutMiddleware`'s own app-level check ever runs, logging that
+    tenant's users out earlier than their configured policy says (for the
+    wrong reason: an evicted Redis key looks identical to a normal expired-
+    session 401, so this is easy to misdiagnose from the symptom alone). If
+    either bound (`SESSION_COOKIE_AGE` here, or the 168h ceiling in
+    `apps.tenancy.models.SessionSettings`) ever changes, re-check the other.
 - **Container Manager UI path:** Container Manager → **Project → Create** →
   **Path**: `/docker/cortex` → it auto-detects `docker-compose.yml` in that
   folder. Container Manager does **not** need a separate "env file" field

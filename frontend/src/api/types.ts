@@ -979,6 +979,29 @@ export interface EmailSettingsTestResult {
   sent_to: string;
 }
 
+// --- Session settings (`GET/PATCH /api/v1/tenancy/session-settings`;
+// `apps.tenancy.serializers.SessionSettingsSerializer`) — tenant admins
+// configure the idle/absolute session timeout enforced by
+// `SessionTimeoutMiddleware`. Singleton per tenant (no list, no id in the
+// URL); gated server-side on `tenant.manage` for BOTH read and write, same
+// pattern as `EmailSettings` above.
+
+/** Read shape. Bounds enforced server-side: `idle_timeout_minutes` 5–480,
+ * `absolute_timeout_hours` 1–720. */
+export interface SessionSettings {
+  idle_timeout_minutes: number;
+  absolute_timeout_hours: number;
+  updated_at: string;
+}
+
+/** `PATCH /api/v1/tenancy/session-settings` request body — both fields
+ * optional (partial update), but out-of-bounds values 400 with RFC-7807
+ * field errors (`problem.errors.idle_timeout_minutes` etc). */
+export interface SessionSettingsUpdate {
+  idle_timeout_minutes?: number;
+  absolute_timeout_hours?: number;
+}
+
 // --- Audit log (T5.3/T5.6; `apps.audit.api`/`apps.audit.serializers`) —
 // `docs/api-and-ui.md`: `GET /api/v1/audit` ("Audit log (scoped)"),
 // "Audit Log" screen: "Filterable immutable history".

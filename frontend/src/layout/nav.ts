@@ -5,6 +5,7 @@ import {
   IconCalendarEvent,
   IconCategory,
   IconClipboardList,
+  IconClock,
   IconFileImport,
   IconHistory,
   IconLayoutDashboard,
@@ -156,6 +157,17 @@ export const NAV_ITEMS: NavItem[] = [
     // read-only for non-managers), the server gates the GET itself on
     // `tenant.manage` (`EmailSettingsScreen` doc comment) — there is no
     // read-only view for a non-admin, so hide the nav entry entirely.
+    hidden: (me) => !hasPermission(me, TENANT_MANAGE),
+    section: "Admin",
+  },
+  {
+    to: "/admin/session-settings",
+    label: "Session Settings",
+    icon: IconClock,
+    testId: "nav-admin-session-settings",
+    // Same reasoning as Email Settings above: the server gates the GET
+    // itself on `tenant.manage`, so there is no read-only view for a
+    // non-admin — hide the nav entry entirely rather than show a dead link.
     hidden: (me) => !hasPermission(me, TENANT_MANAGE),
     section: "Admin",
   },

@@ -16,6 +16,29 @@ added here** so the displayed version never drifts from the changelog.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-30
+
+### Added
+
+- **Per-tenant session idle/absolute timeout, admin-configurable** — sessions
+  no longer live for a flat 7 days regardless of activity. A new
+  `SessionSettings` table (one row per tenant, RLS-protected) holds
+  `idle_timeout_minutes` (5–480, default 60) and `absolute_timeout_hours`
+  (1–168, default 24); `SessionTimeoutMiddleware` checks both on every
+  request and force-expires (session flush + `401 session-expired`
+  problem+json) a session that's gone idle or outlived its absolute cap,
+  regardless of activity. Tenant admins adjust both values from a new
+  Admin → Session Settings screen (`GET/PATCH /api/v1/tenancy/session-settings`,
+  gated on `tenant.manage`, audited as `session_settings.update` on every
+  change) instead of an env var. The per-tenant bounds lookup is cached
+  (60s TTL, invalidated on save) to add at most one extra query per tenant
+  per minute rather than per request. Known, accepted gap: Django-admin
+  (`/django-admin/`) superuser sessions aren't covered by this feature (they
+  never carry the app's tenant session key this middleware keys off of) and
+  still rely solely on the flat `SESSION_COOKIE_AGE` (kept at 7 days,
+  specifically so it can't silently outlive this feature's own 7-day ceiling)
+  — see `docs/risks.md` §3.
+
 ## [0.11.0] - 2026-07-28
 
 ### Added

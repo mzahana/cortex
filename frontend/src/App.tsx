@@ -23,6 +23,7 @@ import { LabelsScreen } from "./screens/labels/LabelsScreen";
 import { ImportScreen } from "./screens/import/ImportScreen";
 import { UsersRolesScreen } from "./screens/admin/UsersRolesScreen";
 import { EmailSettingsScreen } from "./screens/admin/EmailSettingsScreen";
+import { SessionSettingsScreen } from "./screens/admin/SessionSettingsScreen";
 import { ProjectsListScreen } from "./screens/projects/ProjectsListScreen";
 import { ProjectHubScreen } from "./screens/projects/ProjectHubScreen";
 
@@ -289,6 +290,14 @@ function AppRoutes() {
         element={
           <RequireAuth>
             <EmailSettingsScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/admin/session-settings"
+        element={
+          <RequireAuth>
+            <SessionSettingsScreen />
           </RequireAuth>
         }
       />

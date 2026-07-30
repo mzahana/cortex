@@ -47,6 +47,7 @@ from apps.rbac.api import MembershipViewSet, RoleViewSet
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
 from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
+from apps.tenancy.api import SessionSettingsView
 
 router = DefaultRouter()
 router.register("categories", CategoryViewSet, basename="category")
@@ -153,6 +154,15 @@ urlpatterns = [
         "api/v1/notifications/email-settings/test",
         EmailSettingsTestView.as_view(),
         name="email-settings-test",
+    ),
+    # Per-tenant session idle/absolute timeout policy
+    # (`apps.tenancy.models.SessionSettings`): a singleton resource, plain
+    # `path()` (not router-registered — same reasoning as `email-settings`
+    # above: not a `list`/`create`-shaped CRUD collection).
+    path(
+        "api/v1/tenancy/session-settings",
+        SessionSettingsView.as_view(),
+        name="session-settings",
     ),
     path("api/v1/labels/generate", LabelGenerateView.as_view(), name="label-generate"),
     path("api/v1/jobs/<uuid:job_id>", JobRetrieveView.as_view(), name="job-detail"),

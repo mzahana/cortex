@@ -334,6 +334,14 @@ class TestQueryBudget:
             CategoryFactory(tenant=tenant, name=f"Compute Child {i}", parent=parent)
 
         _login(client, tenant, admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache
+        # (a cache-miss `get_or_create` on the FIRST authenticated request
+        # only; `conftest.py::_clear_default_cache` clears it before every
+        # test) before the measured request below, so the measured request
+        # doesn't pay that one-time cost -- otherwise it would undermine the
+        # "no N+1" guarantee this test protects for a reason unrelated to row
+        # count.
+        client.get("/api/v1/categories/")
         # Bounded regardless of row count: permission check + count + page of
         # rows (select_related parent, prefetch field_defs) — no N+1 per row.
         with django_assert_max_num_queries(15):

@@ -9,6 +9,7 @@ this is what makes tenant isolation centralized rather than per-view
 
 from __future__ import annotations
 
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from .managers import TenantScopedManager
@@ -53,3 +54,37 @@ class TenantScopedModel(models.Model):
 
     class Meta:
         abstract = True
+
+
+class SessionSettings(TenantScopedModel):
+    """Per-tenant session expiry policy (idle + absolute), admin-editable from
+    the UI instead of only via `SESSION_COOKIE_AGE`. Exactly one row per tenant,
+    enforced by the ``UniqueConstraint`` on ``tenant`` below.
+
+    Lives in `tenancy` (not `notifications`, despite mirroring `EmailSettings`)
+    because it is core session policy read by `apps.tenancy.middleware` — the
+    other direction would invert the app dependency.
+
+    Both fields are deliberately required and bounded: there is no "disable the
+    timeout" option, and the ceilings cap the exposure window of a stolen
+    session.
+    """
+
+    idle_timeout_minutes = models.PositiveIntegerField(
+        default=60, validators=[MinValueValidator(5), MaxValueValidator(480)]
+    )
+    absolute_timeout_hours = models.PositiveIntegerField(
+        default=24, validators=[MinValueValidator(1), MaxValueValidator(168)]
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "tenancy_session_settings"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant"], name="tenancy_session_settings_one_per_tenant"
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"{self.tenant_id}:{self.idle_timeout_minutes}m/{self.absolute_timeout_hours}h"

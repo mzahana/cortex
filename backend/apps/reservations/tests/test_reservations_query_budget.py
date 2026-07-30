@@ -58,6 +58,14 @@ class TestQueryBudget:
                 )
 
         _login(client, tenant, admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings`
+        # cache (a cache-miss `get_or_create` on the FIRST authenticated
+        # request only; `conftest.py::_clear_default_cache` clears it before
+        # every test) before the two measured blocks below, so neither pays
+        # that one-time cost -- otherwise it would make the first block
+        # artificially larger and break the "must not scale with row count"
+        # equality assertion for a reason unrelated to reservation count.
+        client.get("/api/v1/reservations/")
         with django_assert_max_num_queries(20) as ctx_small:
             response = client.get("/api/v1/reservations/")
         assert response.status_code == 200, response.content
@@ -104,6 +112,12 @@ class TestQueryBudget:
                 )
 
         _login(client, tenant, admin)
+        # Warm the per-tenant `SessionSettings` cache before the two measured
+        # blocks below (see the matching comment in
+        # `test_reservations_list_query_count_does_not_grow_with_row_count`
+        # above) so the one-time cache-miss cost doesn't skew this
+        # "must not scale with row count" equality assertion.
+        client.get("/api/v1/checkouts/")
         with django_assert_max_num_queries(20) as ctx_small:
             response = client.get("/api/v1/checkouts/")
         assert response.status_code == 200, response.content

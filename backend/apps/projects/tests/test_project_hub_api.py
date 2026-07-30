@@ -127,6 +127,15 @@ class TestBudgetRollup:
             ExpenseFactory(tenant=tenant, project=project, category=category, amount="10.00")
 
         _login(client, tenant, admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings`
+        # cache (a cache-miss `get_or_create` on the FIRST authenticated
+        # request only; `conftest.py::_clear_default_cache` clears it before
+        # every test) BEFORE the two measured blocks below, so neither one
+        # pays that one-time cost -- otherwise it would make `small_ctx`
+        # artificially larger than `big_ctx` and break the "must not scale"
+        # equality assertion for a reason that has nothing to do with
+        # expense-category count.
+        client.get(f"/api/v1/projects/{project.id}/")
         with django_assert_max_num_queries(30) as small_ctx:
             response = client.get(f"/api/v1/projects/{project.id}/")
         assert response.status_code == 200, response.content
@@ -222,6 +231,12 @@ class TestFinancialFieldsGate:
         for i in range(2):
             ProjectFactory(tenant=tenant, name=f"Small Project {i}", budget_total=Decimal("1.00"))
         _login(client, tenant, admin)
+        # Warm the per-tenant `SessionSettings` cache before the two measured
+        # blocks below (see the matching comment in
+        # `TestBudgetRollup.test_rollup_query_count_is_independent_of_category_count`
+        # above) so the one-time cache-miss cost doesn't skew this
+        # "must not scale with project count" equality assertion.
+        client.get("/api/v1/projects/")
 
         with django_assert_max_num_queries(30) as small_ctx:
             response = client.get("/api/v1/projects/")

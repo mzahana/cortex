@@ -69,6 +69,15 @@ class TestDashboardSummaryPerf10k:
     ):
         _login(client, perf_corpus.tenant, perf_corpus.admin)
 
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache
+        # (a cache-miss `get_or_create` on the FIRST authenticated request
+        # only; `conftest.py::_clear_default_cache` clears it before every
+        # test) with a throwaway request, so it doesn't skew the measured
+        # block below -- this also warms the dashboard summary cache, but
+        # that's immediately invalidated again right after, so the measured
+        # request below is still a genuine cache-miss for the dashboard data.
+        client.get(URL)
+
         # Cold (cache-miss) request: still bounded and under budget. Bumps
         # THIS tenant's dashboard cache version (not a blanket `cache.clear()`
         # -- that would also flush the session cache, since sessions live in

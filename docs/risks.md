@@ -31,6 +31,18 @@
   now; printer support deferred to Phase 3.
 - **App login only over Cloudflare Access** (your choice) — lower member friction;
   Access remains a documented toggle for admin routes.
+- **Per-tenant session idle/absolute timeout covers app sessions only, not
+  Django-admin** (your choice) — `SessionTimeoutMiddleware`
+  (`apps.tenancy.middleware`) keys off a `tenant_id` stamped into the session
+  by `LoginView`; `/django-admin/` sessions never get that key, so superuser
+  admin sessions still rely solely on the flat 7-day `SESSION_COOKIE_AGE`
+  with no idle check at all. Deliberate: rather than build a parallel
+  enforcement path for non-tenant sessions, `SESSION_COOKIE_AGE`'s ceiling
+  was lowered from 30d to 7d to match the app-level feature's 168h max
+  absolute timeout. Flagged here so this isn't rediscovered as a surprise
+  next time someone touches auth/session code — see
+  `docs/deployment-runbook.md` §3b for the operational invariant this
+  creates.
 
 ## 3. Open questions / decisions I need from you
 

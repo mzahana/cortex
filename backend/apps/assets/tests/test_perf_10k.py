@@ -146,6 +146,12 @@ class TestPerfListPagination:
         self, client, perf_corpus, django_assert_max_num_queries
     ):
         _login(client, perf_corpus.tenant, perf_corpus.admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache
+        # (a cache-miss `get_or_create` on the FIRST authenticated request
+        # only; `conftest.py::_clear_default_cache` clears it before every
+        # test) before the measured block below, so it doesn't pay that
+        # one-time cost.
+        client.get("/api/v1/assets/")
         # Query-count budget: ONE request's worth of queries (not the whole
         # N_TIMING_RUNS timing loop below, which would multiply the count by
         # N_TIMING_RUNS and assert the wrong thing).
@@ -178,6 +184,14 @@ class TestPerfListPagination:
         self, client, perf_corpus, django_assert_max_num_queries
     ):
         _login(client, perf_corpus.tenant, perf_corpus.admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings`
+        # cache (a cache-miss `get_or_create` on the FIRST authenticated
+        # request only; `conftest.py::_clear_default_cache` clears it before
+        # every test) before either measured block below, so neither pays
+        # that one-time cost -- otherwise it would skew the
+        # `abs(small_n - large_n)` comparison for a reason that has nothing
+        # to do with page size.
+        client.get("/api/v1/assets/?page_size=1")
         with django_assert_max_num_queries(20) as ctx_small:
             resp_small = client.get("/api/v1/assets/?page_size=1")
         assert resp_small.status_code == 200
@@ -211,6 +225,10 @@ class TestPerfSearch:
 
     def test_search_under_budget(self, client, perf_corpus, django_assert_max_num_queries):
         _login(client, perf_corpus.tenant, perf_corpus.admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache
+        # before the measured block (see
+        # `test_default_page_list_under_budget` above).
+        client.get(f"/api/v1/assets/?search={self.SEARCH_TERM}")
         with django_assert_max_num_queries(20):
             resp = client.get(f"/api/v1/assets/?search={self.SEARCH_TERM}")
         assert resp.status_code == 200
@@ -236,6 +254,10 @@ class TestPerfSearch:
     def test_fuzzy_search_under_budget(self, client, perf_corpus, django_assert_max_num_queries):
         """A misspelled term exercising the pg_trgm fallback branch."""
         _login(client, perf_corpus.tenant, perf_corpus.admin)
+        # Warm `SessionTimeoutMiddleware`'s per-tenant `SessionSettings` cache
+        # before the measured block (see
+        # `test_default_page_list_under_budget` above).
+        client.get("/api/v1/assets/?search=Workstaton")
         with django_assert_max_num_queries(20):
             resp = client.get("/api/v1/assets/?search=Workstaton")
         assert resp.status_code == 200

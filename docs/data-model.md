@@ -105,6 +105,8 @@ erDiagram
 - **AuditLog** — append-only, immutable: `id, tenant_id, actor_id, action, entity_type, entity_id, before(jsonb), after(jsonb), ip, created_at`. Written for every movement, stock change, reservation, and admin action. No update/delete permitted (enforced by app + DB trigger).
 - **NotificationPref** — `user_id, event_type, email_enabled(bool)`.
 - **EmailLog** — `id, tenant_id, user_id, event_type, provider, provider_message_id, status(queued|sent|failed|bounced), error, created_at`.
+- **EmailSettings** — per-tenant email-provider config, admin-editable from the UI instead of only via env vars: `id, tenant_id, provider(console|brevo), sender_email, reply_to, api_key_encrypted, api_key_last4, updated_at`. Exactly one row per tenant (`UniqueConstraint` on `tenant`, lazy `get_or_create`); tenant-owned, RLS-protected (`notifications_email_settings`).
+- **SessionSettings** — per-tenant session idle/absolute timeout policy, admin-editable from the UI instead of only via the flat `SESSION_COOKIE_AGE`: `id, tenant_id, idle_timeout_minutes(5–480, default 60), absolute_timeout_hours(1–168, default 24), updated_at`. Exactly one row per tenant (`UniqueConstraint` on `tenant`, lazy `get_or_create`); tenant-owned, RLS-protected (`tenancy_session_settings`). Lives in `tenancy` (not `notifications`) since it's read by `apps.tenancy.middleware.SessionTimeoutMiddleware`. Enforcement covers app sessions only — Django-admin (`/django-admin/`) sessions are not stamped with a tenant id and so are not covered (see `deployment-runbook.md`).
 
 ## 3. Key indexes (performance)
 
