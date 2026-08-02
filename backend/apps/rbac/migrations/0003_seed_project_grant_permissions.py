@@ -52,7 +52,9 @@ def seed(apps, schema_editor):
     from apps.rbac.seed import seed_roles_for_tenant
     from apps.tenancy.models import Tenant
 
-    for tenant in Tenant.objects.all():
+    # `.only("id")` — same fresh-database hazard as `0002`'s seed loop above
+    # (concrete model + columns a later `tenancy` migration adds).
+    for tenant in Tenant.objects.only("id"):
         seed_roles_for_tenant(
             tenant=tenant,
             role_model=Role,

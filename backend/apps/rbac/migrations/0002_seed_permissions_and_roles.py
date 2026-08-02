@@ -33,7 +33,17 @@ def seed(apps, schema_editor):
 
     seed_permissions(Permission)
 
-    for tenant in Tenant.objects.all():
+    # `.only("id")` is load-bearing, not an optimization: this migration uses
+    # the CONCRETE `Tenant` model (see the module docstring), so a plain
+    # `Tenant.objects.all()` would `SELECT` every column the model has *today*
+    # — including any added by a LATER `tenancy` migration that, on a fresh
+    # database, has not run yet (this really broke `migrate` from scratch when
+    # `tenancy.0007` added the branding columns). Selecting only the primary
+    # key keeps this seed independent of the table's future shape, while still
+    # yielding real `Tenant` instances (`seed_roles_for_tenant` assigns them to
+    # a concrete `Role.tenant` FK, which a historical model instance can't
+    # satisfy).
+    for tenant in Tenant.objects.only("id"):
         seed_roles_for_tenant(
             tenant=tenant,
             role_model=Role,

@@ -40,7 +40,11 @@ def seed(apps, schema_editor):
     from apps.projects.models import ExpenseCategory
     from apps.tenancy.models import Tenant
 
-    for tenant in Tenant.objects.all():
+    # `.only("id")` for the same reason as `rbac.0002_seed_permissions_and_roles`:
+    # this seed uses the CONCRETE `Tenant` model, so selecting every column
+    # would break a from-scratch `migrate` whenever a later `tenancy`
+    # migration adds one (it did — `tenancy.0007`'s branding columns).
+    for tenant in Tenant.objects.only("id"):
         for name in DEFAULT_CATEGORIES:
             ExpenseCategory.all_objects.get_or_create(
                 tenant=tenant,
