@@ -1,9 +1,10 @@
-# Production overlay (T6.3) — layers on top of the base `docker-compose.yml`,
-# which is already written prod-shape (pinned digests, mem_limits matching
-# docs/deployment.md §1, `restart: unless-stopped`, one shared web/worker
-# image, beat as its own service). This file only tightens the handful of
-# things that legitimately differ between a local/dev run of the base file
-# and a real internet-facing deploy:
+# Production overlay (T6.3, updated for the registry-image pull-based deploy)
+# — layers on top of the base `docker-compose.yml`, which is already written
+# prod-shape (pinned digests, mem_limits matching docs/deployment.md §1,
+# `restart: unless-stopped`, one shared web/worker image, beat as its own
+# service). This file tightens the handful of things that legitimately
+# differ between a local/dev run of the base file and a real internet-facing
+# deploy:
 #
 #   1. Forces `DJANGO_SETTINGS_MODULE=config.settings.prod` on every
 #      Django-running service (web/worker/beat/migrate) as defense-in-depth,
@@ -21,15 +22,30 @@
 #   3. Pins Celery worker concurrency (already 2 in the base file — repeated
 #      here for a single source of truth on the prod command) and confirms
 #      `beat` stays a separate, already-present service (not re-created).
-#   4. Disables the local `build:` fallback implicitly by requiring
-#      `cortex-app:local` to already exist (`docker compose build` once, then
-#      `up --no-build` for the actual deploy) — see hardening notes on the
-#      registry-image upgrade path; no change needed here since the base
-#      file's `image:` tag is reused as-is.
+#   4. Points `migrate`/`web`/`worker`/`beat`/`nginx` at the public Docker Hub
+#      images CI now builds and pushes (`.github/workflows/ci.yml`'s
+#      `push-images` job, gated to `push` on `main`) — `mzahana/cortex` (the
+#      shared web/worker/beat/migrate image) and `mzahana/cortex-nginx` —
+#      instead of the base file's locally-built `cortex-app:local`/
+#      `cortex-nginx:local`. Tag is selectable via `CORTEX_IMAGE_TAG`
+#      (defaults to `latest`; CI also pushes the short git SHA, e.g.
+#      `CORTEX_IMAGE_TAG=a1b2c3d`, for pinning a specific deploy). The base
+#      file's `build:` key is removed here (`!reset null`, a Compose Spec
+#      merge override, requires Compose v2.24+ — this repo uses v5.1.1) so
+#      `docker compose ... pull && ... up -d` on the NAS never invokes a
+#      local build at all; local dev with `docker-compose.yml` alone is
+#      untouched and still builds `cortex-app:local`/`cortex-nginx:local` as
+#      before.
 #
-# Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+# Usage (NAS / real deploy — pulls, never builds):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# To pin a specific build instead of `latest`:
+#   CORTEX_IMAGE_TAG=<short-sha> docker compose -f docker-compose.yml \
+#     -f docker-compose.prod.yml pull
+#   CORTEX_IMAGE_TAG=<short-sha> docker compose -f docker-compose.yml \
+#     -f docker-compose.prod.yml up -d
 #
 # Nothing here changes mem_limits, restart policy, healthchecks, volumes, or
 # pinned image digests — those are already correct in the base file per
@@ -41,10 +57,14 @@ x-prod-django-env: &prod-django-env
 
 services:
   migrate:
+    build: !reset null
+    image: mzahana/cortex:${CORTEX_IMAGE_TAG:-latest}
     environment:
       <<: *prod-django-env
 
   web:
+    build: !reset null
+    image: mzahana/cortex:${CORTEX_IMAGE_TAG:-latest}
     environment:
       <<: *prod-django-env
     command: >
@@ -56,13 +76,21 @@ services:
       --error-logfile -
 
   worker:
+    build: !reset null
+    image: mzahana/cortex:${CORTEX_IMAGE_TAG:-latest}
     environment:
       <<: *prod-django-env
     command: >
       celery -A config worker --loglevel=info --concurrency=2
 
   beat:
+    build: !reset null
+    image: mzahana/cortex:${CORTEX_IMAGE_TAG:-latest}
     environment:
       <<: *prod-django-env
     command: >
       celery -A config beat --loglevel=info --pidfile=/tmp/celerybeat.pid
+
+  nginx:
+    build: !reset null
+    image: mzahana/cortex-nginx:${CORTEX_IMAGE_TAG:-latest}

@@ -48,12 +48,20 @@ disk. All app config via **environment** (12-factor); no host assumptions.
 `docker-compose.yml` alone is already written prod-shape (pinned digests,
 these `mem_limit`s, `restart: unless-stopped`, nginx security headers). A
 **`docker-compose.prod.yml`** overlay (T6.3) layers on top for the real deploy —
-forces `DJANGO_SETTINGS_MODULE=config.settings.prod` as defense-in-depth and
-makes the gunicorn worker count explicit (`GUNICORN_WORKERS`, default 2, see §9):
+forces `DJANGO_SETTINGS_MODULE=config.settings.prod` as defense-in-depth,
+makes the gunicorn worker count explicit (`GUNICORN_WORKERS`, default 2, see §9),
+and (as of the CI registry-image work) points `web`/`worker`/`beat`/`migrate`/
+`nginx` at the public images CI builds and pushes to Docker Hub —
+`mzahana/cortex` and `mzahana/cortex-nginx`, tagged `latest` and the short git
+SHA via `CORTEX_IMAGE_TAG` — instead of building locally on the NAS:
 
 ```
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
+
+`docker-compose.yml` used alone (no prod overlay — local dev) is unaffected and
+still builds `cortex-app:local`/`cortex-nginx:local` from source as before.
 
 ### Volumes
 - `pgdata` → Postgres data (on a Synology shared folder).
@@ -67,8 +75,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 1. **Install Container Manager** (DSM Package Center).
 2. **Create a shared folder** `docker/cortex` with subfolders `pgdata`, `media`,
    `secrets`. Put `.env` in `secrets` (permissions restricted to the container user).
-3. **Copy the project** (compose file + built images, or a private registry
-   reference) to `docker/cortex`.
+3. **Copy the compose files** (`docker-compose.yml`, `docker-compose.prod.yml`) to
+   `docker/cortex`. No source checkout or local image build is required for the
+   real deploy — CI already builds and pushes the public
+   `mzahana/cortex`/`mzahana/cortex-nginx` images to Docker Hub, and the prod
+   overlay points at them (`docker compose ... pull`); the NAS only ever pulls.
 4. In Container Manager → **Project → Create**, point at the `docker-compose.yml`,
    set the env-file path. Container Manager parses compose and manages the stack.
 5. **Start** the project. `migrate` runs automatically as a one-off
