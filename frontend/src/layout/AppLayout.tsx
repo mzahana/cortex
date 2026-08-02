@@ -6,6 +6,7 @@ import {
   Box,
   Drawer,
   Group,
+  Image,
   NavLink,
   ScrollArea,
   Stack,
@@ -17,8 +18,64 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import { IconDots, IconLogout } from "@tabler/icons-react";
 import { useLocation, useNavigate } from "react-router-dom";
+import type { Tenant } from "../api/types";
 import { useAuth } from "../hooks/useAuth";
 import { MOBILE_MORE_ITEMS, MOBILE_TABS, NAV_ITEMS, type NavItem } from "./nav";
+
+/** The lab's uploaded logo, falling back to its initials in a brand-colored
+ * tile when none is set (`Tenant.logo_url === null`). Rendered in the desktop
+ * sidebar brand block and the mobile top bar, so the lab a user is signed
+ * into is visible on every screen. */
+function TenantLogo({
+  tenant,
+  size,
+  ...rest
+}: {
+  tenant?: Tenant | null;
+  size: number;
+} & Record<string, unknown>) {
+  const initials = (tenant?.name ?? "Cortex")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+
+  if (tenant?.logo_url) {
+    return (
+      <Image
+        src={tenant.logo_url}
+        alt={`${tenant.name} logo`}
+        w={size}
+        h={size}
+        fit="contain"
+        style={{ flexShrink: 0, borderRadius: "var(--mantine-radius-sm)" }}
+        {...rest}
+      />
+    );
+  }
+
+  return (
+    <Box
+      w={size}
+      h={size}
+      bg="brand.6"
+      style={{
+        borderRadius: "var(--mantine-radius-md)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "white",
+        fontWeight: 800,
+        fontSize: Math.round(size * 0.4),
+        flexShrink: 0,
+      }}
+      {...rest}
+    >
+      {initials || "CX"}
+    </Box>
+  );
+}
 
 function isNavItemActive(pathname: string, to: string): boolean {
   if (to === "/") return pathname === "/";
@@ -110,13 +167,16 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
               </ActionIcon>
             )}
             {isMobile && !backTo && (
-              <Text fw={800} c="brand" size="sm" style={{ letterSpacing: 0.4 }}>
-                CORTEX
-              </Text>
+              <TenantLogo tenant={me?.tenant} size={28} data-testid="header-tenant-logo" />
             )}
-            <Title order={4} lineClamp={1} style={{ minWidth: 0 }}>
-              {title}
-            </Title>
+            <Stack gap={0} style={{ minWidth: 0 }}>
+              <Title order={4} lineClamp={1} style={{ minWidth: 0 }}>
+                {title}
+              </Title>
+              <Text size="xs" c="dimmed" lineClamp={1} data-testid="header-tenant-name">
+                {me?.tenant.name}
+              </Text>
+            </Stack>
           </Group>
           {actions && (
             <Group gap="xs" wrap="nowrap">
@@ -130,30 +190,14 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
         <AppShell.Navbar p="md">
           <Stack justify="space-between" h="100%" gap="md">
             <Stack gap="lg">
-              <Group gap="xs" px={4}>
-                <Box
-                  w={32}
-                  h={32}
-                  bg="brand.6"
-                  style={{
-                    borderRadius: "var(--mantine-radius-md)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "white",
-                    fontWeight: 800,
-                    fontSize: 14,
-                    flexShrink: 0,
-                  }}
-                >
-                  CX
-                </Box>
-                <Stack gap={0}>
-                  <Text fw={800} size="sm" style={{ letterSpacing: 0.4 }}>
-                    CORTEX
+              <Group gap="sm" px={4} wrap="nowrap" data-testid="sidebar-brand">
+                <TenantLogo tenant={me?.tenant} size={40} />
+                <Stack gap={0} style={{ minWidth: 0 }}>
+                  <Text fw={800} size="sm" lineClamp={2} data-testid="sidebar-tenant-name">
+                    {me?.tenant.name ?? "Cortex"}
                   </Text>
                   <Text size="xs" c="dimmed">
-                    Lab Inventory
+                    Cortex · Lab Inventory
                   </Text>
                 </Stack>
               </Group>
@@ -204,11 +248,11 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
               >
                 <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
                   <Avatar radius="xl" color="brand" size="sm">
-                    {(me?.name ?? "?").slice(0, 1).toUpperCase()}
+                    {(me?.display_name ?? "?").slice(0, 1).toUpperCase()}
                   </Avatar>
                   <Stack gap={0} style={{ minWidth: 0 }}>
                     <Text size="sm" fw={600} lineClamp={1} data-testid="me-name">
-                      {me?.name}
+                      {me?.display_name}
                     </Text>
                     <Text size="xs" c="dimmed" lineClamp={1} data-testid="me-tenant">
                       {me?.tenant.name}
@@ -276,11 +320,11 @@ export function AppLayout({ title, actions, backTo, children }: AppLayoutProps) 
             >
               <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
                 <Avatar radius="xl" color="brand" size="sm">
-                  {(me?.name ?? "?").slice(0, 1).toUpperCase()}
+                  {(me?.display_name ?? "?").slice(0, 1).toUpperCase()}
                 </Avatar>
                 <Stack gap={0} style={{ minWidth: 0 }}>
                   <Text size="sm" fw={600} lineClamp={1} data-testid="me-name">
-                    {me?.name}
+                    {me?.display_name}
                   </Text>
                   <Text size="xs" c="dimmed" lineClamp={1} data-testid="me-tenant">
                     {me?.tenant.name}

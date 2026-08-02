@@ -35,7 +35,9 @@ export function DashboardScreen() {
     <AppLayout title="Dashboard">
       <Stack gap="lg" data-testid="home-shell">
         <Stack gap={0}>
-          <Title order={3}>Welcome back, {me.name.split(" ")[0]}</Title>
+          {/* `display_name` is the user's own name once they set one in
+              Account (falling back to the email only when they haven't). */}
+          <Title order={3}>Welcome back, {me.display_name.split(" ")[0]}</Title>
           <Text c="dimmed" size="sm">
             Here&apos;s what&apos;s happening across {me.tenant.name} right now.
           </Text>

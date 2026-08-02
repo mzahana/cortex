@@ -12,6 +12,7 @@ import {
   IconMail,
   IconMapPin,
   IconPackages,
+  IconPhoto,
   IconPrinter,
   IconQrcode,
   IconUserCircle,
@@ -146,6 +147,17 @@ export const NAV_ITEMS: NavItem[] = [
     icon: IconUsers,
     testId: "nav-admin-users",
     hidden: (me) => !hasUserManagePermission(me),
+    section: "Admin",
+  },
+  {
+    to: "/admin/branding",
+    label: "Lab Branding",
+    icon: IconPhoto,
+    testId: "nav-admin-branding",
+    // The GET is open to any member (the logo is chrome everyone sees), but
+    // only an admin can change it — so this entry is hidden from non-admins
+    // rather than showing them a read-only page they can't act on.
+    hidden: (me) => !hasPermission(me, TENANT_MANAGE),
     section: "Admin",
   },
   {

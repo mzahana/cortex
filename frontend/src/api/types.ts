@@ -9,6 +9,21 @@ export interface Tenant {
   id: number;
   slug: string;
   name: string;
+  /** `/media/<key>` URL of the lab's uploaded logo, or `null` when none is
+   * set (the UI falls back to the lab's initials). Set from Admin ->
+   * Lab Branding (`POST /api/v1/tenancy/logo`). */
+  logo_url: string | null;
+}
+
+/** `GET/POST/DELETE /api/v1/tenancy/logo` response — the lab's branding as
+ * the UI shows it. */
+export interface TenantBranding {
+  id: number;
+  slug: string;
+  name: string;
+  logo_url: string | null;
+  logo_filename: string;
+  logo_updated_at: string | null;
 }
 
 /** One `Membership` row as returned inside `/me`. Tenant-wide memberships
@@ -27,7 +42,12 @@ export interface MembershipSummary {
 export interface Me {
   id: number;
   email: string;
+  /** The RAW stored name — may be `""` for a user who has never set one.
+   * Use `display_name` for anything rendered; this field exists so the
+   * Account form round-trips exactly what is stored. */
   name: string;
+  /** What to render: `name` when set, otherwise the email. */
+  display_name: string;
   tenant: Tenant;
   memberships: MembershipSummary[];
   /** Effective permission keys on the tenant's general pool (project=None):
@@ -45,6 +65,13 @@ export interface LoginRequest {
   tenant: string;
   email: string;
   password: string;
+}
+
+/** `PATCH /api/v1/me` request body — self-service profile edit. `name` is
+ * the only self-settable field (`apps.accounts.serializers.UpdateMeSerializer`
+ * is an explicit allowlist); the response is the full `Me` shape. */
+export interface UpdateMeRequest {
+  name: string;
 }
 
 /** `POST /api/v1/me/password` request body (`apps.accounts.serializers.

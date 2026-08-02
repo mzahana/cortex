@@ -75,6 +75,8 @@ import type {
   StockTxnPayload,
   StockTxnResponse,
   Tag,
+  TenantBranding,
+  UpdateMeRequest,
 } from "./types";
 import { ApiError, type ProblemDetails } from "./problem";
 
@@ -223,6 +225,47 @@ export const api = {
   /** `GET /api/v1/me` — authenticated. Throws `ApiError` (401/403) if not. */
   async me(): Promise<Me> {
     return request<Me>("/me", { method: "GET" });
+  },
+
+  /** `PATCH /api/v1/me` — self-service profile edit (name). Returns the same
+   * body as `GET /me`, so callers can hand the result straight back to the
+   * auth context instead of re-fetching. */
+  async updateMe(payload: UpdateMeRequest): Promise<Me> {
+    return request<Me>("/me", { method: "PATCH", body: payload });
+  },
+
+  /** `GET /api/v1/tenancy/logo` — the lab's branding (name + logo URL).
+   * Readable by any signed-in member. */
+  async tenantBranding(): Promise<TenantBranding> {
+    return request<TenantBranding>("/tenancy/logo", { method: "GET" });
+  },
+
+  /** `POST /api/v1/tenancy/logo` — upload/replace the lab logo (multipart,
+   * same pattern as `uploadAssetAttachment`). Requires `tenant.manage`.
+   * PNG/JPEG/WebP, max 2 MB — the server rejects anything else with an
+   * RFC-7807 400 carrying `errors.file`. */
+  async uploadTenantLogo(file: File): Promise<TenantBranding> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const headers = new Headers();
+    const token = readCookie(CSRF_COOKIE_NAME);
+    if (token) headers.set(CSRF_HEADER_NAME, token);
+
+    const response = await fetch(`${API_BASE}/tenancy/logo`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: formData,
+    });
+    if (!response.ok) throw await toApiError(response);
+    return (await response.json()) as TenantBranding;
+  },
+
+  /** `DELETE /api/v1/tenancy/logo` — remove the lab logo (idempotent).
+   * Requires `tenant.manage`. */
+  async deleteTenantLogo(): Promise<TenantBranding> {
+    return request<TenantBranding>("/tenancy/logo", { method: "DELETE" });
   },
 
   /** `POST /api/v1/me/password` — self-service password change. `204` on
