@@ -318,34 +318,40 @@ Dockerfile`'s multi-stage build runs `npm ci && npm run build` against
 image at `docker compose build` time, so there is no separate `frontend/
 dist` folder to create or keep in sync on the NAS):
 
+CI (`.github/workflows/ci.yml`'s `push-images` job) already builds both
+images from `main` and pushes them, public, to Docker Hub:
+`mzahana/cortex` (the shared web/worker/beat/migrate image) and
+`mzahana/cortex-nginx` (nginx + the built PWA baked in), each tagged
+`latest` and the short git SHA. The prod overlay
+(`docker-compose.prod.yml`) points at these tags, so the **NAS only needs
+the two compose files** — no source checkout, no `docker/Dockerfile`,
+`docker/nginx/Dockerfile`, `backend/`, or `frontend/` required, and no
+local build ever runs on the NAS:
+
 ```
 /volume1/docker/cortex/                  <- project root; `cd` here to run docker compose
 ├── .env                                 <- secrets, mounted read-only (env_file: - .env)
-├── docker-compose.yml                   <- copied from the repo (or the whole repo checked out)
-├── docker-compose.prod.yml
-├── docker/
-│   ├── Dockerfile                       <- builds the shared web/worker image
-│   ├── nginx/
-│   │   ├── Dockerfile                   <- builds the frontend (Node stage) + nginx image
-│   │   ├── nginx.conf                   <- bind-mounted read-only into nginx
-│   │   └── default.conf                 <- bind-mounted read-only into nginx
-│   └── redis.conf                       <- bind-mounted read-only into redis
-├── frontend/                            <- source only; `docker compose build` runs
-│                                            `npm ci && npm run build` inside the nginx
-│                                            image, no local/NAS npm install needed
-└── backend/                             <- only needed if building the image on the NAS;
-                                             if you push cortex-app/cortex-nginx to a
-                                             registry instead, you only need the compose
-                                             files on the NAS itself
+├── docker-compose.yml                   <- copied from the repo
+├── docker-compose.prod.yml              <- points web/worker/beat/migrate/nginx at the
+│                                            public mzahana/cortex + mzahana/cortex-nginx
+│                                            images (CORTEX_IMAGE_TAG, default `latest`)
+└── docker/
+    ├── nginx/
+    │   ├── nginx.conf                   <- bind-mounted read-only into nginx
+    │   └── default.conf                 <- bind-mounted read-only into nginx
+    └── redis.conf                       <- bind-mounted read-only into redis
 ```
 
-The simplest, lowest-maintenance option for a DS220+: **check out the whole
-git repo** into `/volume1/docker/cortex` (via `git clone` over SSH, or
-`git pull` to update) rather than hand-copying individual files — that way
-`docker compose build` always has everything it needs (`docker/Dockerfile`,
-`docker/nginx/Dockerfile`, `backend/`, `frontend/`) and stays trivially
-updatable, including building the PWA bundle itself. Only `.env` needs to be
-created by hand on the NAS (never checked into git).
+The simplest, lowest-maintenance option: **copy just these files** (or check
+out the whole git repo, if you'd rather `git pull` to update the compose
+files/nginx config) into `/volume1/docker/cortex` — either way, `docker
+compose ... pull` fetches the actual application images from Docker Hub, so
+`docker/Dockerfile`, `docker/nginx/Dockerfile`, `backend/`, and `frontend/`
+are not needed on the NAS at all. Only `.env` needs to be created by hand on
+the NAS (never checked into git). (Building locally on the NAS from a full
+repo checkout — the old `docker compose ... build` path — still works if you
+ever need it, e.g. testing an unreleased change, but is no longer the
+documented default.)
 
 Named volumes (`pgdata`, `redis-data`, `media`, `static`) are created and
 managed by the Docker engine itself under
@@ -412,12 +418,19 @@ Docker Desktop/engine storage-location setting in DSM, not a compose change.
 
 Run from `/volume1/docker/cortex` (via SSH; Container Manager's own
 "Action → Build"/"Action → Start" buttons do the equivalent of steps 1-2
-below if you prefer the GUI):
+below if you prefer the GUI — despite the "Build" label, with the prod
+overlay's `image:` pointing at Docker Hub and no `build:` key present,
+this is actually a pull):
 
 ```bash
-# 1. Build the shared web/worker image (one image, two commands — see
-#    docker-compose.yml's `x-app-image` anchor) and pull the rest.
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+# 1. Pull the public app image (mzahana/cortex — shared web/worker/beat/
+#    migrate, one image, different commands — see docker-compose.yml's
+#    `x-app-image` anchor) and nginx image (mzahana/cortex-nginx) that CI
+#    already built and pushed, plus postgres/redis/cloudflared. Nothing is
+#    built on the NAS. Defaults to the `latest` tag; set CORTEX_IMAGE_TAG to
+#    pin a specific short-SHA build instead (see docker-compose.prod.yml's
+#    header comment).
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
 
 # 2. Bring the whole stack up. `migrate` runs as a one-off (owner DB role),
 #    exits 0, THEN web/worker/beat start (depends_on:
@@ -429,6 +442,13 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #    healthchecks to pass, especially postgres/web on first boot).
 docker compose ps
 ```
+
+**Updating a running deploy** (new image pushed to `main`): re-run steps 1-2
+above — `pull` fetches the new `latest` (or pinned `CORTEX_IMAGE_TAG`) image,
+then `up -d` recreates only the containers whose image actually changed
+(`restart` does **not** pick up a newly pulled image — see the root
+`CLAUDE.md` gotcha on `up -d` vs `restart`, which applies here exactly the
+same as it does to a locally built image).
 
 **Create the first tenant + admin user.** There is a demo-only seed command
 (`python manage.py seed_t0_6`) used in dev/CI that creates two throwaway
@@ -502,6 +522,122 @@ login-form fields per `docs/rbac.md`'s login payload shape.
   physically power-cycle), wait ~2-3 minutes, then `docker compose ps` (or
   Container Manager's UI) should show all 7 services `Up`/`healthy` again
   with no manual `docker compose up` needed.
+
+### 3e. Troubleshooting — issues actually hit on a real DS220+ deploy
+
+Everything below was hit and root-caused on a live Synology deploy (no `git`
+package, DSM 7/btrfs, Container Manager-installed Docker) — not theoretical.
+Check here before re-deriving these from scratch.
+
+**No `docker`/`docker compose` in the SSH user's PATH, and `docker compose`
+subcommand doesn't work.** DSM's SSH `PATH` for a regular user is just
+`/usr/bin:/bin:/usr/sbin:/sbin` — Container Manager's Docker binaries live
+under `/usr/local/bin/` (symlinked from
+`/var/packages/ContainerManager/target/usr/bin/`) and aren't on it. Always
+use the full path or `sudo -S` with an interactive-friendly wrapper. Also:
+this DSM's bundled Docker CLI doesn't understand `docker compose` as a
+subcommand (`docker: 'compose' is not a docker command`) — use the standalone
+`/usr/local/bin/docker-compose` binary (v2, same syntax) instead of `docker
+compose`. The SSH user (even in the `administrators` DSM group) also isn't in
+the `docker` Unix group by default, so every `docker`/`docker-compose`
+invocation needs `sudo`.
+
+**Bind-mounted/COPY'd files fail with `Permission denied` even though `ls
+-l`/`stat` shows `rwxrwxrwx`.** DSM's btrfs volumes mount with the `synoacl`
+option, which layers a Windows-style ACL (visible as the `+` after the mode
+bits in `ls -la`, e.g. `-rwxrwxrwx+`) that is **authoritative over the classic
+Unix mode bits** — `chmod`/`stat` output is misleading once an ACL is
+present. A freshly `git clone`d (or, here, rsync'd) tree can end up with an
+ACL that only grants specific DSM groups (e.g. `administrators`,
+`ContainerManager`) access, which a container's arbitrary runtime uid (the
+`redis` image's own user, or this repo's non-root `app` user) is never a
+member of → `redis-server` fails to read a bind-mounted `redis.conf`, or
+worse, a **file baked into an image via `COPY` can end up with mode `0000`**
+(unreadable even by its owner) if the ACL denied read access to the process
+that streamed the Docker build context, silently producing a broken image
+that only fails at container-*run* time (`python: can't open file
+'/app/manage.py': Permission denied`) — `docker compose build` itself
+reports success because BuildKit runs as root, and root's `CAP_DAC_OVERRIDE`
+masks the underlying zero-permission file until a non-root `USER app`
+process tries to read it later.
+- **Diagnose:** `sudo /usr/syno/bin/synoacltool -get <path>` — if it prints
+  ACL entries (not `It's Linux mode`), the ACL is what's actually governing
+  access, not the mode bits you see with `ls`/`stat`.
+- **Fix:** strip the ACL so plain Unix permissions apply, then re-set sane
+  permissions:
+  ```bash
+  sudo bash -c 'find /volume1/docker/cortex -exec /usr/syno/bin/synoacltool -del {} \;'
+  sudo chmod -R a+rX /volume1/docker/cortex
+  ```
+  (`synoacltool -del` on a path with no remaining ACL entries can leave a
+  synthetic single-entry ACL granting only `root` — re-run `-get` after to
+  confirm it settled on `It's Linux mode`, not a `root`-only ACE.)
+- **Rebuild any image after fixing host permissions** — a build done *before*
+  the fix baked the broken (mode-0000) files into the image layer;
+  `docker-compose build --no-cache <service>` is the reliable fix (a
+  cache-hit rebuild can reuse the broken `COPY` layer).
+
+**`.env`/config files can't be saved after stripping ACLs (`Permission
+denied` from an editor or File Station, even though the file itself is
+`777`).** Stripping a directory's ACL the way §3e above does removes DSM's
+grant of write access to anyone other than the directory's Unix *owner* —
+and directories created by DSM/Container Manager under a shared folder (as
+opposed to files you `git clone`/`rsync`'d in yourself) are often owned by
+`root:root` with mode `755`. A non-root admin can still *append* to an
+existing world-writable file directly (redirection doesn't need directory
+write permission), which is why `echo x >> .env` can succeed while a real
+editor's "write a new temp file, then rename over the original" save
+pattern fails outright (that needs to *create* a file in the directory).
+- **Diagnose:** `stat -c '%a %U %G %n' <dir>` — if the directory's owner
+  isn't the account you're editing as, and its mode doesn't grant that
+  account's group write, this is why.
+- **Fix:** `sudo chown -R <your-user>:<your-group> <path>` to reclaim
+  ownership after an ACL strip.
+
+**Cloudflare Tunnel logs `Provided Tunnel token is not valid.`** Usually
+means the token got truncated/mangled on copy-paste into `.env` (it's a long
+base64 JWT-like string — check `awk -F= '/^TUNNEL_TOKEN=/{print
+length($2)}' .env`, should be 200+ chars, no line wraps). After fixing
+`.env`, recreate just that one container —
+`docker-compose ... up -d cloudflared` — `restart` does **not** re-read
+`.env`. A successful connection logs `Registered tunnel connection ...
+protocol=quic` (4 entries, one per Cloudflare edge connection) — `TCP
+Connectivity ... FAIL` lines right above that in the log are a normal,
+harmless fallback-to-QUIC precheck, not an error.
+
+**App loads but every `/api/...` call fails ("Connection problem" in the
+PWA), and `nginx`'s access log shows the API paths returning `301` on every
+request.** This is `SECURE_SSL_REDIRECT` (on by default in
+`config/settings/prod.py`) redirect-looping, not a client-side bug — root
+cause is `docker/nginx/default.conf`'s `/api/` and `/django-admin/`
+locations originally sent `proxy_set_header X-Forwarded-Proto $scheme;`.
+`$scheme` is **nginx's own** connection scheme, and in this topology nginx is
+*only ever* reached over plain HTTP inside the compose network (`cloudflared`
+→ `nginx:80`) — TLS terminates at the Cloudflare edge, never at nginx. So
+`$scheme` is always `http`, Django's `SECURE_PROXY_SSL_HEADER` check
+(`X-Forwarded-Proto == "https"`) always fails, and every request gets
+redirected back to `https://<host>/<same-path>` forever. Fixed in
+`docker/nginx/default.conf` by hardcoding `proxy_set_header
+X-Forwarded-Proto https;` (this deployment topology guarantees TLS always
+terminated upstream — nginx has no `ports:` published, so it is genuinely
+unreachable except via the tunnel). If you're re-deriving this on a fork/
+different topology where nginx *can* legitimately receive plain HTTP directly
+from a browser (no tunnel in front), reverting to `$scheme`-based detection
+would be correct there instead.
+- **Diagnose:** `docker exec cortex-nginx-1 wget -S -O- http://localhost/api/v1/`
+  with a `Host:` header matching `ALLOWED_HOSTS` — a `301 Moved Permanently`
+  to the `https://` version of the same path (not a `200`/expected `403`
+  RFC-7807 body) confirms the redirect loop.
+- **After changing a bind-mounted nginx config file, `docker-compose up -d
+  nginx` alone does NOT apply it** — compose only recreates a container when
+  something in the *compose file itself* changed; it can't see that a
+  bind-mounted file's *contents* changed on disk, so the already-running
+  nginx process keeps serving the config it loaded at startup. Either
+  `docker exec cortex-nginx-1 nginx -s reload` (fast, no downtime) or `docker
+  compose restart nginx` (also fine here, unlike the `web`/`worker`/`beat`
+  image-rebuild case in the top-level `CLAUDE.md` gotchas — this is a config
+  reload, not a new image) after editing `docker/nginx/nginx.conf` or
+  `docker/nginx/default.conf`.
 
 ---
 
