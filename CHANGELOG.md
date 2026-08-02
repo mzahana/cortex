@@ -20,6 +20,39 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-02
+
+### Added
+
+- **Edit your own name** — the Account screen now has a Profile card that sets
+  your display name (`PATCH /api/v1/me`, audited as `user.profile_update`;
+  `name` is the only self-settable field). The Dashboard greeting, sidebar and
+  mobile "More" sheet show that name instead of your email address — `/me` now
+  returns both the raw `name` (what the form edits, may be empty) and
+  `display_name` (what the UI renders, falling back to the email until a name
+  is set).
+- **Lab identity in the app chrome** — the tenant's name is shown in the
+  desktop sidebar's brand block, under the page title in the top bar, and in
+  the mobile top bar, so it's clear which lab you're signed into on every
+  screen.
+- **Tenant logo, uploadable from the UI** — new Admin → **Lab Branding** screen
+  (`/admin/branding`, `tenant.manage`) uploads, replaces, or removes the lab's
+  logo, which then renders next to the lab name in the sidebar and mobile top
+  bar (initials shown as a fallback). Backed by
+  `GET/POST/DELETE /api/v1/tenancy/logo`: PNG/JPEG/WebP only (SVG deliberately
+  rejected — stored-XSS vector), 2 MB cap, bytes on the media volume with only
+  the storage key in the database, both mutations audited, and replacing a
+  logo deletes the previous file.
+
+### Fixed
+
+- **`migrate` from an empty database works again after any `tenancy` schema
+  change** — three seed data migrations (`rbac.0002`, `rbac.0003`,
+  `projects.0006`) iterate the *concrete* `Tenant` model, so they selected
+  columns that a later `tenancy` migration had not created yet and crashed a
+  from-scratch `migrate` the moment the branding columns were added. They now
+  select only the primary key.
+
 ## [0.13.0] - 2026-08-02
 
 ### Added
