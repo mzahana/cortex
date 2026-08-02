@@ -226,9 +226,7 @@ class TestSessionSettingsRLS:
             assert cur.fetchone() == (42,)
 
             set_app_role_tenant(app_role_connection, tenant_b.id)
-            cur.execute(
-                "SELECT id FROM tenancy_session_settings WHERE id = %s", [row_a.id]
-            )
+            cur.execute("SELECT id FROM tenancy_session_settings WHERE id = %s", [row_a.id])
             assert cur.fetchone() is None, (
                 "RLS did NOT block a cross-tenant SELECT on "
                 "tenancy_session_settings -- tenant B's GUC could see tenant "
@@ -236,9 +234,7 @@ class TestSessionSettingsRLS:
             )
 
             set_app_role_tenant(app_role_connection, None)
-            cur.execute(
-                "SELECT id FROM tenancy_session_settings WHERE id = %s", [row_a.id]
-            )
+            cur.execute("SELECT id FROM tenancy_session_settings WHERE id = %s", [row_a.id])
             assert cur.fetchone() is None, "RLS did NOT fail closed with no tenant in context."
 
     def test_app_layer_tenant_scoped_manager_hides_other_tenants_row(self):
@@ -342,9 +338,9 @@ class TestSessionSettingsAudit:
         )
         assert resp.status_code == 200, resp.content
 
-        entry = AuditLog.all_objects.filter(
-            tenant=tenant, action="session_settings.update"
-        ).latest("created_at")
+        entry = AuditLog.all_objects.filter(tenant=tenant, action="session_settings.update").latest(
+            "created_at"
+        )
         assert entry.before == {"idle_timeout_minutes": 60, "absolute_timeout_hours": 24}
         assert entry.after == {"idle_timeout_minutes": 90, "absolute_timeout_hours": 48}
 

@@ -48,7 +48,9 @@ class SessionSettingsView(generics.RetrieveUpdateAPIView):
         # makes this genuinely a singleton: the first GET/PATCH for a tenant
         # that has never touched this screen transparently creates the
         # default (60min idle / 24h absolute) row rather than 404ing.
-        obj, _ = SessionSettings.objects.get_or_create(tenant=self.request.user.tenant)
+        obj, _ = SessionSettings.objects.get_or_create(
+            tenant=self.request.user.tenant  # type: ignore[union-attr]
+        )
         self.check_object_permissions(self.request, obj)
         return obj
 

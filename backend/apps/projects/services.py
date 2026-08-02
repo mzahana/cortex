@@ -196,13 +196,14 @@ def _resize_and_encode_png(raw_image_bytes: bytes) -> bytes | None:
     from PIL import Image
 
     try:
-        with Image.open(BytesIO(raw_image_bytes)) as img:
-            img.load()
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGB")
+        with Image.open(BytesIO(raw_image_bytes)) as opened:
+            opened.load()
+            # `convert()` returns a plain Image, not the ImageFile `open()`
+            # gives back — bind it to its own name so the two stay distinct.
+            img = opened.convert("RGB") if opened.mode not in ("RGB", "RGBA") else opened
             img.thumbnail(
                 (_MAX_INVOICE_SCAN_DIMENSION_PX, _MAX_INVOICE_SCAN_DIMENSION_PX),
-                Image.LANCZOS,
+                Image.Resampling.LANCZOS,
             )
             out = BytesIO()
             img.save(out, format="PNG", optimize=True)

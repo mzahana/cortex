@@ -61,7 +61,9 @@ class TestProjectBudgetPatchAudit:
             entity_type="project",
             entity_id=str(project.id),
         )
+        assert entry.before is not None
         assert entry.before["budget_total"] == "1000.00"
+        assert entry.after is not None
         assert entry.after["budget_total"] == "1500.00"
         assert entry.actor_id == admin.id
 
@@ -107,6 +109,7 @@ class TestExpenseDeleteAudit:
             entity_type="expense",
             entity_id=str(expense.id),
         )
+        assert entry.before is not None
         assert entry.before["amount"] == "77.00"
         assert entry.after is None
         assert entry.actor_id == admin.id
@@ -137,6 +140,7 @@ class TestDocumentAudit:
             entity_id=str(document_id),
         )
         assert entry.before is None
+        assert entry.after is not None
         assert entry.after["filename"] == "proposal.pdf"
         assert entry.actor_id == admin.id
 
@@ -166,6 +170,7 @@ class TestDocumentAudit:
             entity_id=str(document_id),
             after__isnull=True,
         )
+        assert entry.before is not None
         assert entry.before["filename"] == "contract.pdf"
         assert entry.after is None
 
@@ -196,5 +201,6 @@ class TestInvoiceAttachmentAudit:
             entity_id=str(attachment_id),
         )
         assert entry.before is None
+        assert entry.after is not None
         assert entry.after["filename"] == "invoice.pdf"
         assert entry.actor_id == admin.id

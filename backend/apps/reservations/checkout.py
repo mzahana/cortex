@@ -55,7 +55,11 @@ from apps.rbac.services import (
 )
 
 from .models import Checkout, Reservation
-from .services import RESERVATION_NO_OVERLAP_CONSTRAINT, ReservationConflict, _violated_constraint_name
+from .services import (
+    RESERVATION_NO_OVERLAP_CONSTRAINT,
+    ReservationConflict,
+    _violated_constraint_name,
+)
 
 # Reservation statuses a `POST /checkouts` may reference (task instructions:
 # "validate the reservation belongs to the requesting user and is in an
@@ -422,8 +426,11 @@ class CheckoutSerializer(serializers.ModelSerializer):
                 can_bypass_walkup_conflict = user_has_permission(
                     user, RESERVATION_APPROVE, project=locked_asset.project_id
                 )
-                if not can_bypass_walkup_conflict and _other_user_active_reservation_conflict_exists(
-                    asset=locked_asset, user_id=user.id, at=checked_out_at
+                if (
+                    not can_bypass_walkup_conflict
+                    and _other_user_active_reservation_conflict_exists(
+                        asset=locked_asset, user_id=user.id, at=checked_out_at
+                    )
                 ):
                     raise serializers.ValidationError(
                         {
@@ -713,14 +720,14 @@ class CheckoutViewSet(
         body = CheckinSerializer(data=request.data)
         body.is_valid(raise_exception=True)
 
-        before = {"checked_in_at": None, "asset_status": checkout.asset.status}
+        before: dict[str, Any] = {"checked_in_at": None, "asset_status": checkout.asset.status}
         updated, already_checked_in, reservation_transition = perform_checkin(
             checkout=checkout, checkin_condition=body.validated_data["checkin_condition"]
         )
 
         if not already_checked_in:
             assert updated.checked_in_at is not None  # perform_checkin always sets it here
-            after = {
+            after: dict[str, Any] = {
                 "checked_in_at": updated.checked_in_at.isoformat(),
                 "checkin_condition": updated.checkin_condition,
             }
@@ -764,14 +771,14 @@ class CheckoutViewSet(
         body = CheckinSerializer(data=request.data)
         body.is_valid(raise_exception=True)
 
-        before = {"checked_in_at": None, "asset_status": checkout.asset.status}
+        before: dict[str, Any] = {"checked_in_at": None, "asset_status": checkout.asset.status}
         updated, already_checked_in, reservation_transition = perform_checkin(
             checkout=checkout, checkin_condition=body.validated_data["checkin_condition"]
         )
 
         if not already_checked_in:
             assert updated.checked_in_at is not None  # perform_checkin always sets it here
-            after = {
+            after: dict[str, Any] = {
                 "checked_in_at": updated.checked_in_at.isoformat(),
                 "checkin_condition": updated.checkin_condition,
             }

@@ -261,6 +261,7 @@ class TestExpenseAttachmentDeleteAudit:
             entity_id=str(attachment_id),
             after__isnull=True,
         )
+        assert entry.before is not None
         assert entry.before["storage_key"] == storage_key
         assert entry.before["filename"] == "receipt.pdf"
         assert entry.after is None

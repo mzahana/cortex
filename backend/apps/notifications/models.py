@@ -125,9 +125,7 @@ class EmailSettings(TenantScopedModel):
         CONSOLE = "console", "Console (dev/test — logs only)"
         BREVO = "brevo", "Brevo"
 
-    provider = models.CharField(
-        max_length=20, choices=Provider.choices, default=Provider.CONSOLE
-    )
+    provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.CONSOLE)
     sender_email = models.CharField(max_length=255, blank=True)
     reply_to = models.CharField(max_length=255, blank=True)
     api_key_encrypted = models.BinaryField(blank=True, default=b"")

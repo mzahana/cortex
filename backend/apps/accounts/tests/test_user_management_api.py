@@ -214,6 +214,7 @@ class TestUserCreate:
         )
         assert entries.count() == 1
         entry = entries.first()
+        assert entry is not None
         assert entry.action == "user.manage"
         assert entry.actor_id == admin.id
         assert entry.before is None

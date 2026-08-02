@@ -80,7 +80,9 @@ class TestCheckoutLifecycle:
             tenant_id=tenant.id, entity_type="checkout", entity_id=body["id"]
         )
         assert entries.count() == 1
-        assert entries.first().action == "checkout.manage"
+        entry = entries.first()
+        assert entry is not None
+        assert entry.action == "checkout.manage"
 
     def test_checkin_records_condition_and_frees_the_asset(self, client):
         tenant = TenantFactory()
@@ -1197,7 +1199,9 @@ class TestCheckoutFromCompletedReservation:
             reservation.refresh_from_db()
             assert reservation.status == Reservation.Status.COMPLETED  # unchanged
 
-    def test_reuse_of_completed_reservation_against_a_rebooked_window_gets_a_clean_409(self, client):
+    def test_reuse_of_completed_reservation_against_a_rebooked_window_gets_a_clean_409(
+        self, client
+    ):
         """Code-review finding: while `completed`, a reservation is OUTSIDE
         `Reservation.ACTIVE_STATUSES` and its window is legitimately
         rebookable by someone else. If the original holder then tries to

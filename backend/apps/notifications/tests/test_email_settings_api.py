@@ -233,11 +233,13 @@ class TestEmailSettingsSecretHandling:
         after_str = json.dumps(entry.after)
         assert secret not in before_str
         assert secret not in after_str
+        assert entry.after is not None
         assert entry.after["api_key"] in {"unchanged", "updated", "cleared"}
         assert entry.after["api_key"] == "updated"
         # `before` records whether a key was PRESENT prior to this write
         # (never the key material), so it's "present"/"absent", not one of
         # the after-state transition labels.
+        assert entry.before is not None
         assert entry.before["api_key"] in {"present", "absent"}
         assert entry.before["api_key"] == "absent"
 

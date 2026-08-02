@@ -8,6 +8,8 @@ exactly what's needed here too — this module only adds test-speed and
 test-isolation tweaks on top.
 """
 
+import tempfile
+
 from .dev import *  # noqa: F401,F403
 from .dev import env
 
@@ -57,6 +59,25 @@ CACHES = {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     },
 }
+
+# --- Media root override (same class of bug as the CACHES override above) ----
+#
+# `base.py` defaults `MEDIA_ROOT` to `/app/media` -- the path the deployed
+# image mounts the `media` volume at (docker-compose.yml), which exists and is
+# writable ONLY inside a container. Any test that writes through
+# `default_storage` (the `imports` upload/commit flow via
+# `apps.imports.services`/`tasks`, asset photos, generated label PDFs) then
+# blows up with `PermissionError: [Errno 13] Permission denied: '/app'` when
+# pytest runs directly on a CI runner rather than inside the app image --
+# which is exactly how `.github/workflows/ci.yml`'s `backend-test` job runs it
+# (pip install on ubuntu-latest, Postgres service container, no app image).
+# This was latent for a while: it passes locally whenever tests happen to be
+# run inside the container, so it only surfaced once CI actually ran.
+# `apps/projects/tests/test_project_report_pdf.py` works around it per-test
+# with `settings.MEDIA_ROOT = str(tmp_path)`; doing it centrally here means no
+# test module has to remember, and no test can ever write into the real
+# media volume path.
+MEDIA_ROOT = tempfile.mkdtemp(prefix="cortex-test-media-")
 
 # --- RLS-vs-test-role note (T0.8, read before writing T0.9's cross-tenant test) --
 #

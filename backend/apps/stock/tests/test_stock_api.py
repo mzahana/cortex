@@ -244,9 +244,7 @@ class TestStockList:
             retired_item.asset.save(update_fields=["status"])
 
         _login(client, tenant, admin)
-        response = client.get(
-            f"/api/v1/stock/?asset={retired_item.asset_id}&include_retired=true"
-        )
+        response = client.get(f"/api/v1/stock/?asset={retired_item.asset_id}&include_retired=true")
         assert response.status_code == 200, response.content
         ids = {row["id"] for row in response.json()["results"]}
         assert ids == {retired_item.id}

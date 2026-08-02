@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -64,7 +65,7 @@ def _generate(client, project_id):
 
 
 def _full_data(**overrides) -> ProjectReportData:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         tenant_name="Robotics Lab",
         name="Autonomous Rover",
         code="NSF-2026-014",
@@ -896,8 +897,7 @@ class TestIncludeProjectDocuments:
                 kind="other",
                 filename="notes.docx",
                 content_type=(
-                    "application/vnd.openxmlformats-officedocument"
-                    ".wordprocessingml.document"
+                    "application/vnd.openxmlformats-officedocument" ".wordprocessingml.document"
                 ),
                 raw=b"not really a docx",
             )

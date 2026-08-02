@@ -159,8 +159,11 @@ def get_dashboard_summary(user) -> dict:
     docs/rbac.md §1. See the cache-strategy docstring in `.cache` for the
     TTL + invalidation design.
     """
-    tenant_wide, project_ids = get_viewable_project_scope(user, ASSET_VIEW)
-    project_ids = frozenset(project_ids)
+    tenant_wide, visible_project_ids = get_viewable_project_scope(user, ASSET_VIEW)
+    # Frozen so it is hashable for the cache key; bound to a new name rather
+    # than rebinding `visible_project_ids` so the set/frozenset types stay
+    # distinct (both `summary_cache_key` and `_build_summary` want frozenset).
+    project_ids = frozenset(visible_project_ids)
 
     cache_key = summary_cache_key(user.tenant_id, tenant_wide=tenant_wide, project_ids=project_ids)
     cached = cache.get(cache_key)

@@ -108,9 +108,7 @@ class StockItemViewSet(
             # own detail/history), they should still get its stock row
             # regardless of the asset's retired status, same as
             # `AssetViewSet`'s detail routes staying reachable by id.
-            include_retired = (
-                self.request.query_params.get("include_retired", "").lower() == "true"
-            )
+            include_retired = self.request.query_params.get("include_retired", "").lower() == "true"
             if not include_retired and asset_param is None:
                 qs = qs.exclude(asset__status=Asset.Status.RETIRED)
 

@@ -167,6 +167,7 @@ class TestChangePassword:
         )
         assert entries.count() == 1
         entry = entries.first()
+        assert entry is not None
         assert entry.action == "user.password_change"
         assert entry.actor_id == user.id
         assert entry.before is None
@@ -249,6 +250,7 @@ class TestAdminResetPassword:
         )
         assert entries.count() == 1
         entry = entries.first()
+        assert entry is not None
         assert entry.action == "user.password_reset"
         assert entry.actor_id == admin.id
         assert entry.before is None
@@ -623,6 +625,7 @@ class TestForgotPasswordConfirm:
         confirm_entries = entries.filter(action="user.password_reset_confirm")
         assert confirm_entries.count() == 1
         entry = confirm_entries.first()
+        assert entry is not None
         assert entry.actor_id is None
         assert entry.after == {"id": user.id, "email": user.email}
         serialized = json.dumps(entry.after)

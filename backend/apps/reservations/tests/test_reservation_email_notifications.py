@@ -146,9 +146,7 @@ class TestApprovalRequestEmailEnqueued:
 
 
 class TestApprovalDecisionEmailEnqueued:
-    def test_approve_notifies_original_requester(
-        self, client, django_capture_on_commit_callbacks
-    ):
+    def test_approve_notifies_original_requester(self, client, django_capture_on_commit_callbacks):
         tenant = TenantFactory()
         admin = UserFactory(tenant=tenant)
         upgrade_tenant_wide_role(admin, ROLE_ADMIN)
@@ -194,9 +192,7 @@ class TestReceiverBuildsRealNamesNotBareIds:
     capture its call kwargs, isolating this from any Celery/on_commit
     timing concerns above."""
 
-    def test_notify_approval_request_params_include_asset_and_requester_names(
-        self, monkeypatch
-    ):
+    def test_notify_approval_request_params_include_asset_and_requester_names(self, monkeypatch):
         from apps.reservations.signals import approval_request
 
         tenant = TenantFactory()

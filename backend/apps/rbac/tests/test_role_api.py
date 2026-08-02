@@ -83,7 +83,10 @@ class TestRoleListRBAC:
 class TestRoleListTenantIsolation:
     def test_only_the_callers_own_tenant_roles_come_back(self, client):
         tenant_a = TenantFactory()
-        tenant_b = TenantFactory()
+        # Second tenant is never referenced by name, but the call is load-bearing:
+        # it seeds tenant_b's own 4 system roles, which is what makes the
+        # `len(results) == 4` assertion below actually prove tenant scoping.
+        TenantFactory()
         admin_a = UserFactory(tenant=tenant_a)
         upgrade_tenant_wide_role(admin_a, ROLE_ADMIN)
         _login(client, tenant_a, admin_a)

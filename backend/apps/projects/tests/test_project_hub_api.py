@@ -408,6 +408,7 @@ class TestExpenseAuditTrail:
         assert entries.count() == before_count + 1
         entry = entries.get()
         assert entry.before is None
+        assert entry.after is not None
         assert entry.after["amount"] == "123.45"
         assert entry.actor_id == admin.id
 
@@ -429,7 +430,9 @@ class TestExpenseAuditTrail:
         entry = AuditLog.all_objects.get(
             tenant=tenant, action="expense.manage", entity_type="expense", entity_id=str(expense.id)
         )
+        assert entry.before is not None
         assert entry.before["amount"] == "10.00"
+        assert entry.after is not None
         assert entry.after["amount"] == "20.00"
 
 
@@ -458,6 +461,7 @@ class TestProjectCreateDestroyAudit:
             tenant=tenant, action="tenant.manage", entity_type="project", entity_id=str(project_id)
         )
         assert entry.before is None
+        assert entry.after is not None
         assert entry.after["name"] == "New Grant Project"
         assert entry.after["budget_total"] == "1000.00"
 
@@ -479,6 +483,7 @@ class TestProjectCreateDestroyAudit:
             tenant=tenant, action="tenant.manage", entity_type="project", entity_id=str(project.id)
         )
         assert entry.after is None
+        assert entry.before is not None
         assert entry.before["project"]["name"] == project.name
         cascaded_ids = [row["id"] for row in entry.before["cascaded_expenses"]]
         assert cascaded_ids == [expense.id]

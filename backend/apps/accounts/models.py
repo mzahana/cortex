@@ -97,9 +97,7 @@ class PasswordResetToken(TenantScopedModel):
     crosses a tenant boundary.
     """
 
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="password_reset_tokens"
-    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="password_reset_tokens")
     # SHA-256 hex digest (64 chars). `unique=True` also creates the index the
     # confirm lookup uses. Globally unique is fine — a hash collision is
     # infeasible — and does not weaken tenant isolation (RLS still scopes every

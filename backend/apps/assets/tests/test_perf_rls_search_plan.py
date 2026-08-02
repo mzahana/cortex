@@ -131,13 +131,17 @@ def _explain_as_cortex_app(term: str, tenant_id: int) -> tuple[list[str], str]:
             # Sanity: this really is the RLS-subject role, not a superuser that
             # would silently bypass RLS and make this whole test a false pass.
             cur.execute("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
-            rolsuper, rolbypassrls = cur.fetchone()
+            role_row = cur.fetchone()
+            assert role_row is not None
+            rolsuper, rolbypassrls = role_row
             assert rolsuper is False and rolbypassrls is False, (
                 "EXPLAIN ran as a superuser/bypassrls role — RLS would be bypassed "
                 "and this test could not observe the security-barrier effect."
             )
             cur.execute(_SEARCH_SQL, {"term": term})
-            plan = cur.fetchone()[0]
+            plan_row = cur.fetchone()
+            assert plan_row is not None
+            plan = plan_row[0]
     finally:
         conn.close()
     return _node_types(plan[0]["Plan"]), json.dumps(plan[0]["Plan"], indent=2)

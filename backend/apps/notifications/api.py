@@ -47,7 +47,7 @@ class NotificationPrefViewSet(
     def get_object(self):
         event_type = self.kwargs[self.lookup_field]
         obj, _ = NotificationPref.objects.get_or_create(
-            tenant=self.request.user.tenant,
+            tenant=self.request.user.tenant,  # type: ignore[union-attr]
             user=self.request.user,
             event_type=event_type,
             defaults={"email_enabled": True},
@@ -79,7 +79,9 @@ class EmailSettingsView(generics.RetrieveUpdateAPIView):
         # makes this genuinely a singleton: the first GET/PUT for a tenant
         # that has never touched this screen transparently creates the
         # default (`console`, no key) row rather than 404ing.
-        obj, _ = EmailSettings.objects.get_or_create(tenant=self.request.user.tenant)
+        obj, _ = EmailSettings.objects.get_or_create(
+            tenant=self.request.user.tenant  # type: ignore[union-attr]
+        )
         self.check_object_permissions(self.request, obj)
         return obj
 

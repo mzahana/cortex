@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from contextlib import contextmanager
+from typing import Any
 
 import pytest
 from django.test import override_settings
@@ -82,7 +83,7 @@ class TestSendTransactionalPayloadShape:
         """All 6 real slugs must produce a payload with no templateId --
         proves the removal is complete across every event type this app
         actually sends, not just the one exercised above."""
-        cases = {
+        cases: dict[str, dict[str, Any]] = {
             "reservation-confirmed": {"asset_name": "A", "start_at": "S", "end_at": "E"},
             "approval-request": {
                 "asset_name": "A",

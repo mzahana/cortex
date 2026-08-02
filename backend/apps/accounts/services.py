@@ -150,6 +150,7 @@ def reset_user_password(user: User) -> str:
 
 # --- Forgot-password reset tokens ------------------------------------------
 
+
 def _hash_reset_token(raw_token: str) -> str:
     """SHA-256 hex digest of the raw token. The DB only ever stores this — the
     raw token exists only in the emailed link (same posture as Django's
@@ -211,7 +212,7 @@ def claim_reset_token(token: PasswordResetToken) -> bool:
     (concurrent confirm) — the conditional `UPDATE ... WHERE used_at IS NULL`
     makes the single-use guarantee race-safe rather than relying on the earlier
     read."""
-    updated = PasswordResetToken.objects.filter(
-        pk=token.pk, used_at__isnull=True
-    ).update(used_at=timezone.now())
+    updated = PasswordResetToken.objects.filter(pk=token.pk, used_at__isnull=True).update(
+        used_at=timezone.now()
+    )
     return updated == 1

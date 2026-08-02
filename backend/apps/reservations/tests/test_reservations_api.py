@@ -109,7 +109,9 @@ class TestApprovalRouting:
             tenant_id=tenant.id, entity_type="reservation", entity_id=reservation_id
         )
         assert entries.count() == 1
-        assert entries.first().action == "reservation.create"
+        entry = entries.first()
+        assert entry is not None
+        assert entry.action == "reservation.create"
 
 
 class TestScopedApproval:

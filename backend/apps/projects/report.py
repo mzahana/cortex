@@ -394,9 +394,8 @@ def _appendix_html(data: ProjectReportData) -> str:
                 )
                 return f'<div class="invoice-entry">{caption}{image}</div>'
 
-            invoices_html = (
-                f'<div class="invoice-list">{"".join(_invoice_entry(i) for i in data.invoices)}</div>'
-            )
+            _entries = "".join(_invoice_entry(i) for i in data.invoices)
+            invoices_html = f'<div class="invoice-list">{_entries}</div>'
         else:
             invoice_rows = "".join(
                 f"<tr><td>{_esc(i.expense_label)}</td><td>{_esc(i.filename)}</td></tr>"
@@ -534,10 +533,11 @@ def _image_bytes_to_single_page_pdf(raw_bytes: bytes) -> bytes | None:
     from PIL import Image
 
     try:
-        with Image.open(BytesIO(raw_bytes)) as img:
-            img.load()
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
+        with Image.open(BytesIO(raw_bytes)) as opened:
+            opened.load()
+            # `convert()` returns a plain Image, not the ImageFile `open()`
+            # gives back — bind it to its own name so the two stay distinct.
+            img = opened.convert("RGB") if opened.mode not in ("RGB", "L") else opened
             out = BytesIO()
             img.save(out, format="PDF")
             return out.getvalue()

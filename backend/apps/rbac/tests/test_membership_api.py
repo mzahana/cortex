@@ -62,6 +62,7 @@ class TestMembershipCreateAndRoleChange:
         )
         assert entries.count() == 1
         entry = entries.first()
+        assert entry is not None
         assert entry.action == "user.manage"
         assert entry.actor_id == admin.id
         assert entry.before is None
@@ -96,6 +97,7 @@ class TestMembershipCreateAndRoleChange:
         )
         assert entries.count() == 1
         entry = entries.first()
+        assert entry is not None
         assert entry.action == "role.assign"
         assert entry.actor_id == admin.id
         assert entry.before == {
@@ -129,8 +131,10 @@ class TestMembershipCreateAndRoleChange:
             tenant_id=tenant.id, entity_type="membership", entity_id=membership_id
         )
         assert entries.count() == 1
-        assert entries.first().action == "user.manage"
-        assert entries.first().after is None
+        entry = entries.first()
+        assert entry is not None
+        assert entry.action == "user.manage"
+        assert entry.after is None
 
     def test_plain_member_is_denied(self, client):
         tenant = TenantFactory()
