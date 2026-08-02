@@ -48,6 +48,7 @@ from .models import PasswordResetToken, User
 # documented in `docs/rbac.md` §5). Kept here so the views and any test refer
 # to one constant rather than re-typing the literal.
 USER_PASSWORD_CHANGE = "user.password_change"  # self-service (actor == subject)
+USER_PROFILE_UPDATE = "user.profile_update"  # self-service name edit (PATCH /me)
 USER_PASSWORD_RESET = "user.password_reset"  # admin resets ANOTHER user
 USER_PASSWORD_RESET_REQUEST = "user.password_reset_request"  # forgot-password mint
 USER_PASSWORD_RESET_CONFIRM = "user.password_reset_confirm"  # forgot-password consume

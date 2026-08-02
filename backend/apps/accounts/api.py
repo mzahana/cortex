@@ -61,6 +61,7 @@ from apps.tenancy.middleware import (
     TENANT_SESSION_KEY,
 )
 from apps.tenancy.models import Tenant
+from apps.tenancy.services import tenant_logo_url
 
 from . import lockout
 from .models import User
@@ -71,6 +72,7 @@ from .serializers import (
     ForgotPasswordRequestSerializer,
     LoginSerializer,
     PasswordResetConfirmSerializer,
+    UpdateMeSerializer,
     UserSerializer,
 )
 from .services import (
@@ -78,6 +80,7 @@ from .services import (
     USER_PASSWORD_RESET,
     USER_PASSWORD_RESET_CONFIRM,
     USER_PASSWORD_RESET_REQUEST,
+    USER_PROFILE_UPDATE,
     claim_reset_token,
     create_password_reset_token,
     create_user_with_generated_password,
@@ -191,11 +194,22 @@ def _serialize_me(user: User, tenant: Tenant) -> dict:
     return {
         "id": user.id,
         "email": user.email,
-        "name": user.get_full_name(),
+        # `name` is the RAW stored value (may be ""), so the Account screen's
+        # edit form round-trips exactly what is in the DB rather than an email
+        # that only looks like a name. `display_name` is the "what to render"
+        # value (`get_full_name()`: name, falling back to email) — every UI
+        # surface uses that one. Splitting the two is what lets the greeting
+        # show a real name once the user sets it, without the form silently
+        # pre-filling the fallback.
+        "name": user.name,
+        "display_name": user.get_full_name(),
         "tenant": {
             "id": tenant.id,
             "slug": tenant.slug,
             "name": tenant.name,
+            # Branding shown in the app chrome (`apps.tenancy.services`);
+            # `None` when the lab has not uploaded a logo.
+            "logo_url": tenant_logo_url(tenant),
         },
         "memberships": memberships,
         # Effective permissions on the general pool (project=None) —
@@ -345,6 +359,46 @@ class MeView(APIView):
         # once, explicitly, with it (code-review no-N+1 follow-up) rather than
         # letting `_serialize_me` trigger a lazy `user.tenant` load.
         user = User.all_objects.select_related("tenant").get(pk=request.user.pk)
+        return Response(_serialize_me(user, user.tenant), status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        """`PATCH /api/v1/me` — self-service profile edit (currently `name`
+        only; see `UpdateMeSerializer` for why the field list is an explicit
+        allowlist). Returns the same body as `GET /api/v1/me` so the client
+        can refresh its cached session state from one round trip.
+
+        The subject is ALWAYS `request.user` — this endpoint takes no user id,
+        so it cannot be pointed at another account (in this tenant or any
+        other). Audited under `user.profile_update` with a before/after `name`
+        (`docs/rbac.md` §5: every mutating action is audited).
+        """
+        serializer = UpdateMeSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Invalid payload",
+                detail="The profile update was rejected.",
+                type_=f"{PROBLEM_BASE}/validation-error",
+                errors=serializer.errors,
+            )
+
+        user = User.all_objects.select_related("tenant").get(pk=request.user.pk)
+        before = {"name": user.name}
+
+        if "name" in serializer.validated_data:
+            user.name = serializer.validated_data["name"]
+            user.save(update_fields=["name", "updated_at"])
+
+        write_audit_log(
+            tenant_id=user.tenant_id,
+            actor=request.user,
+            action=USER_PROFILE_UPDATE,
+            entity_type="user",
+            entity_id=user.id,
+            before=before,
+            after={"name": user.name},
+            ip=client_ip(request),
+        )
         return Response(_serialize_me(user, user.tenant), status=status.HTTP_200_OK)
 
 

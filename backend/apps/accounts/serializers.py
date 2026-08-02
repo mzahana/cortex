@@ -70,6 +70,20 @@ class CreateUserSerializer(serializers.Serializer):
         return email
 
 
+class UpdateMeSerializer(serializers.Serializer):
+    """`PATCH /api/v1/me` — the signed-in user edits their OWN profile.
+
+    Deliberately a one-field allowlist (`name`): `email` is the login
+    identifier (changing it is an admin/`user.manage` concern, not
+    self-service), and nothing else on `User` — `is_active`, `is_staff`,
+    `is_superuser`, `tenant` — may EVER be self-settable. An explicit
+    `Serializer` (not a `ModelSerializer`) is what makes that allowlist
+    unmissable at review time.
+    """
+
+    name = serializers.CharField(max_length=255, allow_blank=True, trim_whitespace=True)
+
+
 class ChangePasswordSerializer(serializers.Serializer):
     """`POST /api/v1/me/password` — self-service password change payload.
 
