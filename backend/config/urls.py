@@ -47,7 +47,7 @@ from apps.rbac.api import MembershipViewSet, RoleViewSet
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
 from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
-from apps.tenancy.api import SessionSettingsView
+from apps.tenancy.api import SessionSettingsView, TenantLogoView
 
 router = DefaultRouter()
 router.register("categories", CategoryViewSet, basename="category")
@@ -164,6 +164,11 @@ urlpatterns = [
         SessionSettingsView.as_view(),
         name="session-settings",
     ),
+    # Tenant branding (the lab's logo shown in the app chrome). Plain
+    # `path()` (not router-registered) for the same reason as
+    # `tenancy/session-settings` above: a singleton per-tenant resource with
+    # no id in the URL, not a CRUD collection.
+    path("api/v1/tenancy/logo", TenantLogoView.as_view(), name="tenant-logo"),
     path("api/v1/labels/generate", LabelGenerateView.as_view(), name="label-generate"),
     path("api/v1/jobs/<uuid:job_id>", JobRetrieveView.as_view(), name="job-detail"),
     # T6.1: bulk importer (dry-run upload + commit, plain `path()`s — not

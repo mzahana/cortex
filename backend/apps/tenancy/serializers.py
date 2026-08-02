@@ -22,3 +22,27 @@ class SessionSettingsSerializer(serializers.ModelSerializer):
         # `MinValueValidator`/`MaxValueValidator` — `ModelSerializer` copies
         # them onto the generated fields automatically, no extra validation
         # code needed here.
+
+
+class TenantBrandingSerializer(serializers.Serializer):
+    """Read shape for `GET/POST/DELETE /api/v1/tenancy/logo` — the lab's own
+    identity as the UI shows it (name + logo URL). Deliberately NOT a
+    `ModelSerializer` over `Tenant`: nothing here is client-writable (the logo
+    is set by uploading a file, the name is not editable through this
+    endpoint), so a read-only projection is the honest shape.
+
+    `logo_url` is `MEDIA_URL + storage_key` (nginx-served volume), or `null`
+    when the tenant has no logo — the UI falls back to its initials.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    slug = serializers.SlugField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    logo_url = serializers.SerializerMethodField()
+    logo_filename = serializers.CharField(read_only=True)
+    logo_updated_at = serializers.DateTimeField(read_only=True)
+
+    def get_logo_url(self, obj) -> str | None:
+        from .services import tenant_logo_url
+
+        return tenant_logo_url(obj)

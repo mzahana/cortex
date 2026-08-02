@@ -24,6 +24,22 @@ class Tenant(models.Model):
     settings = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # --- Branding (lab logo shown in the app chrome after login) ------------
+    # Same "bytes on the storage volume, only the key in the DB" rule as
+    # `apps.assets.models.Attachment.storage_key` — see
+    # `apps.tenancy.services.save_tenant_logo`, the only writer of these.
+    # Blank (the default) means "no logo uploaded"; the UI falls back to the
+    # tenant's initials.
+    logo_storage_key = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Relative path/key on the storage backend — never the binary itself.",
+    )
+    logo_filename = models.CharField(max_length=255, blank=True, default="")
+    logo_content_type = models.CharField(max_length=127, blank=True, default="")
+    logo_updated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = "tenancy_tenant"
         ordering = ["name"]

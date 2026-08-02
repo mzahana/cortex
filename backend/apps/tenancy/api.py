@@ -13,14 +13,19 @@ from __future__ import annotations
 
 from django.core.cache import cache
 from django.db import transaction
-from rest_framework import generics
+from rest_framework import generics, status
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.audit.services import client_ip, write_audit_log
 from apps.catalog.permissions import TenantWideReadOrManage
+from apps.common.errors import problem_response
 from apps.rbac.permission_keys import TENANT_MANAGE
 
 from .models import SessionSettings
-from .serializers import SessionSettingsSerializer
+from .serializers import SessionSettingsSerializer, TenantBrandingSerializer
+from .services import clear_tenant_logo, save_tenant_logo
 
 
 class SessionSettingsView(generics.RetrieveUpdateAPIView):
@@ -99,3 +104,98 @@ class SessionSettingsView(generics.RetrieveUpdateAPIView):
             after=after,
             ip=client_ip(self.request),
         )
+
+
+class TenantLogoView(APIView):
+    """`GET/POST/DELETE /api/v1/tenancy/logo` — the tenant's (lab's) branding
+    logo, shown in the app chrome after login.
+
+    - `GET` is open to any authenticated member: the logo is already part of
+      every `GET /api/v1/me` response (it is chrome every member sees), so
+      gating the read would protect nothing.
+    - `POST` (multipart `file`) and `DELETE` require `tenant.manage` —
+      branding is tenant configuration, same admin-only bar as
+      `SessionSettingsView`/`EmailSettingsView`.
+
+    Tenant isolation (R4): the target tenant is ALWAYS `request.user.tenant`,
+    derived from the session by `CurrentTenantMiddleware`. This endpoint takes
+    no tenant id/slug from the client at all, so there is no shape in which it
+    can write another tenant's row.
+
+    Both mutations are audited (`tenant.logo.update` / `tenant.logo.delete`)
+    with a before/after carrying the storage key + filename only — never the
+    bytes.
+    """
+
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [
+        TenantWideReadOrManage(TENANT_MANAGE)  # type: ignore[list-item]
+    ]
+
+    def _tenant(self):
+        return self.request.user.tenant  # type: ignore[union-attr]
+
+    def _response(self, tenant) -> Response:
+        return Response(TenantBrandingSerializer(tenant).data, status=status.HTTP_200_OK)
+
+    def get(self, request):
+        return self._response(self._tenant())
+
+    def post(self, request):
+        tenant = self._tenant()
+        uploaded_file = request.FILES.get("file")
+        if uploaded_file is None:
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Missing file",
+                detail="A multipart 'file' field is required.",
+            )
+
+        before = {
+            "logo_storage_key": tenant.logo_storage_key,
+            "logo_filename": tenant.logo_filename,
+        }
+        # Validation (size + content-type/extension allowlist) happens inside
+        # `save_tenant_logo` BEFORE any bytes are written; a rejection raises
+        # `serializers.ValidationError`, which the RFC-7807 exception handler
+        # turns into a clean 400 exactly like every other validation error.
+        tenant = save_tenant_logo(tenant=tenant, uploaded_file=uploaded_file)
+
+        write_audit_log(
+            tenant_id=tenant.id,
+            actor=request.user,
+            action="tenant.logo.update",
+            entity_type="tenant",
+            entity_id=tenant.id,
+            before=before,
+            after={
+                "logo_storage_key": tenant.logo_storage_key,
+                "logo_filename": tenant.logo_filename,
+            },
+            ip=client_ip(request),
+        )
+        return self._response(tenant)
+
+    def delete(self, request):
+        tenant = self._tenant()
+        if not tenant.logo_storage_key:
+            # Idempotent: nothing to remove, nothing to audit.
+            return self._response(tenant)
+
+        before = {
+            "logo_storage_key": tenant.logo_storage_key,
+            "logo_filename": tenant.logo_filename,
+        }
+        tenant = clear_tenant_logo(tenant=tenant)
+
+        write_audit_log(
+            tenant_id=tenant.id,
+            actor=request.user,
+            action="tenant.logo.delete",
+            entity_type="tenant",
+            entity_id=tenant.id,
+            before=before,
+            after={"logo_storage_key": "", "logo_filename": ""},
+            ip=client_ip(request),
+        )
+        return self._response(tenant)
