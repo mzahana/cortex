@@ -128,9 +128,7 @@ class TenantLogoView(APIView):
     """
 
     parser_classes = [MultiPartParser, FormParser]
-    permission_classes = [
-        TenantWideReadOrManage(TENANT_MANAGE)  # type: ignore[list-item]
-    ]
+    permission_classes = [TenantWideReadOrManage(TENANT_MANAGE)]  # type: ignore[list-item]
 
     def _tenant(self):
         return self.request.user.tenant  # type: ignore[union-attr]

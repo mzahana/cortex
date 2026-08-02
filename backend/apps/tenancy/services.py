@@ -55,9 +55,7 @@ def validate_logo_upload(uploaded_file) -> str:
 
     content_type = (getattr(uploaded_file, "content_type", "") or "").split(";")[0].strip().lower()
     if content_type not in LOGO_CONTENT_TYPES:
-        raise serializers.ValidationError(
-            {"file": "Logo must be a PNG, JPEG, or WebP image."}
-        )
+        raise serializers.ValidationError({"file": "Logo must be a PNG, JPEG, or WebP image."})
 
     name = getattr(uploaded_file, "name", "") or ""
     extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""

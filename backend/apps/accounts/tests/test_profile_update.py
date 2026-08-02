@@ -112,9 +112,7 @@ class TestUpdateMe:
         assert "name" in response.json()["errors"]
 
     def test_requires_authentication(self, client):
-        response = client.patch(
-            "/api/v1/me", {"name": "Nobody"}, content_type="application/json"
-        )
+        response = client.patch("/api/v1/me", {"name": "Nobody"}, content_type="application/json")
         assert response.status_code in (401, 403)
 
     def test_writes_audit_entry_with_before_after(self, client, tenant, user):
