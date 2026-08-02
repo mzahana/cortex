@@ -1,0 +1,60 @@
+# Local browser-preview overlay — layers on `docker-compose.yml` so the whole
+# stack can be opened at http://localhost:8080 on a dev machine, WITHOUT
+# touching `.env` (which is irreplaceable local state, see CLAUDE.md).
+#
+# Same two relaxations `docker-compose.loadtest.yml` documents (publish nginx
+# on a host port; drop the three settings that assume a TLS-terminating proxy
+# in front of Django), plus the matching Host/CSRF origins for localhost —
+# passed as `environment:` overrides, which win over `env_file: .env`, so the
+# real deploy's `ALLOWED_HOSTS`/`CSRF_TRUSTED_ORIGINS` stay exactly as they are
+# on disk. `cloudflared` is simply not started (it needs a real TUNNEL_TOKEN).
+#
+# Usage:
+#   sed 's/X-Forwarded-Proto https/X-Forwarded-Proto $scheme/' \
+#     docker/nginx/default.conf > docker/nginx/default.local.conf   # gitignored
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml build web nginx
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml run --rm migrate
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d \
+#     postgres redis web worker beat nginx
+#   # then open http://localhost:8080
+#
+# NEVER use this overlay for a real deployment.
+
+x-local-web-env: &local-web-env
+  DJANGO_SETTINGS_MODULE: config.settings.prod
+  ALLOWED_HOSTS: localhost,127.0.0.1
+  CSRF_TRUSTED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+  SECURE_SSL_REDIRECT: "false"
+  SESSION_COOKIE_SECURE: "false"
+  CSRF_COOKIE_SECURE: "false"
+  SECURE_HSTS_SECONDS: "0"
+
+services:
+  nginx:
+    ports:
+      - "8080:80"
+    volumes:
+      # Generated copy of `default.conf` with the ONE line that assumes a TLS
+      # terminator in front of nginx relaxed: the real config hardcodes
+      # `X-Forwarded-Proto https` (correct behind Cloudflare Tunnel), which
+      # makes Django treat a plain-HTTP localhost request as secure and then
+      # reject the browser's `http://localhost:8080` Referer on every write
+      # ("Referer is insecure while host is secure"). `$scheme` reflects what
+      # the browser actually used. Regenerate with the sed above whenever
+      # `default.conf` changes — see the header.
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/default.local.conf:/etc/nginx/conf.d/default.conf:ro
+      - static:/usr/share/nginx/static:ro
+      - media:/usr/share/nginx/media:ro
+
+  web:
+    environment: *local-web-env
+
+  worker:
+    environment: *local-web-env
+
+  beat:
+    environment: *local-web-env
+
+  migrate:
+    environment: *local-web-env

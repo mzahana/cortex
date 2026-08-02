@@ -73,3 +73,7 @@ Thumbs.db
 # numbers) -- see tests/load/README.md.
 tests/load/results/sessions.json
 tests/load/.venv-load/
+
+# Local browser-preview nginx conf (generated from docker/nginx/default.conf
+# by docker-compose.local.yml's documented sed — never deployed).
+docker/nginx/default.local.conf
