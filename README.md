@@ -172,6 +172,24 @@ folders on the NAS, starting everything, creating your admin, and backups.
 For the bigger picture of how it all fits together (and how much memory it
 needs), read [`docs/deployment.md`](docs/deployment.md) first.
 
+**Your server never builds anything.** Cortex's two images are built by CI and
+published publicly to Docker Hub — [`mzahana/cortex`](https://hub.docker.com/r/mzahana/cortex)
+(the app: web, worker and scheduler) and
+[`mzahana/cortex-nginx`](https://hub.docker.com/r/mzahana/cortex-nginx) (the web
+server plus the built app screens). So a real deploy only needs the two compose
+files, your `.env`, and the nginx/redis config files — no source code, and no
+slow build on a small NAS:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+That gets you `latest`, which always points at the newest **released** version
+(never an untested in-progress commit). To pin a specific version instead, set
+`CORTEX_IMAGE_TAG=0.12.0`. Use `docker compose ... up -d` — not `restart` — when
+upgrading, or Docker keeps running the old image.
+
 You don't have to open any ports on your router — Cortex reaches the internet
 through a secure outbound tunnel, and your connection is encrypted (HTTPS)
 automatically.

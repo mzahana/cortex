@@ -71,6 +71,33 @@ CSRF on writes; DRF throttling on auth. Kill N+1s with `select_related`/`prefetc
 and assert query budgets. Match the surrounding code's style. Commit/push only when the
 user asks.
 
+## Versioning & releases (follow exactly — CI enforces it)
+**The git tag `vX.Y.Z` is the authoritative version.** Semver, and per
+`CHANGELOG.md`'s header the minor version tracks milestones until `1.0.0`. The
+same version must appear in three places in the repo, and CI's
+`version-consistency` job **fails the release** if they disagree — so this is a
+hard gate, not a style preference:
+1. the git tag (`vX.Y.Z`),
+2. `frontend/package.json`'s `version` (drives the version shown in the app UI
+   via `__APP_VERSION__`),
+3. a `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md`.
+
+**When you make a user-visible change, add it under `## [Unreleased]` in
+`CHANGELOG.md`** — do NOT invent a version number or bump
+`frontend/package.json` for an ordinary change. Only a deliberate release
+promotes `[Unreleased]` to `## [X.Y.Z]` + bumps `package.json` + tags. The full
+procedure (and the `latest` vs `edge` distinction) is "Cutting a release" in
+`docs/development.md`; don't duplicate those steps elsewhere.
+
+Everything downstream is **automatic and must not be done by hand**: pushing the
+tag publishes the Docker Hub image tags (`X.Y.Z`, `X.Y`, `latest`,
+`sha-<short>` for `mzahana/cortex` + `mzahana/cortex-nginx`) and creates the
+GitHub Release from that CHANGELOG section. Never hand-create a GitHub Release,
+hand-push an image tag, or edit release notes separately from `CHANGELOG.md` —
+that reintroduces exactly the drift this gate exists to prevent. `latest` means
+newest *release*; `main` pushes publish `edge`, and `docker-compose.prod.yml`
+defaults to `latest` so a NAS never deploys an unreleased commit.
+
 ## Debugging & operational gotchas
 Lessons from building this repo that aren't obvious from reading the code cold:
 

@@ -168,6 +168,47 @@ Frontend:
 cd frontend && npm run typecheck && npm run lint && npm run build
 ```
 
+## Cutting a release
+
+A version number lives in four places. **The git tag is authoritative**, and CI
+enforces that the others match — a mismatch fails the release before anything
+is published, so they cannot drift:
+
+| Where | What it is | Kept in sync by |
+| --- | --- | --- |
+| Git tag `vX.Y.Z` | The release trigger | You (the one manual step) |
+| `frontend/package.json` `version` | Version shown in the app UI | You, before tagging — CI **fails** if it disagrees |
+| `CHANGELOG.md` `## [X.Y.Z]` | Release notes | You, before tagging — CI **fails** if the section is missing |
+| Docker Hub image tags | What the NAS deploys | **Automatic** — derived from the tag |
+
+To release:
+
+1. Move the `## [Unreleased]` notes in `CHANGELOG.md` under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading.
+2. Bump `version` in `frontend/package.json` to `X.Y.Z`.
+3. Commit both, then tag and push:
+
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin main --follow-tags
+   ```
+
+Pushing the tag runs the full CI suite and then, only if it all passes:
+
+- publishes `mzahana/cortex:X.Y.Z`, `:X.Y`, `:latest` and `:sha-<short>` (and
+  the same tags for `mzahana/cortex-nginx`);
+- creates the GitHub Release, with notes taken verbatim from that CHANGELOG
+  section — nothing is copy-pasted by hand.
+
+### `latest` vs `edge`
+
+`latest` tracks the newest **release**; every push to `main` publishes `edge`
+instead. `docker-compose.prod.yml` defaults `CORTEX_IMAGE_TAG` to `latest`, so
+a NAS running the documented `pull && up -d` lands on a released version rather
+than whatever merged into `main` most recently. Deploy an unreleased build
+deliberately with `CORTEX_IMAGE_TAG=edge` (or a `sha-<short>` tag to pin one
+exact commit).
+
 ## Repository layout
 
 ```

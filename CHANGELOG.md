@@ -12,9 +12,43 @@ milestones bump the minor version until the first production release (`1.0.0`).
 version shown in the app UI (footer of the login screen and the sidebar/"More"
 sheet) — it is inlined at build time via `vite.config.ts`'s `__APP_VERSION__`
 define. **Bump `frontend/package.json`'s `version` to match every new entry
-added here** so the displayed version never drifts from the changelog.
+added here** so the displayed version never drifts from the changelog. This is
+no longer only a convention: pushing a `vX.Y.Z` tag fails CI's
+`version-consistency` job unless the tag, `frontend/package.json`, and a
+matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
+`docs/development.md`.
 
 ## [Unreleased]
+
+## [0.13.0] - 2026-08-02
+
+### Added
+
+- **Public Docker Hub images + pull-based deploy** — CI builds and publishes
+  both application images to Docker Hub: `mzahana/cortex` (the shared
+  web/worker/beat/migrate image) and `mzahana/cortex-nginx` (nginx plus the
+  built PWA). `docker-compose.prod.yml` now points at those tags instead of
+  building locally, so deploying to the Synology is `pull && up -d` with no
+  source checkout, no Dockerfiles, and no build on the NAS —
+  `CORTEX_IMAGE_TAG` (default `latest`) selects the version. Local development
+  with `docker-compose.yml` alone is unchanged and still builds from source.
+- **Automated, drift-proof release versioning** — pushing a `vX.Y.Z` tag is now
+  the single action that cuts a release: CI verifies the tag,
+  `frontend/package.json`, and the CHANGELOG section all agree (failing the
+  release if not), publishes `X.Y.Z` / `X.Y` / `latest` image tags, and creates
+  the GitHub Release with notes taken verbatim from this file. `latest` tracks
+  the newest *release*; `main` builds publish `edge` instead, so the
+  prod-overlay default can never deploy an unreleased commit.
+
+### Fixed
+
+- **Backend CI gates are green again** — lint, typecheck and test had all been
+  failing on `main`. The lint/typecheck failures were accumulated formatting
+  and type-annotation drift (no runtime defects). The test failures were a real
+  portability bug: `MEDIA_ROOT` defaults to the deployed image's `/app/media`
+  volume path, so any test writing through `default_storage` passed inside a
+  container but raised `PermissionError` on a bare CI runner; test settings now
+  point it at a temp dir centrally.
 
 ## [0.12.0] - 2026-07-30
 

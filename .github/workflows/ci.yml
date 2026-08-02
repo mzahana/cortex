@@ -7,6 +7,11 @@ name: CI
 on:
   push:
     branches: ["master", "main"]
+    # Release trigger. Pushing an annotated `vX.Y.Z` tag is the ONE action that
+    # cuts a release: it gates on `version-consistency`, publishes the
+    # version-tagged Docker Hub images, and creates the GitHub Release from
+    # this repo's CHANGELOG. See "Cutting a release" in docs/development.md.
+    tags: ["v*.*.*"]
   pull_request:
   workflow_dispatch:
 
@@ -232,17 +237,73 @@ jobs:
           docker compose config --quiet
 
   # ---------------------------------------------------------------------------
+  # Version consistency (tag pushes only). A release version lives in FOUR
+  # places that used to be kept in sync by hand and could silently drift:
+  # the git tag, `frontend/package.json`'s `version` (the single source of
+  # truth for the version shown in the app UI — see CHANGELOG.md's header),
+  # the CHANGELOG section, and the Docker Hub image tags. This job makes the
+  # git tag authoritative and FAILS THE RELEASE if the other two in-repo
+  # copies disagree, so a mismatched version can never reach Docker Hub or a
+  # GitHub Release. `push-images` and `github-release` both gate on it.
+  # ---------------------------------------------------------------------------
+  version-consistency:
+    name: version consistency (tag vs package.json vs CHANGELOG)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag, package.json and CHANGELOG must agree
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Releasing version: $VERSION"
+
+          PKG_VERSION="$(jq -r .version frontend/package.json)"
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "::error::frontend/package.json version is '$PKG_VERSION' but the tag is 'v$VERSION'." \
+                 "Bump package.json to $VERSION (it drives the version shown in the app UI) and re-tag."
+            exit 1
+          fi
+
+          if ! grep -qE "^## \[${VERSION//./\\.}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section." \
+                 "Move the [Unreleased] notes under a '## [$VERSION] - YYYY-MM-DD' heading and re-tag."
+            exit 1
+          fi
+
+          echo "OK: tag v$VERSION, package.json $PKG_VERSION, and CHANGELOG all agree."
+
+  # ---------------------------------------------------------------------------
   # Push images: re-runs the same two builds (hitting the type=gha cache from
   # build-images above, so this is a fast cache-restore + push, not a rebuild
   # from scratch) and pushes both to Docker Hub under mzahana/cortex and
-  # mzahana/cortex-nginx, tagged `latest` + the short git SHA. Gated to pushes
-  # on `main` only — PRs and other branches never push images.
+  # mzahana/cortex-nginx. Runs for BOTH a `main` push and a `vX.Y.Z` tag push;
+  # what differs is only which tags get applied (see the metadata steps):
+  #
+  #   main push  -> `edge` + `sha-<short>`   (newest development build)
+  #   vX.Y.Z tag -> `X.Y.Z` + `X.Y` + `latest` + `sha-<short>`
+  #
+  # `latest` deliberately tracks the newest RELEASE, not the newest `main`
+  # commit, because `docker-compose.prod.yml` defaults `CORTEX_IMAGE_TAG` to
+  # `latest` — a NAS running the documented `pull && up -d` must land on a
+  # released, tagged version rather than whatever merged into `main` an hour
+  # ago. Use `edge` explicitly to deploy an unreleased build.
+  # PRs and other branches never push images at all.
   # ---------------------------------------------------------------------------
   push-images:
     name: push images (Docker Hub)
     runs-on: ubuntu-latest
-    needs: [build-images]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-images, version-consistency]
+    # `version-consistency` is skipped on a `main` push; `always()` keeps this
+    # job runnable then, while still refusing to run if it actually FAILED on
+    # a tag push (a drifted version must never reach Docker Hub).
+    if: >-
+      always()
+      && needs.build-images.result == 'success'
+      && needs.version-consistency.result != 'failure'
+      && needs.version-consistency.result != 'cancelled'
+      && github.event_name == 'push'
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -258,7 +319,14 @@ jobs:
         with:
           images: mzahana/cortex
           tags: |
-            type=raw,value=latest
+            # Release tags — only ever produced by a `vX.Y.Z` tag push.
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # `latest` = newest RELEASE (the prod-overlay default), never a
+            # bare `main` commit; `edge` = newest `main` build.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            # Always applied, on both paths — the immutable, exact-commit tag.
             type=sha,format=short
       - name: Build and push the shared web/worker app image
         uses: docker/build-push-action@v6
@@ -276,7 +344,14 @@ jobs:
         with:
           images: mzahana/cortex-nginx
           tags: |
-            type=raw,value=latest
+            # Release tags — only ever produced by a `vX.Y.Z` tag push.
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # `latest` = newest RELEASE (the prod-overlay default), never a
+            # bare `main` commit; `edge` = newest `main` build.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            # Always applied, on both paths — the immutable, exact-commit tag.
             type=sha,format=short
       - name: Build and push the nginx image (frontend baked in)
         uses: docker/build-push-action@v6
@@ -288,3 +363,66 @@ jobs:
           labels: ${{ steps.meta-nginx.outputs.labels }}
           cache-from: type=gha,scope=nginx
           cache-to: type=gha,mode=max,scope=nginx
+
+  # ---------------------------------------------------------------------------
+  # GitHub Release (tag pushes only). Creates the release from the CHANGELOG
+  # section for this exact version, so the release notes, the CHANGELOG, the
+  # `frontend/package.json` version shown in the app UI, and the Docker Hub
+  # image tags are all the same text with no hand-copying. Gated on the same
+  # `version-consistency` job as the image push, and on the images actually
+  # having been published — a release must never point at tags that do not
+  # exist on Docker Hub.
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: github release (from CHANGELOG)
+    runs-on: ubuntu-latest
+    needs: [version-consistency, push-images]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract this version's CHANGELOG section
+        id: notes
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Print lines after this version's heading, stopping at the next one.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
+            flag && /^## \[/          { exit }
+            flag                      { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "::error::Extracted empty release notes for $VERSION from CHANGELOG.md."
+            exit 1
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "**Docker images** (public):"
+            echo ""
+            echo '```'
+            echo "docker pull mzahana/cortex:${VERSION}"
+            echo "docker pull mzahana/cortex-nginx:${VERSION}"
+            echo '```'
+            echo ""
+            echo "Deploy with \`CORTEX_IMAGE_TAG=${VERSION}\`, or just \`latest\` — which now points at this release."
+          } >> release-notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists — updating its notes."
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          fi
