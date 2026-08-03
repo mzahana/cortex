@@ -20,6 +20,10 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Added
+
+- CI status badge in `README.md`, linking to the GitHub Actions `ci.yml` workflow.
+
 ## [0.14.0] - 2026-08-02
 
 ### Added

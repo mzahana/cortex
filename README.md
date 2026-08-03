@@ -12,6 +12,7 @@ Each lab or team gets its own private, separate space.
 **Status:** ready to use (the full first version is complete). See
 [`CHANGELOG.md`](CHANGELOG.md) for what's included.
 
+[![CI](https://github.com/mzahana/cortex/actions/workflows/ci.yml/badge.svg)](https://github.com/mzahana/cortex/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 ---
