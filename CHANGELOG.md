@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-08-05
+
 ### Fixed
 
 - **`migrate` could fail upgrading a database that already had tenants.** The
