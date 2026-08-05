@@ -12,7 +12,10 @@ gets identical behavior:
        permissions unconditionally.
     3. A project-scoped membership (`project=P`) grants its role's
        permissions only for actions scoped to that same project `P`.
-    4. Anything not granted by (2) or (3) is denied.
+    4. Per-user overrides (`UserPermissionOverride`, docs/rbac.md §6) are
+       applied LAST, tenant-wide: a `GRANT` adds the key everywhere, a
+       `DENY` removes it everywhere and beats every grant.
+    5. Anything not granted by (2), (3) or (4) is denied.
 
 General-pool assets (`project=None`) are therefore governed by tenant-wide
 memberships only — a project-scoped Membership never "leaks" onto the shared
@@ -23,12 +26,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Union
 
-from .models import Membership
+from .models import Membership, UserPermissionOverride
 
 if TYPE_CHECKING:
     from apps.projects.models import Project
 
 ProjectLike = Union["Project", int, None]
+
+_OVERRIDE_CACHE_ATTR = "_rbac_permission_overrides"
 
 
 def _project_id_of(project: ProjectLike) -> Optional[int]:
@@ -37,6 +42,54 @@ def _project_id_of(project: ProjectLike) -> Optional[int]:
     if isinstance(project, int):
         return project
     return project.id
+
+
+def get_permission_overrides(user) -> tuple[frozenset[str], frozenset[str]]:
+    """`(granted_keys, denied_keys)` — this user's per-user overrides
+    (`UserPermissionOverride`, docs/rbac.md §6), both tenant-wide by design
+    (see that model's docstring).
+
+    Memoized on the `user` INSTANCE, not in a module/global cache: DRF builds
+    exactly one `request.user` per request, so this collapses the extra query
+    to once per request across all three resolvers below (they are called
+    repeatedly by permission classes + serializers on the same request, and
+    several endpoints assert query budgets). An instance attribute also can't
+    outlive the request or leak across tenants the way a global keyed by user
+    id could.
+    """
+    cached = getattr(user, _OVERRIDE_CACHE_ATTR, None)
+    if cached is not None:
+        return cached
+
+    granted: set[str] = set()
+    denied: set[str] = set()
+    for override in UserPermissionOverride.objects.filter(user=user).select_related("permission"):
+        key = override.permission.key
+        if override.effect == UserPermissionOverride.Effect.DENY:
+            denied.add(key)
+        else:
+            granted.add(key)
+
+    # DENY beats GRANT (model docstring) — enforced here, once, so no caller
+    # has to remember the precedence. The unique constraint makes a user/key
+    # pair single-valued anyway; this is belt-and-braces.
+    granted -= denied
+
+    result = (frozenset(granted), frozenset(denied))
+    try:
+        setattr(user, _OVERRIDE_CACHE_ATTR, result)
+    except AttributeError:  # pragma: no cover - defensive (immutable user stub)
+        pass
+    return result
+
+
+def invalidate_permission_override_cache(user) -> None:
+    """Drop the per-instance memo from `get_permission_overrides` — call after
+    mutating a user's overrides within the same request (the admin editing
+    them is a different `request.user`, but tests and the write endpoint's own
+    post-save re-read would otherwise see the pre-edit snapshot)."""
+    if hasattr(user, _OVERRIDE_CACHE_ATTR):
+        delattr(user, _OVERRIDE_CACHE_ATTR)
 
 
 def get_effective_permissions(user, project: ProjectLike = None) -> set[str]:
@@ -64,6 +117,13 @@ def get_effective_permissions(user, project: ProjectLike = None) -> set[str]:
         if not in_scope:
             continue
         perms.update(rp.permission.key for rp in membership.role.role_permissions.all())
+
+    # Per-user overrides (docs/rbac.md §6) sit ON TOP of the role union, and
+    # are tenant-wide by design — so they apply identically for every
+    # `project` argument, including the general pool.
+    granted, denied = get_permission_overrides(user)
+    perms |= set(granted)
+    perms -= set(denied)
     return perms
 
 
@@ -99,6 +159,16 @@ def get_viewable_project_scope(user, permission_key: str) -> tuple[bool, set[int
     without being denied the list entirely (the M0 bug CLAUDE.md forbids
     reintroducing).
     """
+    granted, denied = get_permission_overrides(user)
+    if permission_key in denied:
+        # Tenant-wide DENY beats every role grant, so there is nothing this
+        # user may see for this permission anywhere (docs/rbac.md §6).
+        return False, set()
+    if permission_key in granted:
+        # Tenant-wide GRANT is exactly a tenant-wide membership grant: every
+        # row in the tenant, general pool included.
+        return True, set()
+
     memberships = (
         Membership.objects.filter(user=user)
         .select_related("role")
@@ -136,6 +206,12 @@ def user_has_permission_in_any_scope(user, permission_key: str) -> bool:
     permission_key, project=<the object's actual project>)` in
     `has_object_permission()` afterwards — see `apps.assets.permissions`.
     """
+    granted, denied = get_permission_overrides(user)
+    if permission_key in denied:
+        return False
+    if permission_key in granted:
+        return True
+
     memberships = (
         Membership.objects.filter(user=user)
         .select_related("role")

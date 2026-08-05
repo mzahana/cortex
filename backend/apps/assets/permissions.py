@@ -73,6 +73,10 @@ ACTION_PERMISSION_MAP: dict[str, str] = {
     "partial_update": ASSET_EDIT,
     "retire": ASSET_RETIRE,
     "attachments": ASSET_ATTACH,
+    # Read-only convenience projection of fields the caller can already see
+    # on `GET /assets/{id}` (purchase cost/date/supplier + attachment
+    # metadata) — so it is plain `asset.view`, no new exposure.
+    "expense_prefill": ASSET_VIEW,
 }
 
 
@@ -148,3 +152,29 @@ class AssetPermission(BasePermission):
                     return False
 
         return True
+
+
+class AssetAttachmentPermission(BasePermission):
+    """`apps.assets.api.AssetAttachmentViewSet` — `DELETE /api/v1/attachments/{id}`.
+
+    An `Attachment` is project-scoped through its OWN asset
+    (`obj.asset.project_id`), exactly like `apps.projects.permissions.
+    ExpenseAttachmentPermission` scopes through `obj.expense.project_id`.
+    Removing a photo/PO/receipt is the same authorization intent as adding
+    one, so it reuses `asset.attach` rather than inventing a new key.
+
+    Same two-phase pattern as `AssetPermission`: a permissive "holds
+    `asset.attach` somewhere" gate at `has_permission` (DRF runs it before
+    `get_object()`, so the object's project isn't known yet — denying here
+    would over-deny a pure ProjectLead), then the real, scope-correct check
+    against the asset's actual project in `has_object_permission`.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated:
+            return False
+        return user_has_permission_in_any_scope(user, ASSET_ATTACH)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return user_has_permission(request.user, ASSET_ATTACH, project=obj.asset.project_id)

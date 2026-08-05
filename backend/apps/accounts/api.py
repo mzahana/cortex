@@ -54,6 +54,7 @@ from apps.common.pagination import BoundedPageNumberPagination
 from apps.notifications.services import enqueue_transactional_email
 from apps.rbac.models import Membership
 from apps.rbac.permission_keys import USER_MANAGE
+from apps.rbac.services import get_permission_overrides
 from apps.tenancy.context import tenant_context
 from apps.tenancy.middleware import (
     SESSION_LAST_ACTIVITY_KEY,
@@ -190,6 +191,21 @@ def _serialize_me(user: User, tenant: Tenant) -> dict:
             tenant_wide_perms |= perm_keys
         else:
             project_scoped_perms.setdefault(m.project_id, set()).update(perm_keys)
+
+    # Per-user overrides (docs/rbac.md §6). This function deliberately
+    # re-implements the union rule in Python for the no-N+1 reason above, so
+    # it MUST also re-apply this last layer — otherwise `/me` would advertise
+    # a permission set that differs from what the server actually enforces
+    # (`apps.rbac.services.get_effective_permissions`), and every UI gate
+    # built on it would be wrong for exactly the users an admin adjusted.
+    # Overrides are tenant-wide, hence applied to the general pool AND to
+    # every project bucket.
+    granted, denied = get_permission_overrides(user)
+    tenant_wide_perms = (tenant_wide_perms | set(granted)) - set(denied)
+    for project_id in project_scoped_perms:
+        project_scoped_perms[project_id] = (project_scoped_perms[project_id] | set(granted)) - set(
+            denied
+        )
 
     return {
         "id": user.id,

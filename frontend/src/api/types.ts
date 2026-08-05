@@ -478,9 +478,25 @@ export type AssetStatus =
  * (`apps.assets.serializers.AttachmentSerializer`) — read-only, embedded on
  * the asset detail/list row; created via the dedicated multipart upload
  * action, never through the asset serializer's own create/update. */
+/** Semantic label for an attachment (`apps.assets.models.Attachment.DocType`).
+ * Deliberately orthogonal to `kind`: `kind` is the storage/content-type shape
+ * (image vs document), `doc_type` is what the file actually IS. A phone photo
+ * of a paper invoice is `kind: "photo"` AND `doc_type: "invoice"`. `""` means
+ * untagged (legacy rows, or nobody classified it). */
+export type AttachmentDocType =
+  | ""
+  | "invoice"
+  | "purchase_order"
+  | "receipt"
+  | "quote"
+  | "warranty"
+  | "manual"
+  | "other";
+
 export interface Attachment {
   id: number;
   kind: "photo" | "doc";
+  doc_type: AttachmentDocType;
   storage_key: string;
   filename: string;
   content_type: string;
@@ -518,6 +534,10 @@ export interface Asset {
   currency: string;
   warranty_expiry: string | null;
   supplier: string;
+  /** Built-in link (product/procurement page). `""` when unset; the server
+   * only ever stores an http/https URL
+   * (`AssetSerializer.validate_url`). */
+  url: string;
   status: AssetStatus;
   condition: string;
   retired_at: string | null;
@@ -557,6 +577,7 @@ export interface AssetWritePayload {
   currency?: string;
   warranty_expiry?: string | null;
   supplier?: string;
+  url?: string;
   status?: AssetStatus;
   condition?: string;
   tags?: string[];
@@ -1107,7 +1128,7 @@ export interface Job {
 /** `?template=` for `POST /api/v1/labels/generate` (`apps.labels.templates.
  * SHEET_TEMPLATES` — the two Avery defaults documented for MVP, `docs/tasks/
  * M4-mobile-scan-labels.md`'s Q9 default). */
-export type LabelSheetTemplate = "avery_5160" | "avery_5163";
+export type LabelSheetTemplate = "avery_5160" | "avery_5163" | "single";
 
 /** `POST /api/v1/labels/generate` request body (T4.5). Requires
  * `label.generate` (scoped — Admin tenant-wide, ProjectLead within their own
@@ -1245,6 +1266,48 @@ export interface Role {
   id: number;
   key: string;
   name: string;
+  /** True for the 4 seeded system roles — they can be edited but never
+   * deleted or re-keyed (`apps.rbac.api.RoleViewSet`). */
+  is_system: boolean;
+  /** True once an admin has edited this role away from the shipped
+   * `docs/rbac.md` §3 defaults. Drives the "Reset to defaults" affordance. */
+  is_customized: boolean;
+  /** The role's full grant set. WRITABLE on PATCH — sending it REPLACES the
+   * set (an unchecked box means "revoked", not "unchanged"). */
+  permission_keys: string[];
+  /** How many memberships currently hold this role (a role in use cannot be
+   * deleted). */
+  member_count: number;
+}
+
+/** `GET /api/v1/permissions` — the fixed, system-wide permission vocabulary
+ * (`apps.rbac.permission_keys.PERMISSION_LABELS`). `group` is the key's
+ * dotted prefix, for UI sectioning only. */
+export interface PermissionCatalogEntry {
+  id: number;
+  key: string;
+  label: string;
+  group: string;
+}
+
+export type PermissionOverrideEffect = "grant" | "deny";
+
+/** `GET/PUT /api/v1/users/{id}/permissions`
+ * (`apps.rbac.api.UserPermissionsView`). `overrides` is the per-user
+ * exception layer; `effective_permission_keys` is what the server will
+ * actually enforce tenant-wide, i.e. roles + grants − denies. */
+export interface UserPermissions {
+  user: number;
+  user_email: string;
+  role_permission_keys: string[];
+  overrides: Record<string, PermissionOverrideEffect>;
+  effective_permission_keys: string[];
+}
+
+export interface RoleWritePayload {
+  key?: string;
+  name?: string;
+  permission_keys?: string[];
 }
 
 /** `GET /api/v1/memberships/` row shape / `POST`+`PATCH` response
@@ -1284,4 +1347,37 @@ export interface MembershipListParams extends ListParams {
   user?: number;
   role?: number;
   project?: number;
+}
+
+
+/** `GET /api/v1/assets/{id}/expense-prefill` — the asset's own purchase facts
+ * relabeled into expense vocabulary, so the project expense form can offer
+ * "fetch from asset" instead of re-keying. `documents` are the asset's
+ * `doc`-kind attachments, offered as copy candidates; copying one is a
+ * separate call (`copyAssetAttachmentToExpense`). */
+export interface AssetExpensePrefill {
+  asset: number;
+  asset_name: string;
+  project: number | null;
+  /** Decimal as a string (never a float), matching `Expense.amount`. */
+  amount: string | null;
+  currency: string;
+  date: string | null;
+  vendor: string;
+  description: string;
+  url: string;
+  /** Every attachment on the asset, ranked by the server: financial types
+   * first (invoice -> receipt -> purchase order -> quote), then the rest,
+   * newest first within each band. `documents[0]` is the right default
+   * selection — the client does not re-derive this ordering. */
+  documents: {
+    id: number;
+    filename: string;
+    content_type: string;
+    size: number;
+    kind: string;
+    doc_type: AttachmentDocType;
+    is_financial: boolean;
+    created_at: string;
+  }[];
 }

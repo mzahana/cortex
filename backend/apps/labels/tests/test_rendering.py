@@ -10,7 +10,7 @@ from __future__ import annotations
 import segno
 
 from apps.labels.rendering import LabelData, render_labels_pdf
-from apps.labels.templates import AVERY_5160, AVERY_5163, SHEET_TEMPLATES
+from apps.labels.templates import AVERY_5160, AVERY_5163, SHEET_TEMPLATES, SINGLE_LABEL
 
 
 class TestSheetTemplateGeometry:
@@ -30,8 +30,19 @@ class TestSheetTemplateGeometry:
         assert round(height, 4) == t.page_height_in
         assert t.labels_per_sheet == 10
 
-    def test_registry_has_both_documented_defaults(self):
-        assert set(SHEET_TEMPLATES) == {"avery_5160", "avery_5163"}
+    def test_single_label_page_is_exactly_one_label(self):
+        """The Asset Detail "Print label" default: a page sized to the label
+        itself, so a one-off print doesn't waste 29 die-cut labels on a
+        30-up sheet. Expressed as an ordinary `SheetTemplate` so it flows
+        through the same grid renderer with no special-casing."""
+        t = SINGLE_LABEL
+        assert t.labels_per_sheet == 1
+        assert t.page_width_in == t.label_width_in
+        assert t.page_height_in == t.label_height_in
+        assert t.margin_left_in == 0.0 and t.margin_top_in == 0.0
+
+    def test_registry_has_the_documented_templates(self):
+        assert set(SHEET_TEMPLATES) == {"avery_5160", "avery_5163", "single"}
 
 
 class TestQrEncoding:
@@ -81,3 +92,35 @@ class TestRenderLabelsPdf:
         pdf_bytes = render_labels_pdf(self._items(AVERY_5160.labels_per_sheet + 1), AVERY_5160)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         assert doc.page_count == 2
+
+
+class TestSingleLabelRendering:
+    def _items(self, n: int) -> list[LabelData]:
+        return [
+            LabelData(
+                qr_token=f"token-{i}",
+                name=f"Asset {i}",
+                asset_code=f"ID {i:08d}",
+                category_name="Category",
+                location_name="Location",
+            )
+            for i in range(n)
+        ]
+
+    def test_one_asset_renders_exactly_one_small_page(self):
+        import fitz
+
+        pdf_bytes = render_labels_pdf(self._items(1), SINGLE_LABEL)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        assert doc.page_count == 1
+        # 4in x 2in at 72pt/in — not a Letter sheet.
+        page = doc[0]
+        assert round(page.rect.width) == 288
+        assert round(page.rect.height) == 144
+
+    def test_several_assets_get_one_page_each(self):
+        import fitz
+
+        pdf_bytes = render_labels_pdf(self._items(3), SINGLE_LABEL)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        assert doc.page_count == 3

@@ -23,7 +23,7 @@ from apps.accounts.api import (
     PasswordResetRequestView,
     UserViewSet,
 )
-from apps.assets.api import AssetResolveView, AssetViewSet
+from apps.assets.api import AssetAttachmentViewSet, AssetResolveView, AssetViewSet
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, TagViewSet
 from apps.dashboard.api import DashboardSummaryView
@@ -43,7 +43,12 @@ from apps.projects.api import (
     ProjectDocumentViewSet,
     ProjectViewSet,
 )
-from apps.rbac.api import MembershipViewSet, RoleViewSet
+from apps.rbac.api import (
+    MembershipViewSet,
+    PermissionCatalogView,
+    RoleViewSet,
+    UserPermissionsView,
+)
 from apps.reservations.api import ReservationViewSet
 from apps.reservations.checkout import CheckoutViewSet
 from apps.stock.api import ReorderRequestViewSet, StockItemViewSet
@@ -73,6 +78,10 @@ router.register("expense-attachments", ExpenseAttachmentViewSet, basename="expen
 router.register("expense-categories", ExpenseCategoryViewSet, basename="expense-category")
 router.register("tags", TagViewSet, basename="tag")
 router.register("assets", AssetViewSet, basename="asset")
+# Asset attachment DELETE only — upload/list stay nested under the asset
+# (`POST /assets/{id}/attachments`), same split as `expense-attachments`
+# vs. `POST /expenses/{id}/attachment`.
+router.register("attachments", AssetAttachmentViewSet, basename="attachment")
 router.register("stock", StockItemViewSet, basename="stock-item")
 router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-request")
 router.register("reservations", ReservationViewSet, basename="reservation")
@@ -124,6 +133,17 @@ urlpatterns = [
         "api/v1/auth/password-reset/confirm",
         PasswordResetConfirmView.as_view(),
         name="auth-password-reset-confirm",
+    ),
+    # Admin-editable RBAC (docs/rbac.md §6): the fixed permission vocabulary
+    # the role/override matrices are rendered from, and the per-user override
+    # layer. Plain `path()`s — `permissions` is a fixed catalog, not a CRUD
+    # collection, and `users/{id}/permissions` is a single nested singleton
+    # resource, not a router-able one.
+    path("api/v1/permissions", PermissionCatalogView.as_view(), name="permission-catalog"),
+    path(
+        "api/v1/users/<int:user_id>/permissions",
+        UserPermissionsView.as_view(),
+        name="user-permissions",
     ),
     path("api/v1/me", MeView.as_view(), name="me"),
     # Self-service password change (authenticated).

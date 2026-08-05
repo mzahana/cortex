@@ -70,6 +70,11 @@ PROJECT_ACTION_PERMISSION_MAP: dict[str, str] = {
     # to THIS project (Lead-of-that-project, or Admin) matches the same
     # financial boundary exactly.
     "report": EXPENSE_VIEW,
+    # The ZIP bundle ships the ORIGINAL invoice scans and project documents
+    # (proposal/contract/progress reports) — i.e. strictly more financial
+    # material than the report PDF above, never less. Same gate, for the same
+    # reason: `expense.view` scoped to THIS project.
+    "archive": EXPENSE_VIEW,
 }
 
 
@@ -168,6 +173,12 @@ EXPENSE_ACTION_PERMISSION_MAP: dict[str, str | None] = {
     "partial_update": EXPENSE_MANAGE,
     "destroy": EXPENSE_MANAGE,
     "attachment": None,  # method-dependent, see `_expense_action_permission_key`
+    # Copying an asset's PO/invoice onto this expense is an ordinary
+    # attachment WRITE on the expense — same gate as uploading one. The
+    # SOURCE asset is separately gated on `asset.view` inside the view
+    # itself (`apps.projects.api.ExpenseViewSet.attachment_from_asset`),
+    # since it lives outside this expense's project.
+    "attachment_from_asset": EXPENSE_MANAGE,
 }
 
 

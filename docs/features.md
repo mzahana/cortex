@@ -10,6 +10,15 @@ Acceptance criteria are given for MVP items.
 - Multi-tenant isolation; roles Admin/ProjectLead/Member/Viewer; project-scoped memberships.
 - **Acceptance:** A user only ever sees their tenant's data; a Member cannot hit an admin endpoint (403 server-side even if URL is guessed); a ProjectLead can approve only their project's requests.
 
+### F1b. Admin-editable permissions (post-MVP)
+- The `rbac.md` §3 matrix is the *default*: an Admin edits any role's permission
+  set from Admin → Users & Roles → "Roles & permissions", and can author custom
+  roles.
+- Per-user overrides (Inherit / Always allow / Never allow) cover the
+  one-person deviation without a new role. Tenant-wide by design; "Never allow"
+  beats every grant. See `rbac.md` §6 for the full semantics and the lockout
+  guardrail.
+
 ### F2. Asset registry with custom fields
 - CRUD assets; category tree; per-category custom fields (JSONB-backed); location tree; status lifecycle; purchase/warranty/serial; tags; photos.
 - Consumable vs. durable flag; general-pool vs. project assignment.

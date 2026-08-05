@@ -26,6 +26,7 @@ from typing import Any
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.utils.text import slugify
 
 from apps.assets.models import Asset
 from apps.assets.services import PHOTO_CONTENT_TYPES, save_attachment_file
@@ -508,4 +509,29 @@ def save_project_report_pdf(*, tenant_id: int, job_id, pdf_bytes: bytes) -> tupl
     key = project_report_storage_key(tenant_id, job_id)
     storage_key = default_storage.save(key, ContentFile(pdf_bytes))
     filename = f"project-report-{uuid.UUID(str(job_id)).hex[:8]}.pdf"
+    return storage_key, filename
+
+
+def project_archive_storage_key(tenant_id: int, job_id) -> str:
+    """Same tenant + job-scoped layout as `project_report_storage_key` — the
+    job's own unguessable UUID is the collision-proofing."""
+    return f"project-archives/{tenant_id}/{job_id}.zip"
+
+
+def save_project_archive(*, tenant_id: int, job_id, project, fileobj) -> tuple[str, str]:
+    """Persist a built ZIP bundle (`apps.projects.archive.build_project_archive`)
+    to the SAME storage backend/volume every other attachment/report lands on.
+
+    Takes a FILE OBJECT, not bytes, on purpose: the archive is streamed into a
+    `SpooledTemporaryFile` precisely so a large bundle never has to exist in
+    RAM as one `bytes` — reading it back with `.read()` just to hand
+    `ContentFile` a buffer would throw that away. `django.core.files.File`
+    wraps it so `default_storage.save` streams it out in chunks.
+    """
+    from django.core.files import File
+
+    key = project_archive_storage_key(tenant_id, job_id)
+    storage_key = default_storage.save(key, File(fileobj))
+    slug = slugify(project.code or project.name) or f"project-{project.id}"
+    filename = f"{slug}-archive-{uuid.UUID(str(job_id)).hex[:8]}.zip"
     return storage_key, filename

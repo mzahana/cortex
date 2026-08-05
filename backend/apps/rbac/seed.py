@@ -69,6 +69,16 @@ def seed_roles_for_tenant(
             role.save(update_fields=["is_system", "name"])
         roles_by_key[role_key] = role
 
+        if getattr(role, "is_customized", False):
+            # An admin has edited this role's grants (docs/rbac.md §6). Re-
+            # seeding is `get_or_create`-based, so without this guard a later
+            # re-run (migration backfill, management command) would silently
+            # re-add every default grant they removed — including, say, the
+            # `category.manage` they took away from Project Lead. "Reset to
+            # defaults" (`POST /api/v1/roles/{id}/reset`) is the ONLY way
+            # back to the defaults once customized.
+            continue
+
         for perm_key in SYSTEM_ROLE_PERMISSIONS[role_key]:
             role_permission_model.all_objects.get_or_create(
                 tenant=tenant,

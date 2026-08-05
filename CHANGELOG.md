@@ -22,7 +22,91 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ### Added
 
+- **Admin-editable permissions (Admin → Users & Roles → "Roles & permissions").**
+  `docs/rbac.md` §3's matrix is now the *default*, not a hard-coded law: an
+  Admin edits any role's permission set from a checkbox matrix (the motivating
+  case — a Project Lead who also needs `category.manage`), authors custom roles
+  (optionally cloned from an existing one), and resets an edited system role
+  back to its shipped defaults. New endpoints: `GET /api/v1/permissions` (the
+  fixed permission vocabulary), full CRUD on `/api/v1/roles`, and
+  `POST /api/v1/roles/{id}/reset`. Writes require **tenant-wide
+  `tenant.manage`** (deliberately stricter than `user.manage`, so a Project
+  Lead can't edit the rules that define their own power) and are audited under
+  `role.assign` with before/after permission sets.
+- **Per-user permission overrides** — a tri-state (Inherit / Always allow /
+  Never allow) matrix per user, for the "this one person needs a deviation from
+  their role" case, without authoring a whole custom role
+  (`GET/PUT /api/v1/users/{id}/permissions`, Admin-only, audited). Overrides
+  are tenant-wide by design and "Never allow" beats every role grant, including
+  one held only through a project-scoped membership.
+- **Lockout guardrail** — any role edit or override that would leave the tenant
+  with no active user holding tenant-wide `tenant.manage` + `user.manage` is
+  rejected (400) and rolled back. Self-hosted Cortex has no break-glass path.
+- **Print a label straight from an asset** — Asset Detail has a "Print label"
+  action (gated by `label.generate` for that asset's project) that generates
+  and downloads the PDF without a trip to the Labels screen, which still owns
+  batch printing. New `single` label template (one 4in × 2in label per page) is
+  the default for this action, so a one-off print doesn't waste 29 of 30
+  die-cut labels on an Avery sheet.
+- **Built-in asset link field** — `Asset.url`, for the product/procurement/docs
+  page, so the near-universal case no longer needs a per-category custom field.
+  Editable on the asset form, rendered as a link on Asset Detail, and included
+  as a core column in CSV export/import (so it round-trips instead of becoming
+  a custom field). Only `http`/`https` are accepted, at every write path.
+- **Download all of a project's documents as a structured ZIP** —
+  `POST /api/v1/projects/{id}/archive` enqueues a Celery job that bundles the
+  **original** files (not a rendered PDF): `documents/<kind>/`, `invoices/<expense>/`,
+  optionally `assets/<asset>/`, plus `expenses.csv`, a `manifest.csv` covering
+  every file (size, uploader, timestamp), and a `README.txt`. Gated on
+  `expense.view` scoped to that project and audited. The archive is streamed to
+  disk with a hard size cap, so a large project fails the job with an
+  actionable message rather than exhausting the worker.
+- **Fetch expense details from a linked asset** — the project expense form can
+  pull the asset's amount, currency, vendor and purchase date
+  (`GET /api/v1/assets/{id}/expense-prefill`) and copy a PO/invoice already
+  filed against that asset onto the expense
+  (`POST /api/v1/expenses/{id}/attachment-from-asset`, a real byte copy with
+  its own storage object). Convenience only — every field stays editable, and
+  fetching never overwrites something already typed in. The copy requires
+  `expense.manage` on the expense's project **and** `asset.view` on the source
+  asset's project.
+- **Attachments have a document type** — `invoice` / `receipt` /
+  `purchase_order` / `quote` / `warranty` / `manual` / `other`, set when
+  uploading and shown as a badge on the asset's tiles. This is deliberately
+  orthogonal to the existing `kind` (photo vs document), which is a
+  storage/content-type discriminator, not a meaning: a phone photo of a paper
+  invoice is `kind="photo"` AND `doc_type="invoice"`.
+- **Remove an asset's photos/POs/receipts** — asset attachments could be
+  uploaded but never deleted. `DELETE /api/v1/attachments/{id}` removes the
+  row **and the stored file**, so the volume actually reclaims the space
+  (best-effort on the storage side: an already-missing file never blocks or
+  rolls back the DB delete). Gated by `asset.attach` scoped to the owning
+  asset's project — same authorization intent as attaching — and audited. The
+  Asset Detail "Photos & attachments" tiles get a remove button with a
+  confirm step.
 - CI status badge in `README.md`, linking to the GitHub Actions `ci.yml` workflow.
+
+### Fixed
+
+- **"Fetch from asset" never offered a photographed invoice.**
+  `GET /api/v1/assets/{id}/expense-prefill` filtered candidates to
+  `kind="doc"`, but the most common way an invoice reaches an asset is a phone
+  photo of the paper one (`kind="photo"`) — so the endpoint returned an empty
+  list for exactly the case it exists to serve. It now offers **every**
+  attachment, ranked by `doc_type` (invoice → receipt → purchase order →
+  quote, then everything else, newest first within each band).
+- **The invoice never actually landed on the expense.** Copying an asset
+  document required a separate manual click that only appeared *after* the
+  expense had been saved, so the normal "fill the form and save" flow silently
+  dropped it. Fetching from an asset now pre-ticks the best-ranked financial
+  document and copies every ticked document automatically once the expense is
+  created (a copy failure surfaces as a banner — the expense itself is already
+  saved either way).
+- `GET /api/v1/me` re-derives the effective permission set in Python (a
+  deliberate no-N+1 optimization) and therefore had to learn about the new
+  per-user overrides — otherwise it would advertise a permission set differing
+  from what the server enforces, and every UI gate built on it would be wrong
+  for exactly the users an admin adjusted.
 
 ## [0.14.0] - 2026-08-02
 

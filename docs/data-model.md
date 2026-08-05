@@ -79,13 +79,21 @@ erDiagram
 - **Asset** — the central record.
   - Identity: `id (uuid, public code), tenant_id, category_id, name, description`.
   - Type flags: `is_consumable(bool)`, `project_id(nullable)`.
-  - Physical/commercial: `serial_number, manufacturer, model, location_id, purchase_date, purchase_cost, currency, warranty_expiry, supplier`.
+  - Physical/commercial: `serial_number, manufacturer, model, location_id, purchase_date, purchase_cost, currency, warranty_expiry, supplier, url`.
+    `url` is the built-in link (product/procurement/docs page) so the
+    near-universal case needs no per-category custom field; `http`/`https`
+    only, enforced at every write path (it is rendered as a real link).
   - State: `status(available|in_use|reserved|maintenance|retired|lost)`, `condition(notes)`.
   - Workload (for compute): `current_workload_user_id(nullable)`.
   - `qr_token` — stable opaque token encoded in the label QR; resolves to this asset.
   - Search: `search_vector(tsvector)` maintained by trigger over name/serial/tags/custom values.
 - **AssetFieldValue** — value of a CustomFieldDef for an asset (`asset_id, field_def_id, value(jsonb)`). GIN-indexed for filtering.
-- **Attachment** — photos/docs: `id, asset_id, kind(photo|doc), storage_key, filename, content_type, uploaded_by`. **Binary lives on the volume/object store**, only the key is in the DB.
+- **Attachment** — photos/docs: `id, asset_id, kind(photo|doc), doc_type, storage_key, filename, content_type, uploaded_by`. **Binary lives on the volume/object store**, only the key is in the DB.
+  `kind` and `doc_type` are orthogonal on purpose: `kind` is the storage/content-type
+  discriminator (drives the upload allowlist), `doc_type`
+  (`invoice|purchase_order|receipt|quote|warranty|manual|other`, blank = untagged)
+  is what the file *is*. A phone photo of a paper invoice is both `kind="photo"`
+  and `doc_type="invoice"` — the expense prefill ranks on `doc_type`, never `kind`.
 - **Tag** / **TagLink** — free-form tagging, many-to-many.
 
 ### Consumables & stock

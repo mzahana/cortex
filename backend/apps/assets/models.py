@@ -104,6 +104,16 @@ class Asset(TenantScopedModel):
     currency = models.CharField(max_length=3, blank=True, default="")
     warranty_expiry = models.DateField(null=True, blank=True)
     supplier = models.CharField(max_length=255, blank=True, default="")
+    url = models.URLField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Built-in link for this asset (product/procurement/docs page) so a "
+        "category custom field is not needed for the near-universal case. "
+        "Rendered as a clickable link by the UI — `apps.assets.serializers` "
+        "restricts the scheme to http/https, since a stored `javascript:` URL "
+        "would otherwise be a self-XSS vector on the detail screen.",
+    )
 
     # --- State -----------------------------------------------------------------
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.AVAILABLE)
@@ -217,8 +227,42 @@ class Attachment(TenantScopedModel):
     writer of `storage_key`.
     """
 
+    class DocType(models.TextChoices):
+        """What the file IS, as opposed to what shape it is.
+
+        Deliberately orthogonal to `kind`: `kind` is a storage/validation
+        discriminator (image vs document, driving the content-type allowlist
+        in `apps.assets.services`), while `doc_type` is the semantic label a
+        human cares about. The two genuinely cross — a phone photo of a
+        paper invoice is `kind="photo"` AND `doc_type="invoice"`, which is
+        exactly the case that made "fetch the invoice from the asset"
+        silently return nothing when the only signal available was `kind`.
+        """
+
+        UNSPECIFIED = "", "Unspecified"
+        INVOICE = "invoice", "Invoice"
+        PURCHASE_ORDER = "purchase_order", "Purchase order"
+        RECEIPT = "receipt", "Receipt"
+        QUOTE = "quote", "Quote"
+        WARRANTY = "warranty", "Warranty"
+        MANUAL = "manual", "Manual / datasheet"
+        OTHER = "other", "Other"
+
+    # Financial document types, in the order the expense form should prefer
+    # them when auto-selecting "the invoice" for a linked asset.
+    FINANCIAL_DOC_TYPES = ("invoice", "receipt", "purchase_order", "quote")
+
     asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="attachments")
     kind = models.CharField(max_length=10, choices=_attachment_kind_choices(), default="photo")
+    doc_type = models.CharField(
+        max_length=20,
+        choices=DocType.choices,
+        blank=True,
+        default="",
+        help_text="Semantic label (invoice/PO/receipt/...) — see `DocType`. Blank "
+        "for legacy rows and for files nobody bothered to classify; the expense "
+        "prefill still offers those, just ranked below the tagged ones.",
+    )
     storage_key = models.CharField(
         max_length=500,
         help_text="Relative path/key on the storage backend (volume or, later, "

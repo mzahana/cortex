@@ -78,9 +78,34 @@ AVERY_5163 = SheetTemplate(
     gutter_y_in=0.0,
 )
 
+# One label per PAGE, page sized to the label itself (4in x 2in — the 5163
+# label size, the larger/more readable of the two sheet templates). Added for
+# the Asset Detail "Print label" action: printing a single asset onto a full
+# Avery sheet wastes 29 of 30 die-cut labels, so a quick one-off print gets
+# its own page geometry instead. Deliberately expressed as an ordinary
+# `SheetTemplate` (1 col x 1 row, zero margins/gutters) so it flows through
+# the SAME `apps.labels.rendering.render_labels_pdf` grid layout with no
+# special-casing — `labels_per_sheet == 1` simply makes each asset its own
+# page, which is also the sane behavior if several assets are sent to it.
+SINGLE_LABEL = SheetTemplate(
+    key="single",
+    label='Single label (2" x 4", one per page)',
+    page_width_in=4.0,
+    page_height_in=2.0,
+    cols=1,
+    rows=1,
+    label_width_in=4.0,
+    label_height_in=2.0,
+    margin_top_in=0.0,
+    margin_left_in=0.0,
+    gutter_x_in=0.0,
+    gutter_y_in=0.0,
+)
+
 SHEET_TEMPLATES: dict[str, SheetTemplate] = {
     AVERY_5160.key: AVERY_5160,
     AVERY_5163.key: AVERY_5163,
+    SINGLE_LABEL.key: SINGLE_LABEL,
 }
 
 DEFAULT_TEMPLATE_KEY = AVERY_5160.key

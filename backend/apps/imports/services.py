@@ -110,6 +110,7 @@ TARGET_PROJECT = "project"
 TARGET_STATUS = "status"
 TARGET_CONDITION = "condition"
 TARGET_TAGS = "tags"
+TARGET_URL = "url"
 TARGET_CUSTOM = "custom"
 TARGET_IGNORE = "ignore"
 
@@ -122,6 +123,12 @@ CORE_TARGETS: frozenset[str] = frozenset(
         TARGET_STATUS,
         TARGET_CONDITION,
         TARGET_TAGS,
+        # `Asset.url` is a CORE target, not a custom field: it must round-trip
+        # through `apps.imports.exports.CORE_EXPORT_COLUMNS` (which includes
+        # it). If it were left unmapped, `default_column_mapping` would fall
+        # through to `TARGET_CUSTOM` and a re-imported export would try to
+        # materialize the built-in column as a per-category custom field.
+        TARGET_URL,
     }
 )
 ALL_TARGETS: frozenset[str] = CORE_TARGETS | {TARGET_CUSTOM, TARGET_IGNORE}
@@ -245,6 +252,7 @@ class ResolvedRow:
     tag_names: list[str] = field(default_factory=list)
     status: str = Asset.Status.AVAILABLE
     condition: str = ""
+    url: str = ""
     custom_field_pairs: list[tuple[CustomFieldDef, Any]] = field(default_factory=list)
     # `Any`, not `str`: most entries are a plain message string, but
     # `custom_field_values` nests `validate_custom_field_values`'s own
@@ -266,6 +274,7 @@ class ResolvedRow:
                 "tags": self.tag_names,
                 "status": self.status,
                 "condition": self.condition,
+                "url": self.url,
                 "custom_field_values": {fd.key: value for fd, value in self.custom_field_pairs},
             },
             "errors": self.errors,
@@ -380,6 +389,16 @@ def resolve_import_rows(
                         resolved.status = resolved_status
             elif target == TARGET_CONDITION:
                 resolved.condition = str(value) if value is not None else ""
+            elif target == TARGET_URL:
+                raw_url = str(value).strip() if value is not None else ""
+                if raw_url and not raw_url.lower().startswith(("http://", "https://")):
+                    # Same http/https-only rule the API enforces
+                    # (`apps.assets.serializers.AssetSerializer.validate_url`)
+                    # -- a spreadsheet is just another write path into the
+                    # same field, and the value ends up in an `<a href>`.
+                    resolved.errors[TARGET_URL] = "URL must start with http:// or https://."
+                else:
+                    resolved.url = raw_url
             elif target == TARGET_TAGS:
                 if value is not None:
                     resolved.tag_names = [
@@ -517,6 +536,7 @@ def commit_import_rows(
                 location=row.location,
                 status=row.status,
                 condition=row.condition,
+                url=row.url,
                 is_consumable=row.category.default_is_consumable,
             )
             if row.custom_field_pairs:

@@ -254,6 +254,7 @@ window and the holder's active-reservation cap without a manual cancel.
 | GET/POST | `/api/v1/expenses/{id}/attachment` | Invoice scan (multipart → storage backend). |
 | GET/POST | `/api/v1/projects/{id}/documents` | Proposal/contract/progress-report files. Reads gated by project-scoped `expense.view`; writes by `project.manage`. |
 | DELETE | `/api/v1/documents/{id}` | Delete a project document. |
+| POST | `/api/v1/projects/{id}/archive` | Enqueues the structured ZIP bundle of this project's **original** documents/attachments (`documents/<kind>/`, `invoices/<expense>/`, optional `assets/<asset>/`, plus `expenses.csv` + `manifest.csv` + `README.txt`) → returns a job id; poll `/api/v1/jobs/{id}` and download. Gated by `expense.view` (🟡), audited. Body flags: `include_documents`/`include_invoices` (default true), `include_asset_attachments` (default false). |
 | POST | `/api/v1/projects/{id}/report` | Enqueues the audit-report PDF (budget, spend-by-category, itemized expenses, asset inventory, document appendix) → returns a job id; poll `/api/v1/jobs/{id}` and download. Gated by `expense.view` (🟡) — same as seeing the numbers. |
 | GET | `/api/v1/projects/{id}/export.csv?fields=...` | Streamed, field-selectable expense/asset export, RBAC-scoped to the project. |
 
@@ -268,7 +269,15 @@ window and the holder's active-reservation cap without a manual cancel.
 | Method | Path | Purpose |
 |---|---|---|
 | CRUD | `/api/v1/maintenance-plans`, `/api/v1/maintenance` | Schedule / log (Phase 2 UI) |
-| POST | `/api/v1/labels/generate` | Body: asset ids + sheet template → enqueues PDF; returns job id |
+| POST | `/api/v1/labels/generate` | Body: asset ids + sheet template (`avery_5160`, `avery_5163`, or `single` — one label per page, used by Asset Detail's "Print label") → enqueues PDF; returns job id |
+| GET | `/api/v1/permissions` | The fixed permission vocabulary, for the role/override matrices (rbac.md §6) |
+| GET/POST | `/api/v1/roles` | List (any `user.manage`) / create a custom role (tenant-wide `tenant.manage`) |
+| GET/PATCH/DELETE | `/api/v1/roles/{id}` | Edit a role's `permission_keys` (wholesale replacement, audited) / delete a custom, unassigned role |
+| POST | `/api/v1/roles/{id}/reset` | Restore a system role's default grants (rbac.md §3) |
+| GET/PUT | `/api/v1/users/{id}/permissions` | Per-user override layer — Admin-only, tenant-wide, audited (rbac.md §6.2) |
+| DELETE | `/api/v1/attachments/{id}` | Remove an asset photo/PO/receipt — deletes the stored FILE as well as the row (`asset.attach` 🟡 on the owning asset's project, audited). Upload stays nested at `POST /assets/{id}/attachments`. |
+| GET | `/api/v1/assets/{id}/expense-prefill` | The asset's purchase facts shaped as an expense draft + **every** attachment as a copy candidate, ranked by `doc_type` (invoice → receipt → PO → quote, then the rest). `asset.view`, read-only |
+| POST | `/api/v1/expenses/{id}/attachment-from-asset` | Copy an asset's PO/invoice onto this expense (`expense.manage` here **and** `asset.view` on the source asset) |
 | GET | `/api/v1/jobs/{id}` | Poll background job (import/label/export) |
 | POST | `/api/v1/imports` | Upload spreadsheet → dry-run validation |
 | POST | `/api/v1/imports/{id}/commit` | Commit mapped import |
@@ -287,7 +296,7 @@ Mobile-first PWA; every screen usable one-handed on a phone.
 | **Dashboard / Home** | Tiles: totals by category, currently-out, overdue, low-stock, upcoming reservations, per-project allocation |
 | **Scan** (primary FAB) | Opens camera, scans QR → routes to Asset Detail with quick check-in/out |
 | **Asset List** | Server-side search + filters + tags; virtualized list; card + table views |
-| **Asset Detail** | Specs (custom fields), photos, status, location, history; actions: reserve, check-out/in, edit, attach photo, generate label, report issue |
+| **Asset Detail** | Specs (custom fields), photos, status, location, the asset's link (`url`), history; actions: reserve, check-out/in, edit, attach photo, **print label** (one-click, `single` template by default), report issue |
 | **Asset Create/Edit** | Category-driven dynamic form (custom fields), photo capture, location picker |
 | **Stock / Consumables** | Quantities, low-stock highlights, receive/consume, reorder requests |
 | **Reservations Calendar** | Month/week/day; create/approve; conflict feedback |
@@ -297,7 +306,7 @@ Mobile-first PWA; every screen usable one-handed on a phone.
 | **Import** | Upload spreadsheet → map columns → dry-run report → commit |
 | **Maintenance** (Phase 2) | Due/overdue plans, log events |
 | **Reports** (Phase 2) | Utilization, inventory value, consumption, per-project |
-| **Admin: Users & Roles** | Manage users, memberships, project scoping |
+| **Admin: Users & Roles** | Two tabs — **Members** (users, memberships, project scoping, per-user permission overrides) and **Roles & permissions** (edit any role's grants, author/clone custom roles, reset a system role to defaults). Both write surfaces are Admin-only, see rbac.md §6. |
 | **Admin: Categories & Fields** | Category tree, custom field defs, approval flags |
 | **Admin: Locations** | Location tree |
 | **Admin: Tenant Settings** | Tenant config, notification defaults, sender domain |

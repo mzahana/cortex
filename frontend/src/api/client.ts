@@ -5,6 +5,8 @@
  * into `ApiError`.
  */
 import type {
+  AssetExpensePrefill,
+  AttachmentDocType,
   AppUser,
   Asset,
   AssetListParams,
@@ -52,6 +54,8 @@ import type {
   NotificationPref,
   NotificationPrefUpdatePayload,
   Paginated,
+  PermissionCatalogEntry,
+  PermissionOverrideEffect,
   Project,
   ProjectCreatePayload,
   ProjectDetail,
@@ -67,6 +71,7 @@ import type {
   ReservationCreatePayload,
   ReservationListParams,
   Role,
+  RoleWritePayload,
   SessionSettings,
   SessionSettingsUpdate,
   StockItem,
@@ -77,6 +82,7 @@ import type {
   Tag,
   TenantBranding,
   UpdateMeRequest,
+  UserPermissions,
 } from "./types";
 import { ApiError, type ProblemDetails } from "./problem";
 
@@ -712,6 +718,59 @@ export const api = {
    * other) onto the end of the PDF (can make it much larger). Both default
    * to `false`, matching the server's defaults when the fields are
    * omitted. */
+  /** `POST /api/v1/projects/{id}/archive/` — enqueue the structured ZIP
+   * bundle of this project's ORIGINAL documents/attachments (not a rendered
+   * PDF). Returns a `queued` `Job`; poll `getJob` until `succeeded`, then
+   * follow `download_url`. Asset attachments default OFF (they are the one
+   * section that can be arbitrarily large). Requires `expense.view` scoped
+   * to this project, same as the report. */
+  async generateProjectArchive(
+    projectId: number,
+    options?: {
+      includeDocuments?: boolean;
+      includeInvoices?: boolean;
+      includeAssetAttachments?: boolean;
+    },
+  ): Promise<Job> {
+    return request<Job>(`/projects/${projectId}/archive/`, {
+      method: "POST",
+      body: {
+        include_documents: options?.includeDocuments ?? true,
+        include_invoices: options?.includeInvoices ?? true,
+        include_asset_attachments: options?.includeAssetAttachments ?? false,
+      },
+    });
+  },
+
+  /** `DELETE /api/v1/attachments/{id}/` — remove a photo/PO/receipt from an
+   * asset. Deletes the stored FILE as well as the DB row (server-side), so
+   * the volume actually reclaims the space. Requires `asset.attach` scoped to
+   * the owning asset's project. */
+  async deleteAssetAttachment(attachmentId: number): Promise<void> {
+    await request<void>(`/attachments/${attachmentId}/`, { method: "DELETE" });
+  },
+
+  /** `GET /api/v1/assets/{id}/expense-prefill/` — the asset's purchase facts
+   * shaped as an expense draft, plus its `doc`-kind attachments as copy
+   * candidates. Pure read (`asset.view`); creates nothing. */
+  async getAssetExpensePrefill(assetId: number): Promise<AssetExpensePrefill> {
+    return request<AssetExpensePrefill>(`/assets/${assetId}/expense-prefill/`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/expenses/{id}/attachment-from-asset/` — copy a PO/invoice
+   * already filed against an asset onto this expense. A real copy with its
+   * own storage object, so later asset edits can't alter the financial
+   * record. Needs `expense.manage` here AND `asset.view` on the source. */
+  async copyAssetAttachmentToExpense(
+    expenseId: number,
+    attachmentId: number,
+  ): Promise<ExpenseAttachment> {
+    return request<ExpenseAttachment>(`/expenses/${expenseId}/attachment-from-asset/`, {
+      method: "POST",
+      body: { attachment: attachmentId },
+    });
+  },
+
   async generateProjectReport(
     projectId: number,
     options?: { includeInvoiceScans?: boolean; includeProjectDocuments?: boolean },
@@ -806,10 +865,14 @@ export const api = {
     assetId: number,
     file: File,
     kind: "photo" | "doc" = "photo",
+    docType: AttachmentDocType = "",
   ): Promise<Attachment> {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("kind", kind);
+    // Semantic label, independent of `kind` — an invoice photographed with a
+    // phone is `kind="photo"`, `doc_type="invoice"`. Omitted when untagged.
+    if (docType) formData.append("doc_type", docType);
 
     const headers = new Headers();
     const token = readCookie(CSRF_COOKIE_NAME);
@@ -1242,6 +1305,57 @@ export const api = {
    * standard `Paginated<T>` shape. */
   async listRoles(): Promise<Paginated<Role>> {
     return request<Paginated<Role>>("/roles/", { method: "GET" });
+  },
+
+  /** `GET /api/v1/permissions` — the fixed permission vocabulary the role
+   * and per-user matrices are rendered from. Unpaginated by design (a couple
+   * of dozen fixed rows), but still wrapped in a `results` envelope. */
+  async listPermissionCatalog(): Promise<{ results: PermissionCatalogEntry[] }> {
+    return request<{ results: PermissionCatalogEntry[] }>("/permissions", { method: "GET" });
+  },
+
+  /** `POST /api/v1/roles/` — create a tenant-authored custom role
+   * (Admin-only, tenant-wide `tenant.manage`). */
+  async createRole(payload: RoleWritePayload): Promise<Role> {
+    return request<Role>("/roles/", { method: "POST", body: payload });
+  },
+
+  /** `PATCH /api/v1/roles/{id}/` — Admin-only. Sending `permission_keys`
+   * REPLACES the role's grant set wholesale (an unchecked box is a
+   * revocation), and flips `is_customized`. The server rejects (400) any
+   * edit that would leave the tenant with no administrator. */
+  async updateRole(id: number, payload: RoleWritePayload): Promise<Role> {
+    return request<Role>(`/roles/${id}/`, { method: "PATCH", body: payload });
+  },
+
+  /** `DELETE /api/v1/roles/{id}/` — custom roles only, and only when no
+   * membership still holds them (both enforced server-side with a 400). */
+  async deleteRole(id: number): Promise<void> {
+    await request<void>(`/roles/${id}/`, { method: "DELETE" });
+  },
+
+  /** `POST /api/v1/roles/{id}/reset/` — restore a SYSTEM role's shipped
+   * `docs/rbac.md` §3 defaults and clear `is_customized`. */
+  async resetRole(id: number): Promise<Role> {
+    return request<Role>(`/roles/${id}/reset/`, { method: "POST" });
+  },
+
+  /** `GET /api/v1/users/{id}/permissions` — one user's role grants, their
+   * per-user overrides, and the resulting effective set. Admin-only. */
+  async getUserPermissions(userId: number): Promise<UserPermissions> {
+    return request<UserPermissions>(`/users/${userId}/permissions`, { method: "GET" });
+  },
+
+  /** `PUT /api/v1/users/{id}/permissions` — REPLACES the user's whole
+   * override map (omission means "back to whatever the role says"). */
+  async updateUserPermissions(
+    userId: number,
+    overrides: Record<string, PermissionOverrideEffect>,
+  ): Promise<UserPermissions> {
+    return request<UserPermissions>(`/users/${userId}/permissions`, {
+      method: "PUT",
+      body: { overrides },
+    });
   },
 
   /** `GET /api/v1/memberships/` — one page. An Admin (tenant-wide

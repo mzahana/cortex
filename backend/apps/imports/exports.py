@@ -49,7 +49,16 @@ from apps.tenancy.context import tenant_context
 
 from .permissions import AssetExportPermission
 
-CORE_EXPORT_COLUMNS = ["name", "category", "location", "status", "condition", "project", "tags"]
+CORE_EXPORT_COLUMNS = [
+    "name",
+    "category",
+    "location",
+    "status",
+    "condition",
+    "project",
+    "tags",
+    "url",
+]
 
 
 class _EchoWriter:
@@ -124,6 +133,7 @@ class AssetExportView(generics.GenericAPIView):
                         asset.condition,
                         asset.project.name if asset.project else "",
                         ", ".join(sorted(link.tag.name for link in asset.tag_links.all())),
+                        asset.url,
                     ]
                     for key in custom_columns:
                         value = values_by_key.get(key, "")

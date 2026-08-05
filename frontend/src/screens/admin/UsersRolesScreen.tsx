@@ -10,12 +10,24 @@ import {
   Pagination,
   Stack,
   Table,
+  Tabs,
   Text,
   Tooltip,
 } from "@mantine/core";
-import { IconKey, IconTrash, IconUserPlus, IconUsersGroup } from "@tabler/icons-react";
+import {
+  IconKey,
+  IconShieldLock,
+  IconTrash,
+  IconUserPlus,
+  IconUsersGroup,
+} from "@tabler/icons-react";
 import { api, ApiError } from "../../api/client";
-import { hasPermission, hasUserManagePermission, USER_MANAGE } from "../../api/permissions";
+import {
+  hasPermission,
+  hasUserManagePermission,
+  TENANT_MANAGE,
+  USER_MANAGE,
+} from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
 import { AppLayout } from "../../layout/AppLayout";
 import { ConfirmDeleteModal } from "../../components/ConfirmDeleteModal";
@@ -25,6 +37,8 @@ import { ChangeRoleModal } from "./ChangeRoleModal";
 import { CreateUserModal } from "./CreateUserModal";
 import { CreatedPasswordModal } from "./CreatedPasswordModal";
 import { ResetUserPasswordModal } from "./ResetUserPasswordModal";
+import { RolesPermissionsPanel } from "./RolesPermissionsPanel";
+import { UserPermissionsModal } from "./UserPermissionsModal";
 import { useMembershipList } from "./useMembershipList";
 
 /**
@@ -48,6 +62,11 @@ export function UsersRolesScreen() {
   // enforced server-side) — gate the affordance the same way so a ProjectLead
   // isn't shown an action that will 403.
   const canResetPassword = hasPermission(me, USER_MANAGE);
+  // Editing roles' permission sets and per-user overrides is Admin-only
+  // (tenant-wide `tenant.manage`, server-enforced by
+  // `apps.rbac.api.RolePermissionClass`/`UserPermissionsView`) — strictly
+  // stricter than `user.manage`, so a ProjectLead never sees these surfaces.
+  const canEditPermissions = hasPermission(me, TENANT_MANAGE);
 
   const { items, totalCount, page, pageCount, loading, error, forbidden, setPage, reload } =
     useMembershipList();
@@ -64,6 +83,10 @@ export function UsersRolesScreen() {
   const [resetTarget, setResetTarget] = useState<{ userId: number; email: string } | null>(null);
   // Distinguishes the reveal copy: a fresh account vs. a reset of an existing one.
   const [passwordModalKind, setPasswordModalKind] = useState<"created" | "reset">("created");
+  const [permissionsTarget, setPermissionsTarget] = useState<{
+    userId: number;
+    email: string;
+  } | null>(null);
 
   const loadRefData = useCallback(async () => {
     if (!canManage) return;
@@ -116,6 +139,23 @@ export function UsersRolesScreen() {
         )
       }
     >
+      <Tabs defaultValue="members" keepMounted={false}>
+        <Tabs.List mb="md">
+          <Tabs.Tab value="members">Members</Tabs.Tab>
+          {canEditPermissions && (
+            <Tabs.Tab value="roles" data-testid="roles-tab">
+              Roles &amp; permissions
+            </Tabs.Tab>
+          )}
+        </Tabs.List>
+
+        {canEditPermissions && (
+          <Tabs.Panel value="roles">
+            <RolesPermissionsPanel />
+          </Tabs.Panel>
+        )}
+
+        <Tabs.Panel value="members">
       <Stack gap="md">
         {refDataError && (
           <Alert color="red" data-testid="ref-data-error">
@@ -183,6 +223,21 @@ export function UsersRolesScreen() {
                               ✎
                             </ActionIcon>
                           </Tooltip>
+                          {canEditPermissions && (
+                            <Tooltip label="Permissions">
+                              <ActionIcon
+                                variant="subtle"
+                                size="sm"
+                                aria-label={`Edit permissions for ${m.user_email}`}
+                                onClick={() =>
+                                  setPermissionsTarget({ userId: m.user, email: m.user_email })
+                                }
+                                data-testid={`membership-permissions-${m.id}`}
+                              >
+                                <IconShieldLock size={16} />
+                              </ActionIcon>
+                            </Tooltip>
+                          )}
                           {canResetPassword && (
                             <Tooltip label="Reset password">
                               <ActionIcon
@@ -232,6 +287,8 @@ export function UsersRolesScreen() {
           </Center>
         )}
       </Stack>
+        </Tabs.Panel>
+      </Tabs>
 
       <AddMemberModal
         opened={addMemberOpen}
@@ -285,6 +342,13 @@ export function UsersRolesScreen() {
         roles={roles}
         onClose={() => setChangeRoleTarget(null)}
         onChanged={reload}
+      />
+
+      <UserPermissionsModal
+        opened={permissionsTarget !== null}
+        userId={permissionsTarget?.userId ?? null}
+        userEmail={permissionsTarget?.email ?? ""}
+        onClose={() => setPermissionsTarget(null)}
       />
 
       {removeTarget && (

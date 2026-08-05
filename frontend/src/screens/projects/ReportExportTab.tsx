@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Alert, Button, Card, Checkbox, Group, Loader, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { api } from "../../api/client";
+import { useProjectArchiveJob } from "./useProjectArchiveJob";
 import { useProjectReportJob } from "./useProjectReportJob";
 
 const CSV_FIELDS: { value: string; label: string }[] = [
@@ -41,12 +42,26 @@ interface ReportExportTabProps {
  */
 export function ReportExportTab({ projectId }: ReportExportTabProps) {
   const { job, submitting, error, generate, reset } = useProjectReportJob();
+  const {
+    job: archiveJob,
+    submitting: archiveSubmitting,
+    error: archiveError,
+    generate: generateArchive,
+    reset: resetArchive,
+  } = useProjectArchiveJob();
+  const [archiveDocuments, setArchiveDocuments] = useState(true);
+  const [archiveInvoices, setArchiveInvoices] = useState(true);
+  const [archiveAssetAttachments, setArchiveAssetAttachments] = useState(false);
   const [selectedFields, setSelectedFields] = useState<string[]>(CSV_FIELDS.map((f) => f.value));
   const [includeInvoiceScans, setIncludeInvoiceScans] = useState(false);
   const [includeProjectDocuments, setIncludeProjectDocuments] = useState(false);
 
   const isPolling = job !== null && (job.status === "queued" || job.status === "running");
   const isDone = job !== null && (job.status === "succeeded" || job.status === "failed");
+  const archivePolling =
+    archiveJob !== null && (archiveJob.status === "queued" || archiveJob.status === "running");
+  const archiveDone =
+    archiveJob !== null && (archiveJob.status === "succeeded" || archiveJob.status === "failed");
 
   const toggleField = (value: string) => {
     setSelectedFields((prev) =>
@@ -130,6 +145,104 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
               {job.error || "Something went wrong while rendering the PDF."}
             </Alert>
             <Button variant="light" onClick={reset}>
+              Try again
+            </Button>
+          </Stack>
+        )}
+      </Card>
+
+      <Card withBorder padding="md">
+        <Title order={5} mb="sm">
+          Download all documents (ZIP)
+        </Title>
+        <Text size="sm" c="dimmed" mb="sm">
+          The ORIGINAL files, not a rendered PDF — foldered by kind, with a
+          <code> manifest.csv</code> listing every file (size, uploader, timestamp) and the
+          expense ledger as CSV. This is the bundle to keep locally or hand to an auditor.
+        </Text>
+
+        {!archivePolling && !archiveDone && (
+          <>
+            {archiveError && (
+              <Alert color="red" mb="sm" title="Couldn't start the download">
+                {archiveError}
+              </Alert>
+            )}
+            <Checkbox
+              label="Project documents"
+              description="Proposals, contracts, progress reports, other"
+              checked={archiveDocuments}
+              onChange={(event) => setArchiveDocuments(event.currentTarget.checked)}
+              mb="xs"
+              data-testid="archive-include-documents"
+            />
+            <Checkbox
+              label="Invoice / receipt scans"
+              description="One folder per expense"
+              checked={archiveInvoices}
+              onChange={(event) => setArchiveInvoices(event.currentTarget.checked)}
+              mb="xs"
+              data-testid="archive-include-invoices"
+            />
+            <Checkbox
+              label="Asset attachments"
+              description="Every file attached to assets on this project — can be very large, so off by default"
+              checked={archiveAssetAttachments}
+              onChange={(event) => setArchiveAssetAttachments(event.currentTarget.checked)}
+              mb="sm"
+              data-testid="archive-include-asset-attachments"
+            />
+            <Button
+              onClick={() =>
+                void generateArchive(projectId, {
+                  includeDocuments: archiveDocuments,
+                  includeInvoices: archiveInvoices,
+                  includeAssetAttachments: archiveAssetAttachments,
+                })
+              }
+              loading={archiveSubmitting}
+              disabled={!archiveDocuments && !archiveInvoices && !archiveAssetAttachments}
+              data-testid="generate-archive-button"
+            >
+              Prepare download
+            </Button>
+          </>
+        )}
+
+        {archivePolling && (
+          <Group gap="sm" data-testid="archive-job-polling">
+            <Loader size="sm" />
+            <Text c="dimmed">
+              {archiveJob?.status === "running" ? "Collecting files…" : "Queued…"}
+            </Text>
+          </Group>
+        )}
+
+        {archiveDone && archiveJob?.status === "succeeded" && (
+          <Stack gap="sm" data-testid="archive-job-succeeded">
+            <Text fw={600}>Your archive is ready.</Text>
+            <Group>
+              <Button
+                component="a"
+                href={archiveJob.download_url ?? undefined}
+                download={archiveJob.result_filename || undefined}
+                data-testid="archive-download-link"
+              >
+                Download ZIP
+              </Button>
+              <Button variant="light" onClick={resetArchive}>
+                Prepare another
+              </Button>
+            </Group>
+          </Stack>
+        )}
+
+        {archiveDone && archiveJob?.status === "failed" && (
+          <Stack gap="sm" data-testid="archive-job-failed">
+            <Alert color="red" title="Couldn't build the archive">
+              {archiveJob.error || "Something went wrong while collecting the files."}
+            </Alert>
+            <Button variant="light" onClick={resetArchive}>
               Try again
             </Button>
           </Stack>

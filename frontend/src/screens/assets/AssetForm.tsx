@@ -67,6 +67,7 @@ interface FormValues {
   currency: string;
   warranty_expiry: string;
   supplier: string;
+  url: string;
   status: AssetStatus;
   condition: string;
   tags: string[];
@@ -87,6 +88,7 @@ const EMPTY_VALUES: FormValues = {
   currency: "",
   warranty_expiry: "",
   supplier: "",
+  url: "",
   status: "available",
   condition: "",
   tags: [],
@@ -268,6 +270,11 @@ export function AssetFormScreen() {
       name: (v) => (v.trim() ? null : "Name is required."),
       category: (v) => (v ? null : "Category is required."),
       currency: (v) => (v && v.length > 3 ? "Use a 3-letter currency code (e.g. USD)." : null),
+      // Mirrors `AssetSerializer.validate_url` for immediate feedback; the
+      // server is still the authority (it stores only http/https, since the
+      // detail screen renders this as a real link).
+      url: (v) =>
+        !v.trim() || /^https?:\/\//i.test(v.trim()) ? null : "Must start with http:// or https://.",
     },
   });
 
@@ -306,6 +313,7 @@ export function AssetFormScreen() {
             currency: asset.currency,
             warranty_expiry: asset.warranty_expiry ?? "",
             supplier: asset.supplier,
+            url: asset.url,
             status: asset.status,
             condition: asset.condition,
             tags: asset.tags,
@@ -642,6 +650,7 @@ export function AssetFormScreen() {
       currency: values.currency,
       warranty_expiry: values.warranty_expiry || null,
       supplier: values.supplier,
+      url: values.url.trim(),
       status: values.status,
       condition: values.condition,
       tags: values.tags,
@@ -1021,6 +1030,13 @@ export function AssetFormScreen() {
                   <TextInput label="Manufacturer" {...form.getInputProps("manufacturer")} />
                   <TextInput label="Model" {...form.getInputProps("model")} />
                   <TextInput label="Supplier" {...form.getInputProps("supplier")} />
+                  <TextInput
+                    label="Link"
+                    description="Product, procurement, or documentation page"
+                    placeholder="https://…"
+                    inputMode="url"
+                    {...form.getInputProps("url")}
+                  />
                   <TextInput type="date" label="Purchase date" {...form.getInputProps("purchase_date")} />
                   <TextInput type="date" label="Warranty expiry" {...form.getInputProps("warranty_expiry")} />
                   <NumberInput

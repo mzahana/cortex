@@ -37,6 +37,12 @@ unless they also hold a tenant-wide role.
 
 ## 3. Permissions matrix
 
+**This matrix is the shipped DEFAULT, not a fixed law.** Since the
+admin-editable-permissions change (§6), an Admin can edit any role's
+permission set from the UI, and the table below is what each role starts with
+when a tenant is provisioned (and what "Reset to defaults" restores). The
+permission KEYS themselves remain a fixed, system-wide vocabulary.
+
 Legend: ✅ allowed · 🟡 scoped (only within the user's project) · ➖ denied.
 
 | Action (permission key) | Admin | Project Lead | Member | Viewer |
@@ -80,6 +86,14 @@ Footnotes:
 5. **`project.view` is tenant-wide non-financial visibility only** (M7): a Member/Viewer may see that a project exists, its grant metadata *except* financial figures, and its assets. **All financial data — `budget_total`, spend/remaining, the expense/invoice ledger, and project documents (proposal/contract/progress reports) — is gated behind project-scoped `expense.view`**, i.e. only that project's Lead (🟡) and tenant Admins. The project detail endpoint redacts (nulls) financial fields rather than 403-ing so the non-financial view still renders. Project **create/delete** stay Admin-only (`tenant.manage`); a project delete cascades the whole financial ledger and writes a single before/after `AuditLog` snapshot of everything destroyed.
 6. `tenant.manage` also gates the admin-only, single-row-per-tenant config endpoints: `GET/PATCH /api/v1/notifications/email-settings` (`email_settings.update`) and `GET/PATCH /api/v1/tenancy/session-settings` (`session_settings.update`). Both are audited on every `PATCH`.
 
+## 3a. Where the defaults live in code
+
+`backend/apps/rbac/permission_keys.py` (`PERMISSION_LABELS`,
+`SYSTEM_ROLE_PERMISSIONS`) — seeded per tenant by `apps.rbac.seed`. Once an
+Admin edits a role, `Role.is_customized` is set and the seed stops re-applying
+that role's defaults (otherwise a later re-run would silently resurrect grants
+the Admin deliberately removed).
+
 ## 4. Approval configuration (per category)
 
 Reservation/checkout approval is **configurable per category** via
@@ -109,3 +123,60 @@ Reservation/checkout approval is **configurable per category** via
   `user.password_reset_request` / `user.password_reset_confirm` (the
   forgot-password flow; both written with `actor=None` since the request is
   unauthenticated).
+
+## 6. Custom roles, editable grants & per-user overrides
+
+Two layers sit on top of §1's union-of-memberships rule. Both are Admin-only
+(**tenant-wide `tenant.manage`** — deliberately stricter than `user.manage`, so
+a Project Lead cannot edit the rules that define their own power), both are
+audited under `role.assign` with before/after state, and both are re-checked by
+the lockout guardrail below.
+
+### 6.1 Editable roles + custom roles
+
+- `GET /api/v1/permissions` — the fixed permission vocabulary (key, label, and
+  a `group` derived from the key prefix, for UI sectioning only).
+- `GET/POST /api/v1/roles`, `GET/PATCH/DELETE /api/v1/roles/{id}` —
+  `permission_keys` is writable and is a **wholesale replacement**: an
+  unchecked box is a revocation, which is the only sane semantics for a
+  checkbox matrix. Reads still need only *some* `user.manage` grant (the role
+  picker needs them); writes need tenant-wide `tenant.manage`.
+- `POST /api/v1/roles/{id}/reset` — restore a system role's §3 defaults and
+  clear `is_customized`.
+- System roles can be edited and renamed but never deleted or **re-keyed**
+  (`SYSTEM_ROLE_PERMISSIONS`/`DEFAULT_ROLE_KEY` and the "a Lead may only assign
+  Member" rule in footnote 3 all key off `role.key`). A custom role that is
+  still assigned to any user cannot be deleted.
+
+### 6.2 Per-user overrides
+
+`GET/PUT /api/v1/users/{id}/permissions` — a per-user exception layer
+(`UserPermissionOverride`) for "this one person needs a deviation", without
+authoring a whole custom role. `PUT` replaces the whole map; omitting a key
+means "inherit from my roles".
+
+- `GRANT` — the user holds the key everywhere in the tenant, exactly as if a
+  tenant-wide role granted it.
+- `DENY` — the user holds it nowhere, and DENY beats **every** grant (their
+  roles' and a GRANT override), including a permission held only through a
+  project-scoped membership.
+
+**Overrides are deliberately tenant-wide — there is no project scope on them.**
+A per-project DENY cannot be expressed in the `(tenant_wide, project_ids)`
+contract that ~10 list endpoints unpack to build their querysets ("tenant-wide
+holder, minus one project" has no representation there), so it would silently
+over-show rows on every one of those lists. Adding project-scoped overrides
+later is an additive change that must extend that contract first.
+
+Resolution order (implemented once, in `apps.rbac.services`): role union for
+the scope → apply GRANTs → subtract DENYs. `GET /api/v1/me` re-derives the same
+set in Python for a no-N+1 reason, and applies this layer identically — if the
+two ever diverge, every UI gate is wrong for exactly the users an admin
+adjusted.
+
+### 6.3 Lockout guardrail
+
+Every write in §6 re-checks, **inside its transaction**, that at least one
+active user still holds tenant-wide `tenant.manage` + `user.manage`; if not,
+the write is rolled back with a 400. Self-hosted Cortex has no break-glass
+path — recovering from a full lockout would mean shell access to the NAS.

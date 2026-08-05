@@ -3,7 +3,7 @@ import { Alert, Button, Loader, Select, Stack, Text } from "@mantine/core";
 import { AppLayout } from "../../layout/AppLayout";
 import type { Asset, LabelSheetTemplate } from "../../api/types";
 import { AssetPicker } from "./AssetPicker";
-import { useLabelJob } from "./useLabelJob";
+import { useLabelJob } from "../../hooks/useLabelJob";
 
 const TEMPLATE_OPTIONS: { value: LabelSheetTemplate; label: string }[] = [
   { value: "avery_5160", label: 'Avery 5160 — 1" x 2⅝", 30/sheet' },

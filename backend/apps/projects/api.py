@@ -63,6 +63,7 @@ import logging
 from decimal import Decimal
 
 import django_filters as filters
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
 from django.http import StreamingHttpResponse
@@ -74,6 +75,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.assets.api import AssetFilterSet, AssetSearchFilter, visible_assets_queryset
+from apps.assets.models import Attachment
 from apps.assets.serializers import AssetSerializer
 from apps.assets.services import validate_attachment_upload
 from apps.audit.services import client_ip, write_audit_log
@@ -88,7 +90,7 @@ from apps.rbac.permission_keys import (
     PROJECT_MANAGE,
     TENANT_MANAGE,
 )
-from apps.rbac.services import get_viewable_project_scope
+from apps.rbac.services import get_viewable_project_scope, user_has_permission
 from apps.tenancy.context import tenant_context
 
 from .models import Expense, ExpenseAttachment, ExpenseCategory, Project, ProjectDocument
@@ -109,7 +111,7 @@ from .serializers import (
     ProjectSerializer,
 )
 from .services import save_expense_attachment_file, save_project_document_file
-from .tasks import generate_project_report_pdf
+from .tasks import generate_project_archive_zip, generate_project_report_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -666,6 +668,83 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
+    @action(detail=True, methods=["post"], url_path="archive")
+    def archive(self, request, pk=None):
+        """`POST /api/v1/projects/{id}/archive` — enqueues a Celery job that
+        bundles this project's ORIGINAL files into one structured ZIP
+        (`apps.projects.archive`), for local storage or handing to an
+        auditor. Same async-job contract as `report`/`labels/generate`: a
+        `Job` row created inside this transaction, dispatched on commit,
+        polled at `GET /api/v1/jobs/{id}` until `download_url` appears.
+
+        Deliberately NOT the report PDF: that RENDERS (and rasterizes) the
+        financial record into one document; this ships the source files
+        byte-for-byte with a `manifest.csv`, which is what an audit actually
+        asks for.
+
+        Optional JSON body — `{"include_documents": bool (default true),
+        "include_invoices": bool (default true), "include_asset_attachments":
+        bool (default false)}`. Asset attachments default OFF because they
+        are the one section that can be arbitrarily large (every photo of
+        every asset on the project) and are usually not what an auditor
+        wants; the archive has a hard size cap
+        (`apps.projects.archive.MAX_ARCHIVE_BYTES`) that fails the job with
+        an actionable message rather than exhausting the worker.
+
+        Gated on `expense.view` scoped to THIS project — the bundle contains
+        the original invoice scans and project documents, i.e. strictly more
+        financial material than the report (`PROJECT_ACTION_PERMISSION_MAP
+        ["archive"]`, and `get_object()` re-runs the object-level check).
+        """
+        project = self.get_object()
+
+        def _flag(name: str, default: bool) -> bool:
+            value = request.data.get(name, default)
+            return bool(value) if not isinstance(value, str) else value.lower() == "true"
+
+        include_documents = _flag("include_documents", True)
+        include_invoices = _flag("include_invoices", True)
+        include_asset_attachments = _flag("include_asset_attachments", False)
+
+        job = Job.objects.create(
+            tenant=request.user.tenant,
+            job_type="project_archive_zip",
+            params={
+                "project_id": project.id,
+                "include_documents": include_documents,
+                "include_invoices": include_invoices,
+                "include_asset_attachments": include_asset_attachments,
+            },
+            created_by=request.user,
+        )
+        # Same "record the export itself" posture as `report` above — pulling
+        # every invoice scan for a grant-funded project off the system is
+        # exactly the event an audit trail exists for.
+        write_audit_log(
+            tenant_id=project.tenant_id,
+            actor=request.user,
+            action=EXPENSE_VIEW,
+            entity_type="project_archive",
+            entity_id=project.id,
+            before=None,
+            after={"job_id": str(job.id), "params": job.params},
+            ip=client_ip(request),
+        )
+
+        transaction.on_commit(
+            lambda: generate_project_archive_zip.delay(
+                job_id=str(job.id),
+                tenant_id=job.tenant_id,
+                project_id=project.id,
+                include_documents=include_documents,
+                include_invoices=include_invoices,
+                include_asset_attachments=include_asset_attachments,
+                generated_by=request.user.email,
+            )
+        )
+
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
 
 class ExpenseViewSet(
     mixins.RetrieveModelMixin,
@@ -776,6 +855,97 @@ class ExpenseViewSet(
             entity_id=attachment.id,
             before=None,
             after=ExpenseAttachmentSerializer(attachment).data,
+            ip=client_ip(request),
+        )
+        return Response(
+            ExpenseAttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=["post"], url_path="attachment-from-asset")
+    def attachment_from_asset(self, request, pk=None):
+        """`POST /api/v1/expenses/{id}/attachment-from-asset`
+        `{"attachment": <asset attachment id>}` — copy a PO/invoice already
+        filed against an ASSET onto this expense, so the "fetch from asset"
+        flow (`GET /assets/{id}/expense-prefill`) can bring the paperwork
+        across too instead of asking someone to download-then-re-upload.
+
+        A real COPY, not a shared reference: the new `ExpenseAttachment` owns
+        its own storage object under `expense-attachments/`, so deleting the
+        asset (or its attachment) later can never punch a hole in the
+        financial record an auditor is holding.
+
+        Two authorizations, both required and both re-checked here:
+        - `expense.manage` scoped to this expense's project — already enforced
+          by `get_object()` via `ExpensePermission` (the same gate as the
+          ordinary upload above);
+        - `asset.view` scoped to the SOURCE asset's project — checked
+          explicitly below, because the source lives outside this expense's
+          project entirely. Without it, a lead of project A could pull a
+          document off an asset belonging to project B by id.
+        """
+        expense = self.get_object()  # tenant + object-level RBAC (expense.manage)
+
+        try:
+            attachment_id = int(request.data.get("attachment"))
+        except (TypeError, ValueError):
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Missing attachment",
+                detail="An 'attachment' id (an asset attachment) is required.",
+            )
+
+        # Tenant-scoped manager: a cross-tenant id simply doesn't resolve.
+        source = Attachment.objects.filter(pk=attachment_id).select_related("asset").first()
+        if source is None:
+            return problem_response(
+                status_code=status.HTTP_404_NOT_FOUND,
+                title="Not found",
+                detail="No such asset attachment.",
+            )
+        if not user_has_permission(request.user, ASSET_VIEW, project=source.asset.project_id):
+            # 404, not 403: a caller who cannot see the source asset must not
+            # learn that this attachment id exists — same existence-leak
+            # posture as `apps.assets.api.AssetResolveView`.
+            return problem_response(
+                status_code=status.HTTP_404_NOT_FOUND,
+                title="Not found",
+                detail="No such asset attachment.",
+            )
+
+        try:
+            with default_storage.open(source.storage_key, "rb") as fh:
+                content = ContentFile(fh.read(), name=source.filename)
+        except Exception:
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Source file unavailable",
+                detail="The asset's file could not be read from storage.",
+            )
+
+        storage_key, content_type, size = save_expense_attachment_file(
+            tenant_id=expense.tenant_id, expense_id=expense.id, uploaded_file=content
+        )
+        attachment = ExpenseAttachment.objects.create(
+            tenant=expense.tenant,
+            expense=expense,
+            storage_key=storage_key,
+            filename=source.filename,
+            content_type=content_type or source.content_type,
+            size=size,
+            uploaded_by=request.user,
+        )
+        write_audit_log(
+            tenant_id=expense.tenant_id,
+            actor=request.user,
+            action=EXPENSE_MANAGE,
+            entity_type="expense_attachment",
+            entity_id=attachment.id,
+            before=None,
+            after={
+                **ExpenseAttachmentSerializer(attachment).data,
+                "copied_from_asset_attachment": source.id,
+                "copied_from_asset": source.asset_id,
+            },
             ip=client_ip(request),
         )
         return Response(

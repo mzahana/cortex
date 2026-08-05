@@ -39,6 +39,7 @@ class AttachmentSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "kind",
+            "doc_type",
             "storage_key",
             "filename",
             "content_type",
@@ -87,6 +88,7 @@ class AssetSerializer(serializers.ModelSerializer):
             "currency",
             "warranty_expiry",
             "supplier",
+            "url",
             "status",
             "condition",
             "retired_at",
@@ -124,6 +126,22 @@ class AssetSerializer(serializers.ModelSerializer):
 
     def validate_category(self, category: Category) -> Category:
         return category
+
+    def validate_url(self, value: str) -> str:
+        """http/https only. Django's `URLField` validator already rejects most
+        junk, but it accepts any scheme in `URLValidator.schemes` and — more
+        to the point — this value is rendered as a real `<a href>` on the
+        Asset Detail screen. A stored `javascript:`/`data:` URL would then be
+        a stored-XSS vector triggered by a click, so the allowed schemes are
+        pinned here, at the write boundary, rather than relying on the
+        frontend to sanitize on every render.
+        """
+        value = (value or "").strip()
+        if not value:
+            return ""
+        if not value.lower().startswith(("http://", "https://")):
+            raise serializers.ValidationError("URL must start with http:// or https://.")
+        return value
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         # `is_consumable` defaults from the category when not explicitly

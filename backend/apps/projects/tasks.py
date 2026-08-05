@@ -95,3 +95,87 @@ def generate_project_report_pdf(
             # generate_label_pdf`. `max_retries=0` above means this always
             # executes on the first and only attempt.
             job.mark_failed(error=str(exc)[:2000])
+
+
+@shared_task(
+    bind=True,
+    name="apps.projects.generate_project_archive_zip",
+    max_retries=0,  # same reasoning as the report task above: this is
+    # deterministic local work (DB reads + storage copies), not a
+    # network-bound call worth retrying.
+)
+def generate_project_archive_zip(
+    self,
+    *,
+    job_id: str,
+    tenant_id: int,
+    project_id: int,
+    include_documents: bool = True,
+    include_invoices: bool = True,
+    include_asset_attachments: bool = False,
+    generated_by: str = "",
+) -> None:
+    """Bundle a project's original documents/attachments into one structured
+    ZIP (`apps.projects.archive.build_project_archive`) and update the `Job`.
+
+    `project_id` was already tenant + RBAC scope-validated by
+    `apps.projects.api.ProjectViewSet.archive` (`expense.view` scoped to this
+    exact project) BEFORE this was enqueued — same trust boundary as
+    `generate_project_report_pdf` above.
+    """
+    from .archive import MAX_ARCHIVE_BYTES, ArchiveTooLarge, build_project_archive
+    from .services import save_project_archive
+
+    with tenant_context(tenant_id):
+        try:
+            job = Job.objects.get(pk=job_id, tenant_id=tenant_id)
+        except Job.DoesNotExist:  # pragma: no cover - defensive only
+            return
+
+        job.mark_running()
+
+        archive_file = None
+        try:
+            try:
+                project = Project.objects.get(pk=project_id)
+            except Project.DoesNotExist:
+                job.mark_failed(error="The project no longer exists.")
+                return
+
+            archive_file, stats = build_project_archive(
+                project=project,
+                include_documents=include_documents,
+                include_invoices=include_invoices,
+                include_asset_attachments=include_asset_attachments,
+                generated_by=generated_by,
+            )
+            storage_key, filename = save_project_archive(
+                tenant_id=tenant_id, job_id=job.id, project=project, fileobj=archive_file
+            )
+            job.params = {
+                **(job.params or {}),
+                "file_count": stats.file_count,
+                "missing_count": stats.missing_count,
+                "total_bytes": stats.total_bytes,
+            }
+            job.save(update_fields=["params", "updated_at"])
+            job.mark_succeeded(
+                result_key=storage_key,
+                result_filename=filename,
+                result_content_type="application/zip",
+            )
+        except ArchiveTooLarge:
+            # Actionable, not a traceback: the operator's fix is to narrow
+            # what they asked for (drop asset attachments), not to retry.
+            job.mark_failed(
+                error=(
+                    f"This project's files exceed the {MAX_ARCHIVE_BYTES // (1024 * 1024)} MB "
+                    "archive limit. Try again with fewer sections selected "
+                    "(e.g. without asset attachments)."
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see report task
+            job.mark_failed(error=str(exc)[:2000])
+        finally:
+            if archive_file is not None:
+                archive_file.close()

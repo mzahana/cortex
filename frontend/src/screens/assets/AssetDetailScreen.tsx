@@ -23,12 +23,14 @@ import {
   ASSET_EDIT,
   ASSET_RETIRE,
   CHECKOUT_MANAGE,
+  LABEL_GENERATE,
   hasAssetPermission,
   RESERVATION_CREATE,
   STOCK_ADJUST,
 } from "../../api/permissions";
 import { useAuth } from "../../hooks/useAuth";
 import { AppLayout } from "../../layout/AppLayout";
+import { PrintLabelButton } from "./PrintLabelButton";
 import type {
   Asset,
   Attachment,
@@ -252,6 +254,7 @@ export function AssetDetailScreen() {
   const canAttach = hasAssetPermission(me, ASSET_ATTACH, asset.project);
   const canReserve = hasAssetPermission(me, RESERVATION_CREATE, asset.project);
   const canCheckout = hasAssetPermission(me, CHECKOUT_MANAGE, asset.project);
+  const canPrintLabel = hasAssetPermission(me, LABEL_GENERATE, asset.project);
   const isRetired = asset.status === "retired";
   const isCheckoutEligible = !asset.is_consumable && ["available", "reserved"].includes(asset.status);
   const isCheckedOutByMe = !!myOpenCheckout;
@@ -373,6 +376,18 @@ export function AssetDetailScreen() {
                 />
                 <DetailField label="Warranty expiry" value={asset.warranty_expiry ?? "—"} />
               </SimpleGrid>
+              {asset.url && (
+                <Anchor
+                  href={asset.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  size="sm"
+                  mt="xs"
+                  data-testid="asset-url-link"
+                >
+                  {asset.url}
+                </Anchor>
+              )}
               {asset.condition && (
                 <Text size="xs" c="dimmed" mt="xs">
                   Condition notes: {asset.condition}
@@ -428,6 +443,9 @@ export function AssetDetailScreen() {
               attachments={attachments}
               canAttach={canAttach}
               onUploaded={(attachment) => setAttachments((prev) => [attachment, ...prev])}
+              onDeleted={(attachmentId) =>
+                setAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
+              }
             />
           </Card>
 
@@ -454,6 +472,8 @@ export function AssetDetailScreen() {
               </Alert>
             )}
             <Group gap="xs" wrap="wrap">
+              <PrintLabelButton assetId={asset.id} disabled={!canPrintLabel} />
+
               {canEdit ? (
                 <Button size="sm" variant="default" onClick={() => navigate(`/assets/${asset.id}/edit`)}>
                   Edit

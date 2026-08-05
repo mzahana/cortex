@@ -38,8 +38,11 @@ row, same as guessing another tenant's numeric id already does).
 
 from __future__ import annotations
 
+import logging
+
 import django_filters as filters
 from django.contrib.postgres.search import SearchQuery, SearchRank
+from django.core.files.storage import default_storage
 from django.db.models import F, Prefetch, Q
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
@@ -53,13 +56,15 @@ from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
 from apps.common.pagination import AssetCursorPagination, BoundedPageNumberPagination
 from apps.dashboard.cache import invalidate_tenant_dashboard
-from apps.rbac.permission_keys import ASSET_RETIRE, ASSET_VIEW
+from apps.rbac.permission_keys import ASSET_ATTACH, ASSET_RETIRE, ASSET_VIEW
 from apps.rbac.services import get_viewable_project_scope
 
 from .models import Asset, AssetFieldValue, Attachment
-from .permissions import AssetPermission
+from .permissions import AssetAttachmentPermission, AssetPermission
 from .serializers import AssetSerializer, AttachmentSerializer
 from .services import save_attachment_file, validate_attachment_upload
+
+logger = logging.getLogger(__name__)
 
 
 class AssetFilterSet(filters.FilterSet):
@@ -303,6 +308,76 @@ class AssetViewSet(
 
         return Response(self.get_serializer(asset).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=["get"], url_path="expense-prefill")
+    def expense_prefill(self, request, pk=None):
+        """`GET /api/v1/assets/{id}/expense-prefill` — the asset's own
+        purchase facts, shaped as an `Expense` draft so the project expense
+        form can offer "fetch from this asset" instead of making someone
+        re-key what the asset record already holds.
+
+        Pure convenience and pure READ: every field here is one the caller can
+        already see on `GET /assets/{id}` (hence plain `asset.view`,
+        `ACTION_PERMISSION_MAP["expense_prefill"]`), just relabeled into
+        expense vocabulary — `purchase_cost` -> `amount`, `supplier` ->
+        `vendor`, `purchase_date` -> `date`. It creates nothing; the client
+        still submits a normal `POST /projects/{id}/expenses`, and the user
+        stays free to edit or ignore every value.
+
+        `documents` lists the asset's `doc`-kind attachments (a PO/invoice
+        scan filed against the asset) as CANDIDATES — copying one onto the
+        expense is a separate, explicitly-authorized write
+        (`POST /expenses/{id}/attachment-from-asset`, `expense.manage`), never
+        a side effect of reading this.
+        """
+        asset = self.get_object()  # tenant + object-level RBAC already enforced
+
+        # EVERY attachment is a candidate, not just `kind="doc"`. Filtering on
+        # `kind` was a real bug: the most common way an invoice reaches an
+        # asset is a phone photo of the paper one, which is `kind="photo"` and
+        # was therefore silently invisible here — "fetch the invoice" returned
+        # an empty list for exactly the case it exists to serve.
+        #
+        # Ordering is the useful part: financial documents first (invoice ->
+        # receipt -> PO -> quote, `Attachment.FINANCIAL_DOC_TYPES`), then
+        # anything else, newest first within each band. The client can then
+        # preselect `documents[0]` and be right almost always, without
+        # re-deriving this ranking.
+        rank = {doc_type: i for i, doc_type in enumerate(Attachment.FINANCIAL_DOC_TYPES)}
+        ordered = sorted(
+            asset.attachments.all(),
+            key=lambda a: (rank.get(a.doc_type, len(rank)), -a.created_at.timestamp()),
+        )
+        documents = [
+            {
+                "id": attachment.id,
+                "filename": attachment.filename,
+                "content_type": attachment.content_type,
+                "size": attachment.size,
+                "kind": attachment.kind,
+                "doc_type": attachment.doc_type,
+                "is_financial": attachment.doc_type in Attachment.FINANCIAL_DOC_TYPES,
+                "created_at": attachment.created_at,
+            }
+            for attachment in ordered
+        ]
+        return Response(
+            {
+                "asset": asset.id,
+                "asset_name": asset.name,
+                "project": asset.project_id,
+                # `str`, not the raw `Decimal`: DRF's JSON renderer would
+                # emit a float and silently cost cents on a large amount.
+                # Matches how `ExpenseSerializer` renders `amount`.
+                "amount": str(asset.purchase_cost) if asset.purchase_cost is not None else None,
+                "currency": asset.currency,
+                "date": asset.purchase_date,
+                "vendor": asset.supplier,
+                "description": asset.name,
+                "url": asset.url,
+                "documents": documents,
+            }
+        )
+
     @action(
         detail=True,
         methods=["post"],
@@ -328,6 +403,20 @@ class AssetViewSet(
                 detail="'kind' must be 'photo' or 'doc'.",
             )
 
+        # `doc_type` is the SEMANTIC label (invoice/PO/receipt/...), separate
+        # from `kind`'s storage/content-type role — a phone photo of a paper
+        # invoice is `kind="photo"`, `doc_type="invoice"`. Optional: an
+        # untagged upload stays `""` and is still offered (ranked lower) by
+        # the expense prefill.
+        doc_type = request.data.get("doc_type", "") or ""
+        valid_doc_types = {choice[0] for choice in Attachment.DocType.choices}
+        if doc_type not in valid_doc_types:
+            return problem_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                title="Invalid doc_type",
+                detail=f"'doc_type' must be one of {sorted(valid_doc_types - {''})}, or omitted.",
+            )
+
         # Size cap + content-type/extension allowlist (code-review hardening
         # finding) — validated BEFORE any bytes are written to the storage
         # backend. `validate_attachment_upload` raises `serializers.
@@ -346,6 +435,7 @@ class AssetViewSet(
             tenant=asset.tenant,
             asset=asset,
             kind=kind,
+            doc_type=doc_type,
             storage_key=storage_key,
             filename=uploaded_file.name,
             content_type=content_type,
@@ -387,3 +477,67 @@ class AssetResolveView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return _asset_detail_queryset()
+
+
+class AssetAttachmentViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """`DELETE /api/v1/attachments/{id}` — remove a photo/PO/receipt from an
+    asset. Upload lives on the asset itself (`POST /assets/{id}/attachments`,
+    `AssetViewSet.attachments`); this is the missing other half of that pair.
+    Mirrors `apps.projects.api.ExpenseAttachmentViewSet` exactly, including
+    its reclaim-the-disk-space behavior.
+
+    Tenant scoping: `Attachment.objects` (the tenant-scoped, fail-closed
+    manager) resolved per request — an id from another tenant simply 404s.
+
+    RBAC: `apps.assets.permissions.AssetAttachmentPermission` — `asset.attach`
+    scoped to the OWNING ASSET's project (deleting a file is the same
+    authorization intent as attaching one).
+    """
+
+    serializer_class = AttachmentSerializer
+    permission_classes = [AssetAttachmentPermission]
+    http_method_names = ["delete", "head", "options"]
+
+    def get_queryset(self):
+        return Attachment.objects.select_related("asset", "uploaded_by")
+
+    def perform_destroy(self, instance: Attachment):
+        before = AttachmentSerializer(instance).data
+        tenant_id = instance.tenant_id
+        attachment_id = instance.id
+        asset_id = instance.asset_id
+        storage_key = instance.storage_key
+        instance.delete()
+
+        # Delete the actual file too, not just the DB row: an orphaned blob
+        # would keep consuming the NAS volume forever with nothing left
+        # pointing at it. `save_attachment_file` writes via
+        # `default_storage.save(...)`, so `default_storage.delete()` is the
+        # symmetric call — correct for the local volume or an S3-compatible
+        # backend alike, never a hardcoded path join. Best-effort by design:
+        # the DB delete is already committed, so a missing file or a backend
+        # hiccup must not roll it back (same posture, and the same reasoning,
+        # as `apps.projects.api.ExpenseAttachmentViewSet.perform_destroy`).
+        try:
+            default_storage.delete(storage_key)
+        except Exception:
+            logger.warning(
+                "Failed to delete storage object %r for attachment %s (asset %s, "
+                "tenant %s) after DB row delete; DB delete already committed.",
+                storage_key,
+                attachment_id,
+                asset_id,
+                tenant_id,
+                exc_info=True,
+            )
+
+        write_audit_log(
+            tenant_id=tenant_id,
+            actor=self.request.user,
+            action=ASSET_ATTACH,
+            entity_type="attachment",
+            entity_id=attachment_id,
+            before=before,
+            after=None,
+            ip=client_ip(self.request),
+        )
