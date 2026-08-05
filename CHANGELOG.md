@@ -20,6 +20,30 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Fixed
+
+- **`migrate` could fail upgrading a database that already had tenants.** The
+  RBAC seed data migrations (`rbac.0002`, `rbac.0003`) used the *concrete*
+  model classes, which describe today's schema rather than the schema in place
+  when the migration runs. On the forward path this aborted the upgrade at
+  `rbac.0003` with `column rbac_role.is_customized does not exist` — that
+  column is added by `rbac.0004`, one migration *later* — for any install with
+  at least one tenant row (a tenant-less database never entered the seed loop,
+  which is why CI stayed green). Both migrations now seed through historical
+  (`apps.get_model`) models, via a shared unfiltered-queryset helper in
+  `apps.rbac.seed`; the runtime seeding path (new-tenant signal) is unchanged.
+- **Migration reversibility for the CI/empty-DB case (`migrate up/down/up`).**
+  The same two migrations' reverse paths failed a full `migrate rbac zero`
+  with `relation "rbac_user_permission_override" does not exist` (the deletion
+  collector cascading into a table `0004`'s reverse had already dropped) and
+  then `column rbac_role.is_customized does not exist`; they now use historical
+  models too. Known pre-existing limitation, *not* addressed here: reversing
+  `rbac.0002` on a database that has real role memberships still fails with a
+  `ProtectedError`, because `Membership.role` is `on_delete=PROTECT`. Reversal
+  remains a CI/development-time gate, not a supported production rollback.
+
+  No schema change in either fix.
+
 ## [0.15.0] - 2026-08-05
 
 ### Added

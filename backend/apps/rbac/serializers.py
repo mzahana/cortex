@@ -17,6 +17,8 @@ simply never resolve (R4), rather than needing a separate cross-tenant check.
 
 from __future__ import annotations
 
+from typing import cast
+
 from django.utils.text import slugify
 from rest_framework import serializers
 
@@ -130,10 +132,16 @@ class RoleSerializer(serializers.ModelSerializer):
         if key is not None:
             qs = Role.objects.filter(key=key)
             if self.instance is not None:
-                qs = qs.exclude(pk=self.instance.pk)
+                # `ModelSerializer.instance` is typed `_MT | Sequence[_MT] |
+                # None` to cover `many=True` list serializers, but
+                # `RoleViewSet` (a plain `ModelViewSet`) never constructs this
+                # serializer with `many=True` -- a non-None `self.instance`
+                # here is always the single `Role` being updated.
+                instance = cast(Role, self.instance)
+                qs = qs.exclude(pk=instance.pk)
             if qs.exists():
                 raise serializers.ValidationError({"key": "A role with this key already exists."})
-        if self.instance is not None and self.instance.is_system and "key" in attrs:
+        if self.instance is not None and cast(Role, self.instance).is_system and "key" in attrs:
             # Renaming a system role's KEY would break
             # `SYSTEM_ROLE_PERMISSIONS`/`DEFAULT_ROLE_KEY` lookups (and the
             # "assign Member only" ProjectLead rule keys off `role.key`).

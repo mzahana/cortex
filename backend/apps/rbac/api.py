@@ -32,6 +32,8 @@ Admin-only territory, footnote 3).
 
 from __future__ import annotations
 
+from typing import cast
+
 import django_filters as filters
 from django.db import models, transaction
 from django_filters.rest_framework import DjangoFilterBackend
@@ -284,8 +286,15 @@ class RoleViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        from apps.accounts.models import User
+
         with transaction.atomic():
-            role: Role = serializer.save(tenant=self.request.user.tenant)
+            # `RolePermissionClass.has_permission` already rejects
+            # unauthenticated requests before this ever runs, so `request.user`
+            # is guaranteed to be a real `User` (never `AnonymousUser`) here —
+            # this is a type-narrowing cast, not a new runtime check.
+            actor = cast(User, self.request.user)
+            role: Role = serializer.save(tenant=actor.tenant)
             self._audit(role, None, _role_snapshot(role))
 
     def perform_update(self, serializer):

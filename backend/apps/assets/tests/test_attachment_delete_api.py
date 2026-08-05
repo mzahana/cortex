@@ -116,6 +116,7 @@ class TestDeleteRemovesRowAndFile:
             tenant=tenant, entity_type="attachment", entity_id=attachment.id
         )
         assert entry.after is None
+        assert entry.before is not None
         assert entry.before["filename"] == "po-1234.pdf"
 
     def test_the_asset_itself_survives(self, client):

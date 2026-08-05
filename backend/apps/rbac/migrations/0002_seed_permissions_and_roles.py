@@ -8,59 +8,72 @@ only the global `Permission` rows and leaves per-tenant role seeding to
 `apps.rbac.signals.seed_system_roles` (fired on every future `Tenant`
 creation).
 
-NOTE for db-migration-specialist (T0.5): this migration imports the concrete
-model classes directly rather than `apps.get_model(...)` historical models,
-because the seed helpers rely on manager methods (`all_objects`,
-`get_or_create`) that historical models won't carry reliably. This is the
-standard accepted trade-off for a seed migration that runs once, immediately
-after the schema it targets — it is not meant to be replayed against a
-materially different future schema. Flag if this needs to change once RLS is
-in place (RLS should not block this migration, since migrations run as the
-table owner / bypass RLS by default).
+HISTORICAL MODELS, both directions. An earlier revision of this migration
+imported the CONCRETE model classes (on the theory that the seed helpers
+needed the `all_objects` manager, which isn't serialized into migration
+state). That was wrong in both directions and broke real migrate runs — see
+the long note in `0003`'s `unseed` for the reverse side, and `0003`'s `seed`
+for the forward side (`column rbac_role.is_customized does not exist`, a
+column added a migration LATER than the seed that selected it). The seed
+helpers now take a plain unfiltered queryset via `apps.rbac.seed.unscoped`,
+so historical models work everywhere.
+
+RLS does not block this migration: migrations run as the table owner, which
+bypasses RLS by default.
 """
 from __future__ import annotations
 
 from django.db import migrations
 
+from ._helpers import unscoped
+
 
 def seed(apps, schema_editor):
-    # Deferred import: safe here because this migration necessarily runs
-    # after both apps' initial migrations (see `dependencies` below), so the
-    # real model classes already match the DB schema at this point.
-    from apps.rbac.models import Permission, Role, RolePermission
     from apps.rbac.seed import seed_permissions, seed_roles_for_tenant
-    from apps.tenancy.models import Tenant
 
-    seed_permissions(Permission)
+    Permission = apps.get_model("rbac", "Permission")
+    Role = apps.get_model("rbac", "Role")
+    RolePermission = apps.get_model("rbac", "RolePermission")
+    Tenant = apps.get_model("tenancy", "Tenant")
+    using = schema_editor.connection.alias
 
-    # `.only("id")` is load-bearing, not an optimization: this migration uses
-    # the CONCRETE `Tenant` model (see the module docstring), so a plain
-    # `Tenant.objects.all()` would `SELECT` every column the model has *today*
-    # — including any added by a LATER `tenancy` migration that, on a fresh
-    # database, has not run yet (this really broke `migrate` from scratch when
-    # `tenancy.0007` added the branding columns). Selecting only the primary
-    # key keeps this seed independent of the table's future shape, while still
-    # yielding real `Tenant` instances (`seed_roles_for_tenant` assigns them to
-    # a concrete `Role.tenant` FK, which a historical model instance can't
-    # satisfy).
-    for tenant in Tenant.objects.only("id"):
+    seed_permissions(Permission, using)
+
+    # Historical `Tenant`, so this iterates only the columns that exist at
+    # THIS point in the migration graph — no `.only("id")` guard needed
+    # against columns a later `tenancy` migration adds (`tenancy.0007`'s
+    # branding columns really did break `migrate` from scratch back when this
+    # used the concrete class). The historical instances are assignable to
+    # historical `Role.tenant`, which is what the seed helper now writes.
+    for tenant in unscoped(Tenant, using):
         seed_roles_for_tenant(
             tenant=tenant,
             role_model=Role,
             permission_model=Permission,
             role_permission_model=RolePermission,
+            using=using,
         )
 
 
 def unseed(apps, schema_editor):
     # Reversible: drop every row this migration could have created. Custom
     # tenant-authored roles/grants (is_system=False) are left untouched.
-    from apps.rbac.models import Permission, Role, RolePermission
+    #
+    # Uses HISTORICAL models (`apps.get_model`), NOT the concrete classes the
+    # forward `seed()` above imports — see the long note in `0003`'s `unseed`
+    # for the full reasoning. Short version: a reverse runs against an OLDER
+    # schema than the one today's model classes describe, so the concrete
+    # classes name columns and cascade to tables that no longer exist by then.
     from apps.rbac.permission_keys import PERMISSION_LABELS
 
-    RolePermission.all_objects.filter(role__is_system=True).delete()
-    Role.all_objects.filter(is_system=True).delete()
-    Permission.objects.filter(key__in=PERMISSION_LABELS.keys()).delete()
+    Permission = apps.get_model("rbac", "Permission")
+    Role = apps.get_model("rbac", "Role")
+    RolePermission = apps.get_model("rbac", "RolePermission")
+    using = schema_editor.connection.alias
+
+    unscoped(RolePermission, using).filter(role__is_system=True).delete()
+    unscoped(Role, using).filter(is_system=True).delete()
+    unscoped(Permission, using).filter(key__in=PERMISSION_LABELS.keys()).delete()
 
 
 class Migration(migrations.Migration):
