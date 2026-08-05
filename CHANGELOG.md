@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-05
+
 ### Added
 
 - **Admin-editable permissions (Admin → Users & Roles → "Roles & permissions").**
