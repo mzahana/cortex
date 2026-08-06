@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-08-06
+
 ### Fixed
 
 - **Mobile "Take / add photo" on Asset Detail couldn't upload from the photo
