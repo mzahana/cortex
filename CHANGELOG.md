@@ -20,6 +20,16 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-08-06
+
+### Fixed
+
+- **Asset photo thumbnails in "Photos & attachments" no longer crop the
+  image.** `PhotoCapture.tsx` switched the thumbnail `Image` from
+  `fit="cover"` to `fit="contain"` so the whole photo is visible at reduced
+  size, and clicking a thumbnail now opens it full-size in a `Modal`
+  lightbox (up to 80vh) instead of doing nothing.
+
 ## [0.15.1] - 2026-08-05
 
 ### Fixed

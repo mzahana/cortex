@@ -112,6 +112,7 @@ export function PhotoCapture({
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<Attachment | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<Attachment | null>(null);
 
   const handleDelete = async (attachment: Attachment) => {
     setDeletingId(attachment.id);
@@ -293,8 +294,11 @@ export function PhotoCapture({
                   src={`/media/${att.storage_key}`}
                   alt={att.filename}
                   radius="sm"
-                  fit="cover"
+                  fit="contain"
                   h={100}
+                  bg="gray.1"
+                  style={{ cursor: "zoom-in" }}
+                  onClick={() => setPreviewTarget(att)}
                   data-testid="attachment-photo"
                 />
               ) : (
@@ -377,6 +381,24 @@ export function PhotoCapture({
             </Button>
           </Group>
         </Stack>
+      </Modal>
+
+      <Modal
+        opened={previewTarget !== null}
+        onClose={() => setPreviewTarget(null)}
+        title={previewTarget?.filename}
+        centered
+        size="auto"
+      >
+        {previewTarget && (
+          <Image
+            src={`/media/${previewTarget.storage_key}`}
+            alt={previewTarget.filename}
+            fit="contain"
+            mah="80vh"
+            data-testid="attachment-photo-preview"
+          />
+        )}
       </Modal>
     </Stack>
   );
