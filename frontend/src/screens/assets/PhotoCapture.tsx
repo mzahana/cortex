@@ -77,18 +77,18 @@ const DOC_ACCEPT = ".pdf,.doc,.docx,.xls,.xlsx,.txt";
  * orders, and other non-image documents) via a second picker that reuses
  * the same upload/pending/error plumbing.
  *
- * `capture="environment"` on the underlying `<input type="file"
- * accept="image/*">` (Mantine's `FileButton` passes both straight through
- * to the native input) is the standard mobile-web pattern for opening the
- * rear camera directly — it works on iOS Safari and Android Chrome without
- * `getUserMedia`/canvas capture, and only needs a secure context (the
- * Cloudflare Tunnel's `https://cortex.<domain>` in prod; localhost is a
- * secure context too for dev — docs/deployment.md §3). Desktop browsers
- * without a camera silently fall back to a normal file picker, which
- * doubles as the R5 manual-entry-adjacent fallback for the *file* half of
- * F6 (any image the browser hands back through this input still uploads
- * normally) — the QR-scan half's manual token-entry fallback lives in the
- * scan screen, not here.
+ * The underlying `<input type="file" accept="image/*">` (Mantine's
+ * `FileButton` passes `accept` straight through to the native input)
+ * deliberately has no `capture` attribute: on iOS Safari, `capture`
+ * bypasses the native picker and launches straight into the camera with no
+ * way to reach Photos, which made gallery upload unreachable from this
+ * button. Without it, both iOS Safari and Android Chrome show the native
+ * chooser (Camera + Photo Library/Files), and desktop browsers without a
+ * camera fall back to a normal file picker — which doubles as the
+ * R5 manual-entry-adjacent fallback for the *file* half of F6 (any image
+ * the browser hands back through this input still uploads normally) — the
+ * QR-scan half's manual token-entry fallback lives in the scan screen, not
+ * here.
  *
  * Upload is fire-and-forget from the caller's perspective (CLAUDE.md "slow
  * work never blocks the request" applies to the UI thread here too, not
@@ -198,7 +198,7 @@ export function PhotoCapture({
               allowDeselect={false}
               data-testid="attachment-doc-type"
             />
-            <FileButton resetRef={photoResetRef} onChange={handlePhotoChange} accept="image/*" capture="environment">
+            <FileButton resetRef={photoResetRef} onChange={handlePhotoChange} accept="image/*">
               {(props) => (
                 <Button size="xs" variant="light" loading={isUploading} data-testid="capture-photo-button" {...props}>
                   Take / add photo

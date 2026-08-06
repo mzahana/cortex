@@ -20,6 +20,16 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mobile "Take / add photo" on Asset Detail couldn't upload from the photo
+  library on iOS Safari.** The file input's `capture="environment"` attribute
+  makes iOS Safari launch straight into the camera, bypassing the native
+  picker entirely — there was no way to reach Photos from that button.
+  Removed `capture` from `PhotoCapture.tsx`'s photo input so the native
+  chooser (Camera + Photo Library/Files) shows on both iOS and Android;
+  desktop file-picker fallback is unchanged.
+
 ## [0.15.2] - 2026-08-06
 
 ### Fixed
