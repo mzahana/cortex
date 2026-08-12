@@ -18,7 +18,173 @@ no longer only a convention: pushing a `vX.Y.Z` tag fails CI's
 matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 `docs/development.md`.
 
-## [Unreleased]
+## [0.16.0] - 2026-08-12
+
+### Added
+
+- **An expense can now be linked to several assets, not just one** (M8 Phase 1,
+  `docs/tasks/M8-expense-reconciliation.md`). A single vendor receipt line
+  routinely becomes several assets — four identical Jetsons on one line, or one
+  service covering several instruments — and the old single-asset field forced
+  you to either duplicate the expense (double-counting it against the budget)
+  or drop the asset link and lose the trail from receipt to physical item. The
+  expense form's asset picker is now multi-select, with **a box per asset for
+  what that asset actually cost** — a receipt does not divide equally, and a
+  $350 GPU next to a $9 cable is not $179.50 each. Leave a box empty and that
+  asset takes a share of whatever is left (to the cent, via largest-remainder
+  allocation, so the shares always sum back to the line total). A running
+  "N left to allocate" readout shows where the line stands; a line that doesn't
+  balance is flagged, never rejected. Amounts you typed survive later edits to
+  the line total, while the auto ones follow it.
+- **Unassigned assets can now be expensed.** An asset created without a project
+  was previously unreachable from every expense form in the app — the picker
+  only offered a project's own assets, so a general-pool asset could never be
+  linked anywhere. They now appear marked `(unassigned)`, and linking one moves
+  it into that project, since that project's funds paid for it. New
+  `?unassigned=true` filter on the asset list, which `?project=` could not
+  express.
+- **An asset can now record which projects USE it, separately from the project
+  that FUNDED it.** The asset detail screen's `Project` field is relabelled
+  **Funding project** and a new **Used by** panel lists using projects with
+  optional start/end dates. Recording usage moves no money: the asset's cost
+  stays booked to the project that paid for it, and the panel says so
+  explicitly. A regression test pins that invariant, since violating it
+  double-counts equipment across grants.
+
+- **An expense is now an order** (M8 Phase 2). One vendor, one total that hits
+  your bank, one or more shipments, and the items inside each — recorded in a
+  single form, in one request. A simple order never shows the shipment concept
+  at all; the "arrived in several shipments?" button is the only thing that
+  reveals it, for the orders that actually split. The project's Expenses tab
+  lists orders, each expanding to show what was in it, with an amber badge when
+  the items don't yet add up to what was paid (a nudge, never a blocker).
+- **Multi-currency.** A receipt priced in USD settled by a SAR bank charge is
+  handled by deriving the exchange rate **from the actual debit** — so it
+  includes the bank's markup and foreign-transaction fee, and reconciles to the
+  riyal. A published mid-market rate would leave a residual that never
+  balances. Amounts always show the original first with the converted figure
+  and rate in parentheses. When one charge settles receipts in *several*
+  different currencies the split cannot be inferred, so the form asks for each
+  receipt's settled amount; in the ordinary single-currency case the user never
+  sees any of this.
+- **Shipping and tax** are entered once per receipt and spread across its items
+  in proportion to price, so a $350 GPU carries more of the $30 shipping than a
+  $9 cable does — which makes each item's fully-loaded cost, and therefore each
+  asset's capitalized cost, correct. Both appear as their own rows in the item
+  table, in the app and in the PDF, with an explicit receipt total beneath
+  them, so the column adds up in front of you.
+
+- **Audit pack PDF** (M8 Phase 3). Every expense gets a **Download audit pack**
+  button producing one self-contained PDF: a cover with the charge and its
+  statement reference, the bank statement excerpt in full, then per shipment a
+  labelled divider, the receipt scan in full, the item table (price and
+  converted cost side by side) and a photo of each linked asset, closing with
+  what the items add up to against what was paid. Every page is numbered
+  `Page N of M` across the appended scans too, so a reference to "the receipt on
+  page 7" actually resolves. Rendered in the background; a missing scan degrades
+  the pack rather than failing it.
+
+- **Audit-readiness checklist** (M8 Phase 3). An **Audit readiness** button on
+  the project's Expenses tab produces a PDF of what would fail an audit —
+  before an auditor finds it. Split into blockers (money not itemized, a charge
+  with no bank statement, a shipment with no receipt scan) and advisories (an
+  item with no category, an asset with no photo or serial), each naming the
+  record and what to do about it.
+- **The project report is rebuilt around orders and their paperwork.** It
+  opens with the budget, then one row per expense — an order placed with a
+  vendor, matching what the Expenses tab shows — giving its number, date,
+  vendor, item count, item cost, shipping and tax, **total cost** (what the
+  order cost the project, the column that sums to the project's spend) and
+  **charged** (what the bank took), with the charged figure highlighted where
+  the two differ, since that gap is money not yet itemized. Below it, an
+  **Orders and invoices** section sets out each order in turn: its receipts,
+  what was on each, and — merged directly beneath that order — the scanned
+  receipts and bank statement proving it, so nothing has to be matched up by
+  amount at the back of the document. Scans are merged PDF pages and can only
+  land at a page boundary, so each order starts a new page: the layout an
+  audit pack is expected to have. Orders are numbered consistently here, in
+  the Expenses tab and in a downloaded pack's filename
+  (`order-04-aliexpress-2026-08-12.pdf`), so a row, a section and a file can
+  be matched without opening any of them. The numbering is positional, which
+  is what keeps it consistent everywhere with no migration — the tradeoff is
+  that back-dating an order renumbers the ones after it, so it is not a
+  permanent identifier to quote months later.
+- **PDF bookmarks** on the expense pack, so a long pack is navigable.
+
+### Changed
+
+- **A project's spend now includes shipping and tax.** They are recorded on
+  the receipt rather than on its item lines, so summing item prices alone
+  understated what the project had spent — the budget showed *less* gone than
+  the bank statement proved had left the account, which is the one discrepancy
+  an audit cannot survive. `spent` now includes them and reconciles to the
+  bank, with **Shipping & tax** as its own row in the category breakdown so
+  the categories still sum to the total. Expect a project's "spent" figure to
+  rise by exactly the shipping and tax on its receipts after upgrading.
+
+### Security
+
+- **Uploaded files now require a login.** `/media/` was served straight off the
+  volume by nginx with no authentication — the unguessable URL was the only
+  protection, so a link that escaped (forwarded email, shared laptop, chat
+  paste) worked forever for anyone holding it. Acceptable for an asset photo,
+  not for the bank statements M8 introduced. Requests now go through Django,
+  which checks that the caller is signed in **and** belongs to the tenant that
+  owns the file (the tenant id is in the storage key), then hands serving back
+  to nginx via `X-Accel-Redirect` — so nginx still streams the bytes and no
+  worker is held open for a large download. Nothing changes for signed-in
+  users; the browser sends the session cookie automatically.
+  **Known limit, deliberately recorded:** this is not per-object RBAC. Any
+  authenticated member of the owning tenant who has a link can fetch that
+  tenant's file, even one the UI would not show them.
+
+### API
+
+- `GET/POST/PATCH/DELETE /api/v1/payments/` and `/api/v1/purchases/`, plus
+  `POST /payments/{id}/attachment/` (bank statement excerpt) and
+  `POST /purchases/{id}/attachment/` (receipt scan — filed against the receipt,
+  not its items, so a report prints it once rather than once per item). New
+  permission keys `finance.payment.view` / `finance.payment.manage`, granted to
+  Admin tenant-wide and to Project Lead scoped to their own projects.
+- **Charge visibility**: a lead sees a charge that carries at least one item
+  booked to a project they lead. Other projects' receipts are filtered out of
+  the payload entirely and their total collapses into a single unnamed
+  `other_projects_share`. A charge's header is editable only by someone who
+  leads *every* project on it, so two leads cannot overwrite each other.
+- `Expense` gains a writable `purchase` field.
+- `GET/POST /api/v1/assets/{id}/usages/` and `PATCH/DELETE
+  /api/v1/asset-usages/{id}/` — usage records. Reads need `asset.view`, writes
+  `asset.edit` scoped to the asset's **funding** project (the owning lead
+  controls their equipment's record). A duplicate ongoing usage for the same
+  asset+project returns `409`, not a `500`.
+- `ExpenseSerializer` gains a writable `asset_allocations` list of
+  `{asset, allocated_amount?, quantity?}` for per-asset amounts;
+  `allocated_amount: null` means "auto" and is resolved at read time, which is
+  what keeps auto shares consistent with the line total across edits while
+  leaving typed figures untouched. Each link is returned with both the raw
+  `allocated_amount` and a computed `resolved_amount`.
+- `ExpenseSerializer` also gains a writable `assets` list (replaces `asset`, which
+  stays populated and accepted for one deprecation release) and a read-only
+  `asset_links` array carrying each asset's allocated share. The new field
+  inherits the same scoping as the old one: an expense can still only link its
+  own project's assets or general-pool ones.
+
+### Database
+
+- New app `apps.finance` with `finance_payment`, `finance_purchase` and their
+  two attachment tables, all with fail-closed RLS. **Their RLS is tenant-only
+  with no project predicate** — a charge has no single project, so the
+  project-level rule lives in the application layer and is covered by explicit
+  tests rather than by the database. Every reconciliation figure (settled
+  amounts, FX rates, variances, overhead shares) is derived from stored facts
+  rather than stored, so it cannot drift from the record it describes.
+- `projects_expense.purchase` added (`SET_NULL`: deleting a mis-entered receipt
+  never destroys the financial records booked against it).
+- New tenant-owned tables `projects_expense_asset_link` and
+  `assets_asset_project_usage`, both with fail-closed RLS created in the same
+  migration as the table (rather than a follow-up one, so no window exists
+  where a tenant table has no policy). Existing `Expense.asset` values are
+  backfilled into the link table; the column is not dropped yet.
 
 ## [0.15.3] - 2026-08-06
 
