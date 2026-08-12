@@ -50,6 +50,16 @@ PROJECT_MANAGE = "project.manage"
 EXPENSE_VIEW = "expense.view"
 EXPENSE_MANAGE = "expense.manage"
 
+# M8 Phase 2 (docs/tasks/M8-expense-reconciliation.md §7). Bank charges and
+# vendor receipts span projects by construction — one Amazon debit can pay for
+# two grants — so these are 🟡-scoped like `expense.*`, and the "which charges
+# can I see at all" rule is the visible-set check in
+# `apps.finance.permissions`: a lead sees a charge that carries at least one
+# line booked to a project they lead, with every other project's lines
+# collapsed to a single unnamed total.
+PAYMENT_VIEW = "finance.payment.view"
+PAYMENT_MANAGE = "finance.payment.manage"
+
 # `key -> human label`, used by the seed migration to create `Permission` rows.
 PERMISSION_LABELS: dict[str, str] = {
     ASSET_VIEW: "View inventory / assets",
@@ -81,6 +91,8 @@ PERMISSION_LABELS: dict[str, str] = {
     PROJECT_MANAGE: "Manage project budget/grant metadata & documents",
     EXPENSE_VIEW: "View project expenses/invoices",
     EXPENSE_MANAGE: "Create/edit/delete project expenses & invoice scans",
+    PAYMENT_VIEW: "View bank charges & vendor receipts",
+    PAYMENT_MANAGE: "Record/edit bank charges, receipts & their scans",
 }
 
 # --- System roles (docs/rbac.md §2) -----------------------------------------
@@ -130,6 +142,10 @@ ADMIN_PERMISSIONS: frozenset[str] = frozenset(
         PROJECT_MANAGE,
         EXPENSE_VIEW,
         EXPENSE_MANAGE,
+        # M8 Phase 2 — Admin holds these TENANT-WIDE, so every charge is visible
+        # regardless of which projects its lines touch.
+        PAYMENT_VIEW,
+        PAYMENT_MANAGE,
     }
 )
 
@@ -170,6 +186,13 @@ PROJECT_LEAD_PERMISSIONS: frozenset[str] = frozenset(
         PROJECT_MANAGE,
         EXPENSE_VIEW,
         EXPENSE_MANAGE,
+        # M8 Phase 2, at the user's explicit direction: a lead has FULL control
+        # over everything relating to a project they lead, charges included —
+        # they must not need an Admin to reconcile their own paperwork. Same 🟡
+        # scoping as the M7 keys above; which charges are visible at all is the
+        # separate visible-set rule in `apps.finance.permissions`.
+        PAYMENT_VIEW,
+        PAYMENT_MANAGE,
     }
 )
 
