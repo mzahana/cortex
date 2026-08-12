@@ -82,12 +82,14 @@ def _full_data(**overrides) -> ProjectReportData:
         spend_by_category=[CategorySpendRow(category="Equipment", total=Decimal("1200.00"))],
         expenses=[
             ExpenseRow(
+                seq=1,
                 date="2026-02-01",
-                category="Equipment",
                 vendor="Acme Corp",
-                invoice_number="INV-001",
-                description="RTX 4090",
+                item_count=1,
                 amount=Decimal("1200.00"),
+                overhead=Decimal("0.00"),
+                loaded=Decimal("1200.00"),
+                charged=Decimal("1200.00"),
             )
         ],
         assets=[
@@ -122,7 +124,6 @@ class TestReportContent:
         assert "USD 8,800.00" in html  # remaining
         assert "Equipment" in html
         assert "Acme Corp" in html
-        assert "INV-001" in html
         assert "RTX Box A" in html
         assert "SN-123" in html
 
@@ -145,7 +146,7 @@ class TestReportContent:
         html = render_project_report_html(data)
         assert "No assets are linked to this project." in html
         assert "No project documents on file." in html
-        assert "No invoice scans on file." in html
+        assert "No project documents on file." in html
 
     def test_html_escapes_free_text_fields(self):
         """Asset/expense free-text fields are user-supplied -- an unescaped
@@ -155,12 +156,14 @@ class TestReportContent:
         data = _full_data(
             expenses=[
                 ExpenseRow(
+                    seq=1,
                     date="2026-02-01",
-                    category="Equipment",
                     vendor="<script>alert(1)</script>",
-                    invoice_number="INV-002",
-                    description="A & B",
+                    item_count=1,
                     amount=Decimal("5.00"),
+                    overhead=Decimal("0.00"),
+                    loaded=Decimal("5.00"),
+                    charged=Decimal("5.00"),
                 )
             ]
         )
@@ -339,7 +342,7 @@ class TestIncludeInvoiceScans:
         assert len(data.invoices) == 1
         assert data.invoices[0].scan_data_uri is None
         html = render_project_report_html(data)
-        assert "<img" not in html.split("Documents &amp; invoice scans")[1]
+        assert "<img" not in html.split("Project documents (appendix)")[1]
 
     def test_true_with_image_attachment_embeds_a_downscaled_data_uri(self, settings, tmp_path):
         """Code-review fix: embedded scans go through `_resize_and_encode_png`
@@ -381,7 +384,7 @@ class TestIncludeInvoiceScans:
             data = resolve_project_report_data(_reload_project(project), include_invoice_scans=True)
 
         html = render_project_report_html(data)
-        appendix = html.split("Documents &amp; invoice scans")[1]
+        appendix = html.split("Project documents (appendix)")[1]
         assert '<div class="invoice-entry">' in appendix
         # No document rows in this fixture, so the ONLY table-cell markup
         # that could appear in the appendix would come from a regression
@@ -468,13 +471,22 @@ class TestIncludeInvoiceScans:
             assert max(decoded_img.size) <= _MAX_INVOICE_SCAN_DIMENSION_PX
             assert decoded_img.size[0] / decoded_img.size[1] == pytest.approx(3000 / 2000, rel=0.02)
 
-    def test_true_with_pdf_attachment_rasterizes_first_page_to_png(self, settings, tmp_path):
+    def test_true_with_pdf_attachment_appends_every_page_not_just_the_first(
+        self, settings, tmp_path
+    ):
+        """Regression: a PDF scan used to be rasterized to a single inline
+        preview of page 1, so a 6-page receipt entered the report as one page
+        with nothing to indicate the other five existed. Reported on real
+        data ("the AliExpress receipt was not including all pages").
+        """
         import fitz
+
+        from apps.projects.report import render_project_report_pdf
 
         settings.MEDIA_ROOT = str(tmp_path)
         doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), "Invoice")
+        for n in range(6):
+            doc.new_page().insert_text((72, 72), f"Receipt page {n + 1}")
         pdf_bytes = doc.tobytes()
         doc.close()
 
@@ -486,9 +498,42 @@ class TestIncludeInvoiceScans:
             )
             data = resolve_project_report_data(_reload_project(project), include_invoice_scans=True)
 
+        # Still listed in the appendix, but with no inline preview — the
+        # pages themselves are the preview now.
         assert len(data.invoices) == 1
-        assert data.invoices[0].scan_data_uri is not None
-        assert data.invoices[0].scan_data_uri.startswith("data:image/png;base64,")
+        assert data.invoices[0].scan_data_uri is None
+        assert len(data.scan_files) == 1
+
+        rendered = fitz.open(stream=render_project_report_pdf(data), filetype="pdf")
+        text = "\n".join(page.get_text() for page in rendered)
+        for n in range(6):
+            assert f"Receipt page {n + 1}" in text, f"page {n + 1} of the receipt was dropped"
+
+    def test_true_with_oversized_pdf_scan_is_skipped_but_still_listed(self, settings, tmp_path):
+        """The aggregate byte budget bounds how much scan data is resident at
+        once (this NAS has little RAM). Exceeding it costs the full-page
+        append, never the appendix row — the report must still say the
+        document exists."""
+        import apps.projects.services as services_module
+
+        settings.MEDIA_ROOT = str(tmp_path)
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            self._make_expense_with_attachment(
+                tenant, project, content_type="application/pdf", raw=b"%PDF-1.4 padding" * 100
+            )
+            original = services_module._MAX_APPENDED_DOCUMENT_TOTAL_BYTES
+            services_module._MAX_APPENDED_DOCUMENT_TOTAL_BYTES = 10
+            try:
+                data = resolve_project_report_data(
+                    _reload_project(project), include_invoice_scans=True
+                )
+            finally:
+                services_module._MAX_APPENDED_DOCUMENT_TOTAL_BYTES = original
+
+        assert data.scan_files == []
+        assert len(data.invoices) == 1
 
     def test_true_with_unsupported_content_type_falls_back_gracefully(self, settings, tmp_path):
         settings.MEDIA_ROOT = str(tmp_path)
@@ -1290,3 +1335,468 @@ class TestReportGenerateTenantIsolation:
         _login(client, tenant_a, admin_a)
         response = _generate(client, project_b.id)
         assert response.status_code in (403, 404)
+
+
+class TestOrderPaperworkReachesTheAppendix:
+    """Regression: M8 moved receipt scans to `PurchaseAttachment` and bank
+    statements to `PaymentAttachment`, but the appendix kept reading only the
+    pre-M8 `ExpenseAttachment` table. The result was a report whose
+    reconciliation section said a receipt was "on file" while the appendix
+    listing omitted it entirely — not even a filename row. Caught on real data
+    (an AliExpress order whose receipt never appeared in the PDF).
+    """
+
+    def _make_order_with_paperwork(self, tenant, project):
+        from django.core.files.storage import default_storage
+
+        from apps.finance.models import (
+            Payment,
+            PaymentAttachment,
+            Purchase,
+            PurchaseAttachment,
+        )
+
+        order = Payment.all_objects.create(
+            tenant=tenant,
+            project=project,
+            vendor="AliExpress",
+            paid_on="2026-03-02",
+            amount=Decimal("3030.72"),
+            currency="SAR",
+        )
+        purchase = Purchase.all_objects.create(
+            tenant=tenant,
+            payment=order,
+            date="2026-03-02",
+            receipt_number="1122137394908674",
+            subtotal=Decimal("2958.03"),
+            tax=Decimal("72.69"),
+            total=Decimal("3030.72"),
+            currency="SAR",
+        )
+        statement = PaymentAttachment.all_objects.create(
+            tenant=tenant,
+            payment=order,
+            storage_key=f"payment-attachments/{tenant.id}/statement.pdf",
+            filename="statement.pdf",
+            content_type="application/pdf",
+            size=8,
+        )
+        receipt = PurchaseAttachment.all_objects.create(
+            tenant=tenant,
+            purchase=purchase,
+            storage_key=f"purchase-attachments/{tenant.id}/receipt.png",
+            filename="receipt.png",
+            content_type="image/png",
+            size=8,
+        )
+        default_storage.save(statement.storage_key, io.BytesIO(b"%PDF-1.4"))
+        default_storage.save(receipt.storage_key, io.BytesIO(b"not-an-image"))
+
+        expense = ExpenseFactory(
+            tenant=tenant, project=project, amount=Decimal("2958.03"), vendor="AliExpress"
+        )
+        expense.purchase = purchase
+        expense.save(update_fields=["purchase"])
+        return order, purchase
+
+    def test_receipt_and_statement_scans_are_listed(self, settings, tmp_path):
+        settings.MEDIA_ROOT = str(tmp_path)
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            self._make_order_with_paperwork(tenant, project)
+            data = resolve_project_report_data(_reload_project(project))
+
+        filenames = {i.filename for i in data.invoices}
+        assert filenames == {"statement.pdf", "receipt.png"}
+
+        labels = " | ".join(i.expense_label for i in data.invoices)
+        assert "AliExpress" in labels
+        # Each scan says which document it is, or the listing is unusable.
+        assert "bank statement" in labels
+        assert "1122137394908674" in labels
+
+        # Both scans belong to an order, so neither is an orphan and neither
+        # appears in the appendix — they render with their order instead.
+        assert data.orphan_invoices == []
+
+    def test_the_order_table_and_its_attached_scans_cannot_disagree(
+        self, settings, tmp_path
+    ):
+        """The order's table claims a scan is "on file"; the scan must actually
+        be attached to that order. Both read one shared queryset precisely so
+        this can't drift again."""
+        settings.MEDIA_ROOT = str(tmp_path)
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            self._make_order_with_paperwork(tenant, project)
+            data = resolve_project_report_data(_reload_project(project))
+
+        claimed = sum(
+            1 for order in data.reconciliation for s in order.shipments if s.has_receipt_scan
+        )
+        assert claimed == 1
+        assert sum(1 for i in data.invoices if "receipt" in i.expense_label) == claimed
+
+    def test_a_corrupt_receipt_scan_does_not_fail_the_report(self, settings, tmp_path):
+        """`receipt.png` above is deliberately not a valid PNG — the row must
+        still appear, without a preview, same best-effort posture as every
+        other scan path here."""
+        settings.MEDIA_ROOT = str(tmp_path)
+        tenant = TenantFactory()
+        project = ProjectFactory(tenant=tenant)
+        with tenant_context(tenant.id):
+            self._make_order_with_paperwork(tenant, project)
+            data = resolve_project_report_data(
+                _reload_project(project), include_invoice_scans=True
+            )
+
+        from apps.projects.report import render_project_report_pdf
+
+        receipt = next(i for i in data.invoices if i.filename == "receipt.png")
+        assert receipt.scan_data_uri is None
+        assert render_project_report_pdf(data)[:4] == b"%PDF"
+
+
+class TestShippingAndTaxAreVisibleAndCounted:
+    """Regression: shipping and tax live on the receipt, not on the item
+    lines, so the report showed neither — the ledger listed item prices, the
+    budget summed item prices, and a reader had no way to check the figures
+    against the bank. Reported as "it didn't include the shipment or tax cost,
+    so it was not clear if the numbers are correct".
+    """
+
+    def _project_with_taxed_receipt(self, tenant):
+        """One receipt: 2958.03 of items + 72.69 tax = 3030.72 charged."""
+        from apps.finance.models import Payment, Purchase
+
+        project = ProjectFactory(tenant=tenant, budget_total="10000.00")
+        order = Payment.all_objects.create(
+            tenant=tenant,
+            project=project,
+            vendor="AliExpress",
+            paid_on="2026-03-02",
+            amount=Decimal("3030.72"),
+            currency="SAR",
+        )
+        purchase = Purchase.all_objects.create(
+            tenant=tenant,
+            payment=order,
+            date="2026-03-02",
+            subtotal=Decimal("2958.03"),
+            tax=Decimal("72.69"),
+            total=Decimal("3030.72"),
+            currency="SAR",
+        )
+        expense = ExpenseFactory(tenant=tenant, project=project, amount=Decimal("2958.03"))
+        expense.purchase = purchase
+        expense.save(update_fields=["purchase"])
+        return project
+
+    def test_budget_spent_includes_tax_so_it_matches_the_bank(self):
+        from apps.projects.services import budget_rollup
+
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_taxed_receipt(tenant)
+            rollup = budget_rollup(_reload_project(project))
+
+        # The bank took 3030.72; the items alone are 2958.03. Reporting the
+        # latter as "spent" is the bug.
+        assert rollup["spent"] == Decimal("3030.72")
+        assert rollup["remaining"] == Decimal("6969.28")
+
+    def test_overhead_appears_as_its_own_category_row(self):
+        from apps.projects.services import budget_rollup
+
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_taxed_receipt(tenant)
+            rollup = budget_rollup(_reload_project(project))
+
+        overhead = [r for r in rollup["spend_by_category"] if r["category"] == "Shipping & tax"]
+        assert overhead and overhead[0]["total"] == Decimal("72.69")
+        # Categories must still sum to `spent`, or the breakdown is misleading.
+        assert sum(r["total"] for r in rollup["spend_by_category"]) == rollup["spent"]
+
+    def test_each_ledger_line_carries_its_share_of_overhead(self):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_taxed_receipt(tenant)
+            data = resolve_project_report_data(_reload_project(project))
+
+        (row,) = data.expenses
+        assert row.amount == Decimal("2958.03")
+        assert row.overhead == Decimal("72.69")
+        assert row.loaded == Decimal("3030.72")
+
+    def test_ledger_shows_the_loaded_total_column(self):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_taxed_receipt(tenant)
+            data = resolve_project_report_data(_reload_project(project))
+
+        html = render_project_report_html(data)
+        assert "Total cost" in html
+        assert "Shipping &amp; tax" in html
+        assert "3,030.72" in html, "the fully-loaded total never reached the page"
+
+    def test_reconciliation_breaks_the_receipt_down_into_rows(self):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_taxed_receipt(tenant)
+            data = resolve_project_report_data(_reload_project(project))
+
+        (order,) = data.reconciliation
+        (shipment,) = order.shipments
+        assert "2,958.03" in shipment.items_subtotal
+        assert "72.69" in shipment.tax
+
+        html = render_project_report_html(data)
+        # Zero shipping is still stated: "no shipping" and "never recorded"
+        # must not look the same.
+        assert "Shipping" in html
+        assert "Items subtotal" in html
+
+
+class TestChargeNumberingAndScanPlacement:
+    """The report has to be *navigable*, not just complete: a reader looking at
+    a ledger line must be able to find the charge that paid for it, and that
+    charge's receipts must sit with the charge rather than in a pile at the
+    back of the document.
+    """
+
+    def _project_with_two_charges(self, tenant, settings, tmp_path):
+        import fitz
+        from django.core.files.storage import default_storage
+
+        from apps.finance.models import Payment, Purchase, PurchaseAttachment
+
+        settings.MEDIA_ROOT = str(tmp_path)
+        project = ProjectFactory(tenant=tenant, budget_total="10000.00")
+        for n, (vendor, amount) in enumerate(
+            [("AliExpress", "3030.72"), ("Amazon", "1200.00")], start=1
+        ):
+            order = Payment.all_objects.create(
+                tenant=tenant,
+                project=project,
+                vendor=vendor,
+                paid_on=f"2026-03-0{n}",
+                amount=Decimal(amount),
+                currency="SAR",
+            )
+            purchase = Purchase.all_objects.create(
+                tenant=tenant,
+                payment=order,
+                date=f"2026-03-0{n}",
+                subtotal=Decimal(amount),
+                total=Decimal(amount),
+                currency="SAR",
+            )
+            expense = ExpenseFactory(
+                tenant=tenant, project=project, amount=Decimal(amount), vendor=vendor
+            )
+            expense.purchase = purchase
+            expense.save(update_fields=["purchase"])
+
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 72), f"{vendor} receipt body")
+            raw = doc.tobytes()
+            doc.close()
+            attachment = PurchaseAttachment.all_objects.create(
+                tenant=tenant,
+                purchase=purchase,
+                storage_key=f"purchase-attachments/{tenant.id}/{vendor}.pdf",
+                filename=f"{vendor}.pdf",
+                content_type="application/pdf",
+                size=len(raw),
+            )
+            default_storage.save(attachment.storage_key, io.BytesIO(raw))
+        return project
+
+    def test_orders_and_ledger_lines_are_both_numbered(self, settings, tmp_path):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_two_charges(tenant, settings, tmp_path)
+            data = resolve_project_report_data(_reload_project(project))
+
+        assert [o.seq for o in data.reconciliation] == [1, 2]
+        # Every ledger line carries a number so it can be referred to.
+        assert [e.seq for e in data.expenses] == [1, 2]
+
+        html = render_project_report_html(data)
+        assert "Order 1" in html and "Order 2" in html
+
+    def test_each_charges_scans_are_attached_to_that_charge(self, settings, tmp_path):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_two_charges(tenant, settings, tmp_path)
+            data = resolve_project_report_data(
+                _reload_project(project), include_invoice_scans=True
+            )
+
+        # Scans hang off their own charge, not off one shared pool.
+        assert [len(o.scan_files) for o in data.reconciliation] == [1, 1]
+        assert data.scan_files == [], "charge scans must not also be pooled at the end"
+
+    def test_scan_pages_immediately_follow_their_own_charge(self, settings, tmp_path):
+        """The ordering guarantee, asserted on the real rendered PDF: charge 1,
+        then charge 1's receipt, THEN charge 2 — never both charges followed by
+        both receipts."""
+        import fitz
+
+        from apps.projects.report import render_project_report_pdf
+
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_two_charges(tenant, settings, tmp_path)
+            data = resolve_project_report_data(
+                _reload_project(project), include_invoice_scans=True
+            )
+            pdf = render_project_report_pdf(data)
+
+        rendered = fitz.open(stream=pdf, filetype="pdf")
+        pages = [page.get_text() for page in rendered]
+
+        def first_page_containing(needle: str) -> int:
+            return next(i for i, text in enumerate(pages) if needle in text)
+
+        charge_1 = first_page_containing("Order 1 —")
+        receipt_1 = first_page_containing("AliExpress receipt body")
+        charge_2 = first_page_containing("Order 2 —")
+        receipt_2 = first_page_containing("Amazon receipt body")
+
+        assert charge_1 < receipt_1 < charge_2 < receipt_2
+
+    def test_the_section_has_a_plain_language_title(self, settings, tmp_path):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = self._project_with_two_charges(tenant, settings, tmp_path)
+            data = resolve_project_report_data(_reload_project(project))
+
+        html = render_project_report_html(data)
+        assert "Orders and invoices" in html
+        assert "Reconciliation" not in html, "the accounting jargon is gone"
+
+
+class TestTheExpenseTableListsExpensesNotItems:
+    """One row per expense (order), matching the Expenses tab. The table used
+    to list every item line, so a single order of eight parts became eight
+    rows and the reader had to add them back up to find what the order cost.
+    """
+
+    def _order_with_items(self, tenant, project, *, vendor, amount, item_amounts, tax="0.00"):
+        from apps.finance.models import Payment, Purchase
+
+        order = Payment.all_objects.create(
+            tenant=tenant,
+            project=project,
+            vendor=vendor,
+            paid_on="2026-03-01",
+            amount=Decimal(amount),
+            currency="SAR",
+        )
+        purchase = Purchase.all_objects.create(
+            tenant=tenant,
+            payment=order,
+            date="2026-03-01",
+            subtotal=Decimal(sum(Decimal(a) for a in item_amounts)),
+            tax=Decimal(tax),
+            total=Decimal(amount),
+            currency="SAR",
+        )
+        for item_amount in item_amounts:
+            expense = ExpenseFactory(
+                tenant=tenant, project=project, amount=Decimal(item_amount), vendor=vendor
+            )
+            expense.purchase = purchase
+            expense.save(update_fields=["purchase"])
+        return order
+
+    def test_one_order_of_many_items_is_a_single_row(self):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = ProjectFactory(tenant=tenant)
+            self._order_with_items(
+                tenant,
+                project,
+                vendor="AliExpress",
+                amount="612.69",
+                item_amounts=["100.00", "200.00", "240.00"],
+                tax="72.69",
+            )
+            data = resolve_project_report_data(_reload_project(project))
+
+        assert len(data.expenses) == 1, "three items must not become three rows"
+        (row,) = data.expenses
+        assert row.vendor == "AliExpress"
+        assert row.item_count == 3
+        assert row.amount == Decimal("540.00")  # items as entered
+        assert row.overhead == Decimal("72.69")
+        assert row.loaded == Decimal("612.69")
+        assert row.charged == Decimal("612.69")
+
+    def test_two_expenses_produce_exactly_two_rows(self):
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = ProjectFactory(tenant=tenant)
+            self._order_with_items(
+                tenant, project, vendor="A", amount="100.00", item_amounts=["50.00", "50.00"]
+            )
+            self._order_with_items(
+                tenant, project, vendor="B", amount="30.00", item_amounts=["30.00"]
+            )
+            data = resolve_project_report_data(_reload_project(project))
+
+        assert [r.vendor for r in data.expenses] == ["A", "B"]
+
+    def test_a_standalone_pre_m8_expense_still_gets_its_own_row(self):
+        """It is real spending; dropping it would stop the table summing to
+        the project's total. It has no order, so its number is a dash."""
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = ProjectFactory(tenant=tenant)
+            ExpenseFactory(tenant=tenant, project=project, amount=Decimal("42.00"), vendor="Old")
+            data = resolve_project_report_data(_reload_project(project))
+
+        (row,) = data.expenses
+        assert row.seq == 0
+        assert row.loaded == Decimal("42.00")
+        assert "&mdash;" in render_project_report_html(data)
+
+    def test_the_table_total_equals_the_project_spend(self):
+        """The table and the budget summary must agree, or the report argues
+        with itself."""
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = ProjectFactory(tenant=tenant, budget_total="10000.00")
+            self._order_with_items(
+                tenant,
+                project,
+                vendor="A",
+                amount="612.69",
+                item_amounts=["540.00"],
+                tax="72.69",
+            )
+            ExpenseFactory(tenant=tenant, project=project, amount=Decimal("42.00"), vendor="Old")
+            data = resolve_project_report_data(_reload_project(project))
+
+        assert sum(r.loaded for r in data.expenses) == data.spent
+
+    def test_an_unreconciled_order_is_flagged_in_the_table(self):
+        """Charged 500 but only 300 itemized: the row must show both, so the
+        gap is visible without reading further."""
+        tenant = TenantFactory()
+        with tenant_context(tenant.id):
+            project = ProjectFactory(tenant=tenant)
+            self._order_with_items(
+                tenant, project, vendor="A", amount="500.00", item_amounts=["300.00"]
+            )
+            data = resolve_project_report_data(_reload_project(project))
+
+        (row,) = data.expenses
+        assert row.loaded == Decimal("300.00")
+        assert row.charged == Decimal("500.00")
+        assert "recon-warn" in render_project_report_html(data)

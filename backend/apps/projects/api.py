@@ -81,6 +81,7 @@ from apps.assets.services import validate_attachment_upload
 from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
 from apps.common.pagination import BoundedPageNumberPagination
+from apps.finance.tasks import generate_audit_checklist_pdf
 from apps.jobs.models import Job
 from apps.jobs.serializers import JobSerializer
 from apps.rbac.permission_keys import (
@@ -440,9 +441,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return Response(ExpenseSerializer(expense).data, status=status.HTTP_201_CREATED)
 
         queryset = (
-            Expense.objects.filter(project=project)
-            .select_related("category", "asset", "created_by")
-            .prefetch_related("attachments")
+            Expense.objects.filter(project=project).select_related(
+                "category", "asset", "created_by"
+            )
+            # M8: `asset_links__asset` is prefetched (not left lazy) so
+            # serializing N expenses with M links each stays 2 queries, not
+            # N*M — the query-budget rule in CLAUDE.md.
+            .prefetch_related("attachments", "asset_links__asset")
         )
         queryset = ExpenseFilterSet(request.query_params, queryset=queryset, request=request).qs
 
@@ -668,6 +673,40 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
+    @action(detail=True, methods=["post"], url_path="audit-readiness")
+    def audit_readiness(self, request, pk=None):
+        """`POST /api/v1/projects/{id}/audit-readiness/` — enqueue the
+        audit-readiness checklist PDF (M8 §6.3): what would fail an audit,
+        listed before an auditor finds it.
+
+        Gated on `expense.view` scoped to THIS project, same boundary as the
+        report — the checklist names charges and amounts, so it must not be
+        reachable by someone who cannot see the expenses themselves.
+        """
+        project = self.get_object()
+        job = Job.objects.create(
+            tenant=request.user.tenant,
+            job_type="audit_checklist_pdf",
+            params={"project_id": project.id},
+            created_by=request.user,
+        )
+        write_audit_log(
+            tenant_id=project.tenant_id,
+            actor=request.user,
+            action=EXPENSE_VIEW,
+            entity_type="audit_checklist",
+            entity_id=project.id,
+            before=None,
+            after={"job_id": str(job.id)},
+            ip=client_ip(request),
+        )
+        transaction.on_commit(
+            lambda: generate_audit_checklist_pdf.delay(
+                job_id=str(job.id), tenant_id=job.tenant_id, project_id=project.id
+            )
+        )
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
     @action(detail=True, methods=["post"], url_path="archive")
     def archive(self, request, pk=None):
         """`POST /api/v1/projects/{id}/archive` — enqueues a Celery job that
@@ -764,7 +803,7 @@ class ExpenseViewSet(
 
     def get_queryset(self):
         return Expense.objects.select_related("project", "category", "asset").prefetch_related(
-            "attachments"
+            "attachments", "asset_links__asset"
         )
 
     def perform_update(self, serializer):
