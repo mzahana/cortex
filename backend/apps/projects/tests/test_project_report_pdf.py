@@ -1421,9 +1421,7 @@ class TestOrderPaperworkReachesTheAppendix:
         # appears in the appendix — they render with their order instead.
         assert data.orphan_invoices == []
 
-    def test_the_order_table_and_its_attached_scans_cannot_disagree(
-        self, settings, tmp_path
-    ):
+    def test_the_order_table_and_its_attached_scans_cannot_disagree(self, settings, tmp_path):
         """The order's table claims a scan is "on file"; the scan must actually
         be attached to that order. Both read one shared queryset precisely so
         this can't drift again."""
@@ -1449,9 +1447,7 @@ class TestOrderPaperworkReachesTheAppendix:
         project = ProjectFactory(tenant=tenant)
         with tenant_context(tenant.id):
             self._make_order_with_paperwork(tenant, project)
-            data = resolve_project_report_data(
-                _reload_project(project), include_invoice_scans=True
-            )
+            data = resolve_project_report_data(_reload_project(project), include_invoice_scans=True)
 
         from apps.projects.report import render_project_report_pdf
 
@@ -1633,9 +1629,7 @@ class TestChargeNumberingAndScanPlacement:
         tenant = TenantFactory()
         with tenant_context(tenant.id):
             project = self._project_with_two_charges(tenant, settings, tmp_path)
-            data = resolve_project_report_data(
-                _reload_project(project), include_invoice_scans=True
-            )
+            data = resolve_project_report_data(_reload_project(project), include_invoice_scans=True)
 
         # Scans hang off their own charge, not off one shared pool.
         assert [len(o.scan_files) for o in data.reconciliation] == [1, 1]
@@ -1652,9 +1646,7 @@ class TestChargeNumberingAndScanPlacement:
         tenant = TenantFactory()
         with tenant_context(tenant.id):
             project = self._project_with_two_charges(tenant, settings, tmp_path)
-            data = resolve_project_report_data(
-                _reload_project(project), include_invoice_scans=True
-            )
+            data = resolve_project_report_data(_reload_project(project), include_invoice_scans=True)
             pdf = render_project_report_pdf(data)
 
         rendered = fitz.open(stream=pdf, filetype="pdf")

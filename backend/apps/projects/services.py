@@ -329,7 +329,6 @@ def _asset_photo_data_uri(asset: Asset) -> str | None:
     return f"data:{content_type};base64,{encoded}"
 
 
-
 # Code-review finding: the invoice scan now renders LARGE in the report
 # (`.invoice-scan` CSS, up to 6in wide, vs. the tiny `.asset-photo` square),
 # so it needs a real resolution cap -- otherwise a full-resolution phone

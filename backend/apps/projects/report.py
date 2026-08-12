@@ -654,9 +654,7 @@ def _appendix_html(data: ProjectReportData) -> str:
               <tbody>{rows}</tbody>
             </table>
             """
-        orphans_html = (
-            "<p><strong>Other scans (not linked to an order)</strong></p>" + listing
-        )
+        orphans_html = "<p><strong>Other scans (not linked to an order)</strong></p>" + listing
     else:
         orphans_html = ""
 
