@@ -11,14 +11,24 @@ at import time with no tenant context and crash on app startup).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.db.models import Q
 from rest_framework import serializers
 
 from apps.accounts.models import User
 from apps.assets.models import Asset
+from apps.finance.models import Purchase
 
-from .models import Expense, ExpenseAttachment, ExpenseCategory, Project, ProjectDocument
-from .services import budget_rollup
+from .models import (
+    Expense,
+    ExpenseAssetLink,
+    ExpenseAttachment,
+    ExpenseCategory,
+    Project,
+    ProjectDocument,
+)
+from .services import budget_rollup, resolve_asset_allocations, sync_expense_asset_links
 
 
 class ExpenseCategorySerializer(serializers.ModelSerializer):
@@ -240,8 +250,89 @@ class ExpenseAttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ExpenseAssetLinkSerializer(serializers.ModelSerializer):
+    """Read-only view of one `Expense` -> `Asset` link (M8 Phase 1).
+
+    `asset_name` is denormalized into the payload so the expense list can name
+    every linked asset without the client issuing a follow-up request per link
+    (the list is prefetched with `asset_links__asset`, so this costs no extra
+    query — see `apps.projects.api.ProjectViewSet.expenses`).
+    """
+
+    asset_name = serializers.CharField(source="asset.name", read_only=True)
+    # `allocated_amount` is the RAW column: `null` means "auto" (the user did
+    # not type a figure). `resolved_amount` is what that link actually costs
+    # once the autos have shared out the remainder — always a number, and what
+    # the UI displays. Exposing both is deliberate: the UI needs to know which
+    # boxes the user filled in, so re-editing the total doesn't overwrite them.
+    resolved_amount = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExpenseAssetLink
+        fields = [
+            "id",
+            "asset",
+            "asset_name",
+            "allocated_amount",
+            "resolved_amount",
+            "quantity",
+        ]
+        read_only_fields = fields
+
+    def get_resolved_amount(self, link) -> str:
+        resolved = self.context.get("resolved_allocations") or {}
+        value = resolved.get(link.id)
+        if value is None:
+            # Serialized outside `ExpenseSerializer` (no precomputed map) —
+            # fall back to the link's own figure rather than inventing one.
+            value = link.allocated_amount or Decimal("0")
+        return str(value)
+
+
+class ExpenseAssetAllocationWriteSerializer(serializers.Serializer):
+    """One `{asset, allocated_amount?, quantity?}` entry of the writable
+    `asset_allocations` field below.
+
+    `allocated_amount` is optional: omit it (or send `null`) and the server
+    computes an even share of whatever is left after the explicit amounts are
+    subtracted — the "four identical Jetsons on one line" case. Send it and the
+    figure is stored verbatim, which is what a real receipt with differently
+    priced items needs.
+    """
+
+    asset = serializers.PrimaryKeyRelatedField(queryset=Asset.all_objects.none())
+    allocated_amount = serializers.DecimalField(
+        max_digits=14, decimal_places=2, required=False, allow_null=True
+    )
+    quantity = serializers.IntegerField(required=False, min_value=1, default=1)
+
+
 class ExpenseSerializer(serializers.ModelSerializer):
     attachments = ExpenseAttachmentSerializer(many=True, read_only=True)
+    asset_links = ExpenseAssetLinkSerializer(many=True, read_only=True)
+    # M8: per-asset amounts. Preferred over the plain `assets` id list below,
+    # which can only ever mean "split evenly" — and a real receipt does not
+    # divide equally (a $350 GPU and a $9 cable are not $179.50 each). Both are
+    # accepted; `asset_allocations` wins when both are sent.
+    asset_allocations = ExpenseAssetAllocationWriteSerializer(
+        many=True, write_only=True, required=False
+    )
+    # M8 Phase 1: the writable multi-asset field that replaces the single
+    # `asset` FK. Write-only + `required=False` so an M7-era client that still
+    # posts `asset` alone keeps working unchanged for the deprecation release
+    # (`apps.projects.services.sync_expense_asset_links` keeps the two in sync
+    # in both directions). Its queryset is scoped per-request in `get_fields`
+    # below, exactly like `asset`.
+    # `all_objects.none()`, NOT `objects.none()`: this runs at CLASS-DEFINITION
+    # time (Django app loading), long before any request or tenant context
+    # exists, and `TenantScopedManager.get_queryset()` fail-closes with
+    # `TenantContextError` there — the identical startup crash
+    # `apps.assets.api.AssetFilterSet` documents avoiding. The real, tenant- and
+    # project-scoped queryset is bound per-request in `get_fields()` below;
+    # this placeholder is only ever a placeholder.
+    assets = serializers.PrimaryKeyRelatedField(
+        many=True, write_only=True, required=False, queryset=Asset.all_objects.none()
+    )
 
     class Meta:
         model = Expense
@@ -256,6 +347,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
             "invoice_number",
             "description",
             "asset",
+            "assets",
+            "asset_allocations",
+            "asset_links",
+            "purchase",
             "created_by",
             "attachments",
             "created_at",
@@ -292,12 +387,78 @@ class ExpenseSerializer(serializers.ModelSerializer):
         # back to every asset.
         project = self.context.get("project") or getattr(self.instance, "project", None)
         if project is not None:
-            fields["asset"].queryset = Asset.objects.filter(  # type: ignore[attr-defined]
-                Q(project=project) | Q(project__isnull=True)
-            )
+            selectable_assets = Asset.objects.filter(Q(project=project) | Q(project__isnull=True))
         else:
-            fields["asset"].queryset = Asset.objects.none()  # type: ignore[attr-defined]
+            selectable_assets = Asset.objects.none()
+        fields["asset"].queryset = selectable_assets  # type: ignore[attr-defined]
+        # M8: the multi-asset field inherits the SAME scope as the single FK it
+        # replaces — finding #4's cross-project rule must not be reintroducible
+        # by posting `assets: [...]` instead of `asset: <id>`. Both fail closed
+        # to an empty queryset when no project is resolvable.
+        fields["assets"].child_relation.queryset = selectable_assets  # type: ignore[attr-defined]
+        # Same scope again for the per-asset-amount variant — otherwise
+        # `asset_allocations` would be the hole that `assets` isn't.
+        fields["asset_allocations"].child.fields[  # type: ignore[attr-defined]
+            "asset"
+        ].queryset = selectable_assets
+        # M8 Phase 2: the receipt this line sits on. Tenant-scoped like every
+        # other writable FK here — a receipt id from another tenant simply does
+        # not resolve. Deliberately NOT narrowed by project: one receipt
+        # legitimately carries items for several projects, which is the whole
+        # reason the receipt is a separate record.
+        fields["purchase"].queryset = Purchase.objects.all()  # type: ignore[attr-defined]
         return fields
+
+    def _pop_allocations(self, validated_data):
+        """Normalize either writable form into the
+        `[(asset, amount_or_None, quantity)]` shape the service takes.
+
+        `asset_allocations` (explicit per-asset amounts) wins over the plain
+        `assets` id list, which can only ever mean "even split". Returns `None`
+        when the request mentioned neither, which means "leave links alone" —
+        distinct from `[]`, which means "clear them".
+        """
+        allocations = validated_data.pop("asset_allocations", None)
+        assets = validated_data.pop("assets", None)
+        if allocations is not None:
+            return [
+                (entry["asset"], entry.get("allocated_amount"), entry.get("quantity", 1))
+                for entry in allocations
+            ]
+        if assets is not None:
+            return [(asset, None, 1) for asset in assets]
+        return None
+
+    # Neither writable field is a model field, so both must be popped before
+    # the ModelSerializer tries to assign them, and applied afterwards once the
+    # expense has a pk (and, on create, its server-set `tenant`) to link from.
+    # Both paths run inside the view's ATOMIC_REQUESTS transaction, so a
+    # failure part-way through leaves neither the expense nor its links behind.
+    def create(self, validated_data):
+        allocations = self._pop_allocations(validated_data)
+        expense = super().create(validated_data)
+        if allocations is not None:
+            sync_expense_asset_links(expense, allocations)
+        return expense
+
+    def update(self, instance, validated_data):
+        allocations = self._pop_allocations(validated_data)
+        expense = super().update(instance, validated_data)
+        if allocations is not None:
+            sync_expense_asset_links(expense, allocations)
+        # NOTE: no re-sync when only `amount` changes. Auto shares
+        # (`allocated_amount IS NULL`) are resolved at READ time by
+        # `resolve_asset_allocations`, so they follow the new total on their
+        # own, and amounts the user typed are meant to survive a total edit
+        # untouched. Nothing to write either way.
+        return expense
+
+    def to_representation(self, instance):
+        # Prime the per-link resolved amounts once per expense and hand them to
+        # the nested link serializer through context — computing them inside
+        # `get_resolved_amount` would redo the whole split once per link.
+        self.context["resolved_allocations"] = resolve_asset_allocations(instance)
+        return super().to_representation(instance)
 
 
 class ProjectDocumentSerializer(serializers.ModelSerializer):

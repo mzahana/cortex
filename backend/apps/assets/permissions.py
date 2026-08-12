@@ -50,7 +50,7 @@ triggers this extra check.
 
 from __future__ import annotations
 
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from apps.projects.models import Project
 from apps.rbac.permission_keys import (
@@ -77,7 +77,30 @@ ACTION_PERMISSION_MAP: dict[str, str] = {
     # on `GET /assets/{id}` (purchase cost/date/supplier + attachment
     # metadata) — so it is plain `asset.view`, no new exposure.
     "expense_prefill": ASSET_VIEW,
+    # M8 Phase 1 — `usages` is method-split (read vs. write) by
+    # `_usages_permission_key` below, so it is deliberately NOT a fixed entry
+    # here; `AssetPermission` consults that resolver first.
 }
+
+
+def _usages_permission_key(request, action: str) -> str | None:
+    """Permission key for `AssetViewSet.usages`, split GET vs. POST.
+
+    **Why `asset.edit` on the ASSET's funding project, not on the project being
+    added.** A usage row annotates someone else's equipment record — it says
+    "project B is using the drone that Grant A paid for". Gating the write on
+    the *using* project would let any lead attach their own project to another
+    team's asset unilaterally. Gating it on the asset's own project keeps the
+    funding project's lead in control of their equipment's record, which is the
+    same authorization intent as every other `Asset` mutation, so it reuses
+    `asset.edit` rather than inventing a key.
+
+    Reads are plain `asset.view`: the row exposes nothing the caller cannot
+    already see on `GET /assets/{id}`.
+    """
+    if action != "usages":
+        return None
+    return ASSET_VIEW if request.method in SAFE_METHODS else ASSET_EDIT
 
 
 def _resolve_target_project_id(request) -> int | None:
@@ -109,7 +132,9 @@ class AssetPermission(BasePermission):
             return False
 
         action = getattr(view, "action", "") or ""
-        permission_key = ACTION_PERMISSION_MAP.get(action)
+        permission_key = _usages_permission_key(request, action) or ACTION_PERMISSION_MAP.get(
+            action
+        )
         if permission_key is None:
             return False  # fail-closed: unmapped action
 
@@ -135,7 +160,9 @@ class AssetPermission(BasePermission):
     def has_object_permission(self, request, view, obj) -> bool:
         user = request.user
         action = getattr(view, "action", "") or ""
-        permission_key = ACTION_PERMISSION_MAP.get(action)
+        permission_key = _usages_permission_key(request, action) or ACTION_PERMISSION_MAP.get(
+            action
+        )
         if permission_key is None:
             return False
         if not user_has_permission(user, permission_key, project=obj.project_id):
@@ -178,3 +205,29 @@ class AssetAttachmentPermission(BasePermission):
 
     def has_object_permission(self, request, view, obj) -> bool:
         return user_has_permission(request.user, ASSET_ATTACH, project=obj.asset.project_id)
+
+
+class AssetProjectUsagePermission(BasePermission):
+    """`apps.assets.api.AssetProjectUsageViewSet` — PATCH/DELETE on
+    `/api/v1/asset-usages/{id}` (M8 Phase 1).
+
+    Scoped through the OWNING ASSET's funding project (`obj.asset.project_id`),
+    NOT through `obj.project_id` (the project doing the using) — same reasoning
+    as `_usages_permission_key`: editing or removing a usage row is editing
+    someone's equipment record, and the funding project's lead owns that
+    record. Reusing `asset.edit` keeps that intent identical to creation.
+
+    Same two-phase pattern as every other permission class here: permissive
+    "holds `asset.edit` somewhere" at `has_permission` (DRF runs it before
+    `get_object()`), then the real scope-correct check once the object is
+    known.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated:
+            return False
+        return user_has_permission_in_any_scope(user, ASSET_EDIT)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return user_has_permission(request.user, ASSET_EDIT, project=obj.asset.project_id)

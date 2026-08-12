@@ -75,6 +75,9 @@ PROJECT_ACTION_PERMISSION_MAP: dict[str, str] = {
     # material than the report PDF above, never less. Same gate, for the same
     # reason: `expense.view` scoped to THIS project.
     "archive": EXPENSE_VIEW,
+    # M8 §6.3: the checklist names charges and amounts, so it sits behind the
+    # same financial boundary as the report it complements.
+    "audit_readiness": EXPENSE_VIEW,
 }
 
 

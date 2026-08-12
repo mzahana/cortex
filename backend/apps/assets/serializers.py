@@ -21,8 +21,63 @@ from apps.accounts.models import User
 from apps.catalog.models import Category, Location, Tag
 from apps.projects.models import Project
 
-from .models import Asset, Attachment
+from .models import Asset, AssetProjectUsage, Attachment
 from .services import replace_asset_field_values
+
+
+class AssetProjectUsageSerializer(serializers.ModelSerializer):
+    """One "this project uses this asset" row (M8 Phase 1, §1.6).
+
+    Deliberately carries NO monetary field. A usage row is operational, never
+    financial — the cost of the asset stays booked to its funding project
+    (`Asset.project`) and to the expense lines that paid for it. If a money
+    field ever appears on this serializer, the double-counting bug M8 §1.6
+    exists to prevent has been reintroduced.
+
+    `project` is scoped through the tenant-scoped `Project.objects` manager in
+    `get_fields` (R4/F1), the same lazy per-request pattern every other
+    writable FK in this codebase uses. `asset` is derived from the URL
+    (`/assets/{id}/usages`), never trusted from the body.
+    """
+
+    project_name = serializers.CharField(source="project.name", read_only=True)
+
+    class Meta:
+        model = AssetProjectUsage
+        fields = [
+            "id",
+            "asset",
+            "project",
+            "project_name",
+            "start_date",
+            "end_date",
+            "note",
+            "created_by",
+            "created_at",
+        ]
+        read_only_fields = ["id", "asset", "created_by", "created_at"]
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields["project"].queryset = Project.objects.all()  # type: ignore[attr-defined]
+        return fields
+
+    def validate(self, attrs):
+        """Mirror the DB `CheckConstraint` so a bad range comes back as a 400
+        with a field message, not a 500 from an IntegrityError.
+
+        On PATCH the incoming `attrs` may carry only one of the two dates, so
+        each side falls back to the instance's current value — otherwise
+        moving `start_date` past an existing `end_date` would slip past this
+        check and hit the constraint.
+        """
+        start = attrs.get("start_date", getattr(self.instance, "start_date", None))
+        end = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        if start is not None and end is not None and end < start:
+            raise serializers.ValidationError(
+                {"end_date": "End date must be on or after the start date."}
+            )
+        return attrs
 
 
 class AttachmentSerializer(serializers.ModelSerializer):

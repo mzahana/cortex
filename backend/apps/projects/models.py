@@ -175,6 +175,16 @@ class Expense(TenantScopedModel):
         on_delete=models.SET_NULL,
         related_name="expenses",
     )
+    purchase = models.ForeignKey(
+        "finance.Purchase",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="expenses",
+        help_text="The vendor receipt this line appeared on (M8 Phase 2). NULL "
+        "= a standalone expense with no receipt recorded — every M7-era row, "
+        "and still perfectly valid.",
+    )
     created_by = models.ForeignKey(
         "accounts.User",
         null=True,
@@ -191,11 +201,71 @@ class Expense(TenantScopedModel):
             models.Index(fields=["tenant", "project"]),
             models.Index(fields=["tenant", "category"]),
             models.Index(fields=["tenant", "date"]),
+            models.Index(fields=["tenant", "purchase"]),
         ]
         ordering = ["-date", "-id"]
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"{self.project_id}:{self.amount}"
+
+
+class ExpenseAssetLink(TenantScopedModel):
+    """Links one `Expense` line to one `Asset` — the M8 replacement for the
+    single `Expense.asset` FK (`docs/tasks/M8-expense-reconciliation.md` §1.5).
+
+    **Why a through table and not just `Expense.asset`.** A single vendor
+    receipt line routinely becomes several assets (`quantity: 4` identical
+    Jetsons), and a single service line (a calibration contract) can cover
+    several existing assets. The 1:1 FK forced the user to either duplicate the
+    expense — which then double-counts against the budget — or drop the asset
+    link entirely and lose the audit trail from bank statement to physical
+    item. Neither is acceptable at audit.
+
+    `allocated_amount` is this asset's share of the line's cost, nullable
+    because a link may be purely informational (a service covering N assets
+    with no meaningful per-asset split). When the UI splits a `quantity: 4`
+    line into four assets it writes an explicit even split here rather than
+    computing it on read, for the same reproducibility reason `Purchase.fx_rate`
+    is stored (M8 §3): a report regenerated years later must show the same
+    numbers even if the line was edited since.
+
+    `asset` is CASCADE (not `SET_NULL` like the old FK): deleting an asset
+    removes the *link*, never the `Expense` itself, so the financial record
+    survives exactly as it did before — the property that made the old FK
+    `SET_NULL` is preserved by the link row being the thing that dies.
+    """
+
+    expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="asset_links")
+    asset = models.ForeignKey(
+        "assets.Asset", on_delete=models.CASCADE, related_name="expense_links"
+    )
+    allocated_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="This asset's share of the expense line, in the line's "
+        "currency. NULL = informational link with no cost split.",
+    )
+    quantity = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "projects_expense_asset_link"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "expense", "asset"],
+                name="uniq_expense_asset_link",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "expense"]),
+            models.Index(fields=["tenant", "asset"]),
+        ]
+        ordering = ["id"]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"expense={self.expense_id} asset={self.asset_id}"
 
 
 class ProjectDocument(TenantScopedModel):

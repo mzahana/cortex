@@ -43,6 +43,7 @@ import logging
 import django_filters as filters
 from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.core.files.storage import default_storage
+from django.db import IntegrityError
 from django.db.models import F, Prefetch, Q
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
@@ -56,12 +57,16 @@ from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
 from apps.common.pagination import AssetCursorPagination, BoundedPageNumberPagination
 from apps.dashboard.cache import invalidate_tenant_dashboard
-from apps.rbac.permission_keys import ASSET_ATTACH, ASSET_RETIRE, ASSET_VIEW
+from apps.rbac.permission_keys import ASSET_ATTACH, ASSET_EDIT, ASSET_RETIRE, ASSET_VIEW
 from apps.rbac.services import get_viewable_project_scope
 
-from .models import Asset, AssetFieldValue, Attachment
-from .permissions import AssetAttachmentPermission, AssetPermission
-from .serializers import AssetSerializer, AttachmentSerializer
+from .models import Asset, AssetFieldValue, AssetProjectUsage, Attachment
+from .permissions import (
+    AssetAttachmentPermission,
+    AssetPermission,
+    AssetProjectUsagePermission,
+)
+from .serializers import AssetProjectUsageSerializer, AssetSerializer, AttachmentSerializer
 from .services import save_attachment_file, validate_attachment_upload
 
 logger = logging.getLogger(__name__)
@@ -95,13 +100,28 @@ class AssetFilterSet(filters.FilterSet):
     category = filters.NumberFilter(field_name="category_id")
     location = filters.NumberFilter(field_name="location_id")
     project = filters.NumberFilter(field_name="project_id")
+    # M8: `?unassigned=true` lists general-pool assets (no funding project).
+    # `?project=` can't express this — there is no id for "none" — and without
+    # it the expense form had no way to offer an unassigned asset, so an asset
+    # created without a project could never be expensed anywhere. Same
+    # id-equality-style plain filter as the rest (no queryset built at class
+    # definition time, see this class's docstring).
+    unassigned = filters.BooleanFilter(field_name="project_id", lookup_expr="isnull")
     tag = filters.NumberFilter(method="filter_tag")
     status = filters.ChoiceFilter(choices=Asset.Status.choices)
     is_consumable = filters.BooleanFilter()
 
     class Meta:
         model = Asset
-        fields = ["category", "location", "project", "tag", "status", "is_consumable"]
+        fields = [
+            "category",
+            "location",
+            "project",
+            "unassigned",
+            "tag",
+            "status",
+            "is_consumable",
+        ]
 
     def filter_tag(self, queryset, name, value):
         # `TagLink` has `uniq_tag_link_asset_tag` (asset, tag) — at most one
@@ -307,6 +327,70 @@ class AssetViewSet(
         invalidate_tenant_dashboard(asset.tenant_id)
 
         return Response(self.get_serializer(asset).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get", "post"], url_path="usages")
+    def usages(self, request, pk=None):
+        """`GET/POST /api/v1/assets/{id}/usages` — which projects USE this
+        asset, as opposed to the one that funded it (M8 §1.6).
+
+        `GET` is `asset.view`, `POST` is `asset.edit`, both scoped to the
+        asset's own funding project by
+        `apps.assets.permissions._usages_permission_key` +
+        `AssetPermission.has_object_permission` (via `get_object()` below).
+
+        **This endpoint moves no money and must never be made to.** It records
+        an operational fact; project spend stays `sum(Expense.amount)` for the
+        project. `apps.projects.tests.test_asset_usage_moves_no_money` asserts
+        that a POST here leaves every budget rollup byte-identical.
+
+        `asset` and `tenant` are set server-side from the resolved asset —
+        never from the body (R4) — and `project` is re-scoped through the
+        tenant-scoped queryset in `AssetProjectUsageSerializer.get_fields`.
+        """
+        asset = self.get_object()
+
+        if request.method.upper() == "POST":
+            serializer = AssetProjectUsageSerializer(
+                data=request.data, context={"request": request}
+            )
+            serializer.is_valid(raise_exception=True)
+            try:
+                usage = serializer.save(
+                    tenant=request.user.tenant, asset=asset, created_by=request.user
+                )
+            except IntegrityError:
+                # The partial unique index (`uniq_open_asset_project_usage`):
+                # this asset already has an OPEN-ENDED usage row for that
+                # project. Surface it as a 409 rather than a 500 — the client
+                # should close the existing period, not create a second one.
+                return problem_response(
+                    status_code=status.HTTP_409_CONFLICT,
+                    title="Already in use by this project",
+                    detail=(
+                        "This asset already has an ongoing usage record for that "
+                        "project. Set an end date on the existing record first."
+                    ),
+                )
+            write_audit_log(
+                tenant_id=asset.tenant_id,
+                actor=request.user,
+                action=ASSET_EDIT,
+                entity_type="asset_project_usage",
+                entity_id=usage.id,
+                before=None,
+                after=AssetProjectUsageSerializer(usage).data,
+                ip=client_ip(request),
+            )
+            return Response(AssetProjectUsageSerializer(usage).data, status=status.HTTP_201_CREATED)
+
+        queryset = AssetProjectUsage.objects.filter(asset=asset).select_related(
+            "project", "created_by"
+        )
+        page = self.paginate_queryset(queryset)
+        serializer = AssetProjectUsageSerializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["get"], url_path="expense-prefill")
     def expense_prefill(self, request, pk=None):
@@ -537,6 +621,68 @@ class AssetAttachmentViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
             action=ASSET_ATTACH,
             entity_type="attachment",
             entity_id=attachment_id,
+            before=before,
+            after=None,
+            ip=client_ip(self.request),
+        )
+
+
+class AssetProjectUsageViewSet(
+    mixins.UpdateModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """`PATCH/DELETE /api/v1/asset-usages/{id}` — close out or remove a
+    "project X uses this asset" record (M8 Phase 1).
+
+    No `list`/`create` at this top level: both live nested under
+    `/assets/{id}/usages` (`AssetViewSet.usages`), so a client can never
+    enumerate or create usage rows without an asset context — the same shape
+    `apps.projects.api.ExpenseViewSet` uses for expenses under a project.
+
+    The common operation here is a PATCH setting `end_date` ("we gave the drone
+    back"), which is what frees the partial unique index to allow a later
+    period for the same pair.
+
+    Tenant scoping: `AssetProjectUsage.objects` (the fail-closed tenant-scoped
+    manager) resolved per request — an id from another tenant simply 404s.
+    RBAC: `AssetProjectUsagePermission`, scoped to the owning asset's funding
+    project.
+    """
+
+    serializer_class = AssetProjectUsageSerializer
+    permission_classes = [AssetProjectUsagePermission]
+    http_method_names = ["patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        return AssetProjectUsage.objects.select_related("asset", "project", "created_by")
+
+    def perform_update(self, serializer):
+        usage = serializer.instance
+        before = AssetProjectUsageSerializer(usage).data
+        serializer.save()
+        write_audit_log(
+            tenant_id=usage.tenant_id,
+            actor=self.request.user,
+            action=ASSET_EDIT,
+            entity_type="asset_project_usage",
+            entity_id=usage.id,
+            before=before,
+            after=AssetProjectUsageSerializer(serializer.instance).data,
+            ip=client_ip(self.request),
+        )
+
+    def perform_destroy(self, instance):
+        before = AssetProjectUsageSerializer(instance).data
+        tenant_id = instance.tenant_id
+        usage_id = instance.id
+        instance.delete()
+        write_audit_log(
+            tenant_id=tenant_id,
+            actor=self.request.user,
+            action=ASSET_EDIT,
+            entity_type="asset_project_usage",
+            entity_id=usage_id,
             before=before,
             after=None,
             ip=client_ip(self.request),

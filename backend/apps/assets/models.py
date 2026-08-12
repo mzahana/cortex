@@ -289,6 +289,72 @@ class Attachment(TenantScopedModel):
         return self.filename
 
 
+class AssetProjectUsage(TenantScopedModel):
+    """Which projects *use* an asset, as opposed to which project *funded* it
+    (`docs/tasks/M8-expense-reconciliation.md` §1.6).
+
+    **`Asset.project` was doing two jobs.** It answers "who paid for this",
+    which is a financial fact fixed at purchase time and load-bearing at audit.
+    It was also the only way to express "who is using this", which is
+    operational, changes constantly, and is genuinely many-to-many — a drone
+    bought under Grant A gets used by Project B for six months. Overloading one
+    FK meant either losing the funding record when usage changed, or (worse)
+    implying an asset's cost belonged to several grants at once.
+
+    So `Asset.project` keeps its original meaning — the **funding project** —
+    and this table carries usage. **A row here never moves money.** Project
+    spend is always `sum(Expense.amount)` for that project; a usage row grants
+    no cost. `apps.projects.tests.test_asset_usage_moves_no_money` pins that
+    invariant, because violating it double-counts equipment across grants,
+    which is precisely the finding an auditor acts on.
+
+    The partial unique constraint allows an asset to be used by the same
+    project in several *distinct historical periods* while permitting at most
+    one **open-ended** (`end_date IS NULL`) usage per (asset, project) — i.e.
+    it can't be "currently in use" by the same project twice.
+    """
+
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="project_usages")
+    project = models.ForeignKey(
+        "projects.Project", on_delete=models.CASCADE, related_name="asset_usages"
+    )
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True, help_text="NULL = usage is ongoing.")
+    note = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_asset_usages",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "assets_asset_project_usage"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "asset", "project"],
+                condition=models.Q(end_date__isnull=True),
+                name="uniq_open_asset_project_usage",
+            ),
+            models.CheckConstraint(
+                check=models.Q(end_date__isnull=True)
+                | models.Q(start_date__isnull=True)
+                | models.Q(end_date__gte=models.F("start_date")),
+                name="ck_asset_usage_dates_ordered",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "asset"]),
+            models.Index(fields=["tenant", "project"]),
+        ]
+        ordering = ["-start_date", "-id"]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"asset={self.asset_id} project={self.project_id}"
+
+
 class TagLink(TenantScopedModel):
     """Asset <-> Tag many-to-many through table (`docs/data-model.md` §2).
     Deferred from T1.1 to here since it FKs `Asset` (see
