@@ -6,6 +6,18 @@
  */
 import type {
   AssetExpensePrefill,
+  AssetProjectUsage,
+  Order,
+  OrderWritePayload,
+  Payment,
+  PaymentAttachment,
+  PaymentListParams,
+  PaymentWritePayload,
+  Purchase,
+  PurchaseAttachment,
+  PurchaseListParams,
+  PurchaseWritePayload,
+  AssetProjectUsageWritePayload,
   AttachmentDocType,
   AppUser,
   Asset,
@@ -113,7 +125,10 @@ async function ensureCsrfCookie(): Promise<void> {
 
 async function toApiError(response: Response): Promise<ApiError> {
   const contentType = response.headers.get("Content-Type") || "";
-  if (contentType.includes("application/problem+json") || contentType.includes("application/json")) {
+  if (
+    contentType.includes("application/problem+json") ||
+    contentType.includes("application/json")
+  ) {
     try {
       const body = (await response.json()) as Partial<ProblemDetails>;
       return new ApiError({
@@ -122,7 +137,8 @@ async function toApiError(response: Response): Promise<ApiError> {
         status: body.status ?? response.status,
         detail: body.detail,
         errors: body.errors,
-        retry_after: body.retry_after ?? response.headers.get("Retry-After") ?? undefined,
+        retry_after:
+          body.retry_after ?? response.headers.get("Retry-After") ?? undefined,
       });
     } catch {
       // fall through to the generic fallback below
@@ -140,11 +156,23 @@ interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
   const method = (options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers);
 
-  if (options.body !== undefined) {
+  // `FormData` must be passed through untouched: setting a `Content-Type`
+  // suppresses the multipart boundary the browser would otherwise generate,
+  // and `JSON.stringify`ing it yields `{}`. Both produce a `415 Unsupported
+  // Media Type` that fires before the server ever looks at the file, which is
+  // a confusing way to learn that this helper is JSON-only. Upload methods
+  // still use raw `fetch` for clarity; this guard means a future caller that
+  // forgets gets a working request instead of a silent mangling.
+  const isMultipart = options.body instanceof FormData;
+
+  if (options.body !== undefined && !isMultipart) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -158,7 +186,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     method,
     headers,
     credentials: "include", // same-origin session cookie (cortex_sessionid)
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body:
+      options.body === undefined
+        ? undefined
+        : isMultipart
+          ? (options.body as FormData)
+          : JSON.stringify(options.body),
   });
 
   if (!response.ok) {
@@ -204,9 +237,12 @@ async function fetchAllPages<T>(
   const results: T[] = [];
   let page = 1;
   for (; page <= maxPages; page += 1) {
-    const body = await request<Paginated<T>>(`${path}${buildQuery({ ...params, page })}`, {
-      method: "GET",
-    });
+    const body = await request<Paginated<T>>(
+      `${path}${buildQuery({ ...params, page })}`,
+      {
+        method: "GET",
+      },
+    );
     results.push(...body.results);
     if (!body.next) break;
   }
@@ -286,7 +322,9 @@ export const api = {
    * CSRF cookie first (like `login`, there may be no session yet). ALWAYS
    * resolves 200 with a generic message regardless of whether the account
    * exists (no enumeration). */
-  async requestPasswordReset(payload: ForgotPasswordRequest): Promise<{ detail: string }> {
+  async requestPasswordReset(
+    payload: ForgotPasswordRequest,
+  ): Promise<{ detail: string }> {
     await ensureCsrfCookie();
     return request<{ detail: string }>("/auth/password-reset/request", {
       method: "POST",
@@ -297,9 +335,14 @@ export const api = {
   /** `POST /api/v1/auth/password-reset/confirm` — unauthenticated. `204` on
    * success; `400` (`invalid-reset-token`) if the link is bad/expired/used, or
    * `errors.new_password` if the chosen password is too weak. */
-  async confirmPasswordReset(payload: PasswordResetConfirmRequest): Promise<void> {
+  async confirmPasswordReset(
+    payload: PasswordResetConfirmRequest,
+  ): Promise<void> {
     await ensureCsrfCookie();
-    await request<void>("/auth/password-reset/confirm", { method: "POST", body: payload });
+    await request<void>("/auth/password-reset/confirm", {
+      method: "POST",
+      body: payload,
+    });
   },
 
   // --- Categories (docs/api-and-ui.md "Structure"; apps.catalog.api.CategoryViewSet) ---
@@ -313,7 +356,9 @@ export const api = {
 
   /** `GET /api/v1/categories/` — one page. Read requires `asset.view`. */
   async listCategories(params?: ListParams): Promise<Paginated<Category>> {
-    return request<Paginated<Category>>(`/categories/${buildQuery(params)}`, { method: "GET" });
+    return request<Paginated<Category>>(`/categories/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** Walks every page of `/api/v1/categories/` — see `fetchAllPages` doc
@@ -332,8 +377,14 @@ export const api = {
   },
 
   /** `PATCH /api/v1/categories/{id}/` — requires `category.manage`. */
-  async updateCategory(id: number, payload: Partial<CategoryWritePayload>): Promise<Category> {
-    return request<Category>(`/categories/${id}/`, { method: "PATCH", body: payload });
+  async updateCategory(
+    id: number,
+    payload: Partial<CategoryWritePayload>,
+  ): Promise<Category> {
+    return request<Category>(`/categories/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
 
   /** `DELETE /api/v1/categories/{id}/` — requires `category.manage`. A
@@ -348,7 +399,9 @@ export const api = {
    * list, already ordered (`order`, then `id`) server-side. Not paginated
    * (`apps.catalog.api.CategoryViewSet.fields` returns a plain list). */
   async listCategoryFields(categoryId: number): Promise<CustomFieldDef[]> {
-    return request<CustomFieldDef[]>(`/categories/${categoryId}/fields/`, { method: "GET" });
+    return request<CustomFieldDef[]>(`/categories/${categoryId}/fields/`, {
+      method: "GET",
+    });
   },
 
   /** `POST /api/v1/categories/{id}/fields/` — requires `category.manage`. */
@@ -385,7 +438,9 @@ export const api = {
    * UI must confirm before calling this (see `CategoryFieldsPanel`'s
    * `ConfirmDeleteModal` usage). */
   async deleteCategoryField(catId: number, fieldId: number): Promise<void> {
-    await request<void>(`/categories/${catId}/fields/${fieldId}/`, { method: "DELETE" });
+    await request<void>(`/categories/${catId}/fields/${fieldId}/`, {
+      method: "DELETE",
+    });
   },
 
   /** `POST /api/v1/categories/{id}/fields/reorder/` — requires
@@ -394,7 +449,10 @@ export const api = {
    * new 0-indexed `order`. A partial/mismatched set is rejected whole with a
    * `400` (single atomic call, never a per-field `PATCH .../order`). Returns
    * the reordered list (same shape as `listCategoryFields`). */
-  async reorderCategoryFields(catId: number, orderedIds: number[]): Promise<CustomFieldDef[]> {
+  async reorderCategoryFields(
+    catId: number,
+    orderedIds: number[],
+  ): Promise<CustomFieldDef[]> {
     return request<CustomFieldDef[]>(`/categories/${catId}/fields/reorder/`, {
       method: "POST",
       body: { order: orderedIds },
@@ -404,7 +462,9 @@ export const api = {
   // --- Locations (docs/api-and-ui.md "Structure"; apps.catalog.api.LocationViewSet) ---
 
   async listLocations(params?: ListParams): Promise<Paginated<Location>> {
-    return request<Paginated<Location>>(`/locations/${buildQuery(params)}`, { method: "GET" });
+    return request<Paginated<Location>>(`/locations/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** Walks every page — see `fetchAllPages` doc comment. */
@@ -422,8 +482,14 @@ export const api = {
   },
 
   /** `PATCH /api/v1/locations/{id}/` — requires `location.manage`. */
-  async updateLocation(id: number, payload: Partial<LocationWritePayload>): Promise<Location> {
-    return request<Location>(`/locations/${id}/`, { method: "PATCH", body: payload });
+  async updateLocation(
+    id: number,
+    payload: Partial<LocationWritePayload>,
+  ): Promise<Location> {
+    return request<Location>(`/locations/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
 
   /** `DELETE /api/v1/locations/{id}/` — requires `location.manage`. Same
@@ -464,7 +530,11 @@ export const api = {
   /** `PATCH /api/v1/projects/{id}/` — same `tenant.manage` gate as create. */
   async updateProject(
     id: number,
-    payload: Partial<{ name: string; lead_user: number | null; is_active: boolean }>,
+    payload: Partial<{
+      name: string;
+      lead_user: number | null;
+      is_active: boolean;
+    }>,
   ): Promise<Project> {
     return request<Project>(`/projects/${id}/`, {
       method: "PATCH",
@@ -494,7 +564,9 @@ export const api = {
    * `null` per-row for a caller without project-scoped `expense.view` — see
    * `Project` type doc comment. */
   async listProjects(params?: ProjectListParams): Promise<Paginated<Project>> {
-    return request<Paginated<Project>>(`/projects/${buildQuery(params)}`, { method: "GET" });
+    return request<Paginated<Project>>(`/projects/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** `GET /api/v1/projects/{id}/` — the M7 hub detail (`ProjectDetail`:
@@ -509,8 +581,14 @@ export const api = {
   /** `PATCH /api/v1/projects/{id}/` — requires `project.manage` scoped to
    * this project (Admin tenant-wide, or that project's own Lead). Edits
    * grant metadata/budget; partial update, every field optional. */
-  async updateProjectDetail(id: number, payload: ProjectUpdatePayload): Promise<ProjectDetail> {
-    return request<ProjectDetail>(`/projects/${id}/`, { method: "PATCH", body: payload });
+  async updateProjectDetail(
+    id: number,
+    payload: ProjectUpdatePayload,
+  ): Promise<ProjectDetail> {
+    return request<ProjectDetail>(`/projects/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
 
   /** `GET /api/v1/projects/{id}/assets/` — reuses the SAME pagination +
@@ -521,10 +599,16 @@ export const api = {
    * This is what lets the project hub's Assets tab reuse `useAssetList`/
    * `AssetListView` unchanged (same `Paginated<Asset>` envelope, same
    * `AssetListParams` query shape) instead of a parallel implementation. */
-  async listProjectAssets(projectId: number, params?: AssetListParams): Promise<Paginated<Asset>> {
-    return request<Paginated<Asset>>(`/projects/${projectId}/assets/${buildQuery(params)}`, {
-      method: "GET",
-    });
+  async listProjectAssets(
+    projectId: number,
+    params?: AssetListParams,
+  ): Promise<Paginated<Asset>> {
+    return request<Paginated<Asset>>(
+      `/projects/${projectId}/assets/${buildQuery(params)}`,
+      {
+        method: "GET",
+      },
+    );
   },
 
   /** `GET /api/v1/projects/{id}/expenses/` — one page, `?category=`/
@@ -535,14 +619,20 @@ export const api = {
     projectId: number,
     params?: ExpenseListParams,
   ): Promise<Paginated<Expense>> {
-    return request<Paginated<Expense>>(`/projects/${projectId}/expenses/${buildQuery(params)}`, {
-      method: "GET",
-    });
+    return request<Paginated<Expense>>(
+      `/projects/${projectId}/expenses/${buildQuery(params)}`,
+      {
+        method: "GET",
+      },
+    );
   },
 
   /** `POST /api/v1/projects/{id}/expenses/` — requires `expense.manage`
    * scoped to this project. `project`/`created_by` are server-derived. */
-  async createExpense(projectId: number, payload: ExpenseWritePayload): Promise<Expense> {
+  async createExpense(
+    projectId: number,
+    payload: ExpenseWritePayload,
+  ): Promise<Expense> {
     return request<Expense>(`/projects/${projectId}/expenses/`, {
       method: "POST",
       body: payload,
@@ -557,8 +647,14 @@ export const api = {
 
   /** `PATCH /api/v1/expenses/{id}/` — requires `expense.manage` scoped to
    * the expense's own project. Partial update. */
-  async updateExpense(id: number, payload: Partial<ExpenseWritePayload>): Promise<Expense> {
-    return request<Expense>(`/expenses/${id}/`, { method: "PATCH", body: payload });
+  async updateExpense(
+    id: number,
+    payload: Partial<ExpenseWritePayload>,
+  ): Promise<Expense> {
+    return request<Expense>(`/expenses/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
 
   /** `DELETE /api/v1/expenses/{id}/` — requires `expense.manage` scoped to
@@ -576,16 +672,21 @@ export const api = {
   async listExpenseCategories(
     params?: ExpenseCategoryListParams,
   ): Promise<Paginated<ExpenseCategory>> {
-    return request<Paginated<ExpenseCategory>>(`/expense-categories/${buildQuery(params)}`, {
-      method: "GET",
-    });
+    return request<Paginated<ExpenseCategory>>(
+      `/expense-categories/${buildQuery(params)}`,
+      {
+        method: "GET",
+      },
+    );
   },
 
   /** Walks every page of `/api/v1/expense-categories/` — bounded tenant
    * config (a handful of categories per tenant, same "walk every page"
    * reasoning as `listAllCategories`/`listAllLocations`/`listAllProjects`),
    * never an asset-scale list. */
-  async listAllExpenseCategories(params?: ExpenseCategoryListParams): Promise<ExpenseCategory[]> {
+  async listAllExpenseCategories(
+    params?: ExpenseCategoryListParams,
+  ): Promise<ExpenseCategory[]> {
     return fetchAllPages<ExpenseCategory>("/expense-categories/", params);
   },
 
@@ -594,7 +695,9 @@ export const api = {
    * cases above), included for parity with the other resources' typed
    * client methods. */
   async getExpenseCategory(id: number): Promise<ExpenseCategory> {
-    return request<ExpenseCategory>(`/expense-categories/${id}/`, { method: "GET" });
+    return request<ExpenseCategory>(`/expense-categories/${id}/`, {
+      method: "GET",
+    });
   },
 
   /** `GET /api/v1/expenses/{id}/attachment/` — list this expense's invoice
@@ -602,8 +705,12 @@ export const api = {
    * `ExpenseAttachmentSerializer` usage in `apps.projects.api.
    * ExpenseViewSet.attachment`). Requires `expense.view` scoped to the
    * expense's project. */
-  async listExpenseAttachments(expenseId: number): Promise<ExpenseAttachment[]> {
-    return request<ExpenseAttachment[]>(`/expenses/${expenseId}/attachment/`, { method: "GET" });
+  async listExpenseAttachments(
+    expenseId: number,
+  ): Promise<ExpenseAttachment[]> {
+    return request<ExpenseAttachment[]>(`/expenses/${expenseId}/attachment/`, {
+      method: "GET",
+    });
   },
 
   /** `POST /api/v1/expenses/{id}/attachment/` — invoice/receipt scan upload
@@ -623,12 +730,15 @@ export const api = {
     const token = readCookie(CSRF_COOKIE_NAME);
     if (token) headers.set(CSRF_HEADER_NAME, token);
 
-    const response = await fetch(`${API_BASE}/expenses/${expenseId}/attachment/`, {
-      method: "POST",
-      credentials: "include",
-      headers,
-      body: formData,
-    });
+    const response = await fetch(
+      `${API_BASE}/expenses/${expenseId}/attachment/`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers,
+        body: formData,
+      },
+    );
     if (!response.ok) throw await toApiError(response);
     return (await response.json()) as ExpenseAttachment;
   },
@@ -637,7 +747,9 @@ export const api = {
    * scoped to the attachment's own expense's project, `204`. Same pattern as
    * `deleteProjectDocument`. */
   async deleteExpenseAttachment(attachmentId: number): Promise<void> {
-    await request<void>(`/expense-attachments/${attachmentId}/`, { method: "DELETE" });
+    await request<void>(`/expense-attachments/${attachmentId}/`, {
+      method: "DELETE",
+    });
   },
 
   /** `GET /api/v1/projects/{id}/documents/` — one page. **Gated by
@@ -678,12 +790,15 @@ export const api = {
     const token = readCookie(CSRF_COOKIE_NAME);
     if (token) headers.set(CSRF_HEADER_NAME, token);
 
-    const response = await fetch(`${API_BASE}/projects/${projectId}/documents/`, {
-      method: "POST",
-      credentials: "include",
-      headers,
-      body: formData,
-    });
+    const response = await fetch(
+      `${API_BASE}/projects/${projectId}/documents/`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers,
+        body: formData,
+      },
+    );
     if (!response.ok) throw await toApiError(response);
     return (await response.json()) as ProjectDocument;
   },
@@ -701,7 +816,8 @@ export const api = {
    * `exportAssetsCsvUrl` — this only builds the URL, it never fetches the
    * body itself. */
   exportProjectCsvUrl(projectId: number, fields?: string[]): string {
-    const query = fields && fields.length > 0 ? `?fields=${fields.join(",")}` : "";
+    const query =
+      fields && fields.length > 0 ? `?fields=${fields.join(",")}` : "";
     return `${API_BASE}/projects/${projectId}/export.csv/${query}`;
   },
 
@@ -754,7 +870,210 @@ export const api = {
    * shaped as an expense draft, plus its `doc`-kind attachments as copy
    * candidates. Pure read (`asset.view`); creates nothing. */
   async getAssetExpensePrefill(assetId: number): Promise<AssetExpensePrefill> {
-    return request<AssetExpensePrefill>(`/assets/${assetId}/expense-prefill/`, { method: "GET" });
+    return request<AssetExpensePrefill>(`/assets/${assetId}/expense-prefill/`, {
+      method: "GET",
+    });
+  },
+
+  // --- M8 Phase 2 (rev): orders — the ONE call the expense UI makes ---------
+
+  /** `GET /api/v1/orders/?project={id}` — a project's orders, each with its
+   * splits and items nested. */
+  async listOrders(projectId: number): Promise<Paginated<Order>> {
+    return request<Paginated<Order>>(
+      `/orders/?project=${projectId}&page_size=100`,
+      {
+        method: "GET",
+      },
+    );
+  },
+
+  async getOrder(id: number): Promise<Order> {
+    return request<Order>(`/orders/${id}/`, { method: "GET" });
+  },
+
+  /** `POST /api/v1/orders/` — creates the order, its splits and every item in
+   * ONE transaction, so a failure can never leave a half-entered order. */
+  async createOrder(payload: OrderWritePayload): Promise<Order> {
+    return request<Order>("/orders/", { method: "POST", body: payload });
+  },
+
+  /** `PATCH /api/v1/orders/{id}/` — sending `splits` REPLACES them (and their
+   * items), so omit the key to leave the contents alone. */
+  async updateOrder(
+    id: number,
+    payload: Partial<OrderWritePayload>,
+  ): Promise<Order> {
+    return request<Order>(`/orders/${id}/`, { method: "PATCH", body: payload });
+  },
+
+  async deleteOrder(id: number): Promise<void> {
+    await request<void>(`/orders/${id}/`, { method: "DELETE" });
+  },
+
+  // --- M8 Phase 2: bank charges & vendor receipts ---------------------------
+
+  /** `GET /api/v1/payments/` — bank charges. Requires `finance.payment.view`;
+   * a project lead sees only charges that pay for a project they lead, with
+   * other projects' receipts filtered out and their total redacted to a single
+   * unnamed figure (`other_projects_share`). */
+  async listPayments(
+    params: PaymentListParams = {},
+  ): Promise<Paginated<Payment>> {
+    return request<Paginated<Payment>>(`/payments/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  async getPayment(id: number): Promise<Payment> {
+    return request<Payment>(`/payments/${id}/`, { method: "GET" });
+  },
+
+  async createPayment(payload: PaymentWritePayload): Promise<Payment> {
+    return request<Payment>("/payments/", { method: "POST", body: payload });
+  },
+
+  /** `PATCH /api/v1/payments/{id}/` — `403` when the caller does not lead
+   * EVERY project on the charge (a shared charge's header is Admin-editable
+   * only, so two leads can't overwrite each other). Their own lines stay
+   * editable regardless. */
+  async updatePayment(
+    id: number,
+    payload: Partial<PaymentWritePayload>,
+  ): Promise<Payment> {
+    return request<Payment>(`/payments/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  async deletePayment(id: number): Promise<void> {
+    await request<void>(`/payments/${id}/`, { method: "DELETE" });
+  },
+
+  /** `POST /api/v1/payments/{id}/attachment/` — the bank statement excerpt. */
+  async uploadPaymentAttachment(
+    id: number,
+    file: File,
+  ): Promise<PaymentAttachment> {
+    const form = new FormData();
+    form.append("file", file);
+    return request<PaymentAttachment>(`/payments/${id}/attachment/`, {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  /** `DELETE /api/v1/payment-attachments/{id}/` — remove a bank statement
+   * scan (wrong file uploaded). Deletes the stored file too. */
+  async deletePaymentAttachment(id: number): Promise<void> {
+    await request<void>(`/payment-attachments/${id}/`, { method: "DELETE" });
+  },
+
+  /** `DELETE /api/v1/purchase-attachments/{id}/` — remove a receipt scan. */
+  async deletePurchaseAttachment(id: number): Promise<void> {
+    await request<void>(`/purchase-attachments/${id}/`, { method: "DELETE" });
+  },
+
+  /** `GET /api/v1/purchases/` — vendor receipts. */
+  async listPurchases(
+    params: PurchaseListParams = {},
+  ): Promise<Paginated<Purchase>> {
+    return request<Paginated<Purchase>>(`/purchases/${buildQuery(params)}`, {
+      method: "GET",
+    });
+  },
+
+  async createPurchase(payload: PurchaseWritePayload): Promise<Purchase> {
+    return request<Purchase>("/purchases/", { method: "POST", body: payload });
+  },
+
+  async updatePurchase(
+    id: number,
+    payload: Partial<PurchaseWritePayload>,
+  ): Promise<Purchase> {
+    return request<Purchase>(`/purchases/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  /** `DELETE /api/v1/purchases/{id}/` — the receipt's expense lines SURVIVE,
+   * unlinked (`Expense.purchase` is SET_NULL). Deleting a mis-entered receipt
+   * never destroys financial records. */
+  async deletePurchase(id: number): Promise<void> {
+    await request<void>(`/purchases/${id}/`, { method: "DELETE" });
+  },
+
+  /** `POST /api/v1/purchases/{id}/attachment/` — the receipt scan. Filed
+   * against the RECEIPT, so a report prints it once instead of once per item. */
+  async uploadPurchaseAttachment(
+    id: number,
+    file: File,
+  ): Promise<PurchaseAttachment> {
+    // Multipart — bypasses `request()` for the reason spelled out on
+    // `uploadPaymentAttachment`. A PDF or a phone photo both work; the server
+    // picks the right allowlist from the file's own content type.
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const headers = new Headers();
+    const token = readCookie(CSRF_COOKIE_NAME);
+    if (token) headers.set(CSRF_HEADER_NAME, token);
+
+    const response = await fetch(`${API_BASE}/purchases/${id}/attachment/`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: formData,
+    });
+    if (!response.ok) throw await toApiError(response);
+    return (await response.json()) as PurchaseAttachment;
+  },
+
+  /** `GET /api/v1/assets/{id}/usages/` — which projects USE this asset, as
+   * opposed to the one that funded it. Requires `asset.view`. Reading this
+   * never affects any budget figure (M8 §1.6). */
+  async listAssetUsages(
+    assetId: number,
+  ): Promise<Paginated<AssetProjectUsage>> {
+    return request<Paginated<AssetProjectUsage>>(`/assets/${assetId}/usages/`, {
+      method: "GET",
+    });
+  },
+
+  /** `POST /api/v1/assets/{id}/usages/` — record that a project is using this
+   * asset. Requires `asset.edit` scoped to the ASSET's own funding project
+   * (the owning lead controls their equipment's record).
+   *
+   * `409` means this asset already has an OPEN-ENDED usage row for that
+   * project — close the existing one with an `end_date` first, rather than
+   * stacking a second. */
+  async createAssetUsage(
+    assetId: number,
+    payload: AssetProjectUsageWritePayload,
+  ): Promise<AssetProjectUsage> {
+    return request<AssetProjectUsage>(`/assets/${assetId}/usages/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  /** `PATCH /api/v1/asset-usages/{id}/` — usually setting `end_date` ("we
+   * gave it back"), which frees the pair for a later period. */
+  async updateAssetUsage(
+    id: number,
+    payload: AssetProjectUsageWritePayload,
+  ): Promise<AssetProjectUsage> {
+    return request<AssetProjectUsage>(`/asset-usages/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  /** `DELETE /api/v1/asset-usages/{id}/` — `204`. */
+  async deleteAssetUsage(id: number): Promise<void> {
+    await request<void>(`/asset-usages/${id}/`, { method: "DELETE" });
   },
 
   /** `POST /api/v1/expenses/{id}/attachment-from-asset/` — copy a PO/invoice
@@ -765,15 +1084,39 @@ export const api = {
     expenseId: number,
     attachmentId: number,
   ): Promise<ExpenseAttachment> {
-    return request<ExpenseAttachment>(`/expenses/${expenseId}/attachment-from-asset/`, {
+    return request<ExpenseAttachment>(
+      `/expenses/${expenseId}/attachment-from-asset/`,
+      {
+        method: "POST",
+        body: { attachment: attachmentId },
+      },
+    );
+  },
+
+  /** `POST /api/v1/orders/{id}/pack/` — the expense pack: one PDF holding the
+   * bank statement, every receipt scan, the item tables and each item's asset
+   * photo. Returns a queued `Job`; poll `getJob` until `succeeded`, then open
+   * `download_url`. Rendering merges scans and photos, so it never runs in the
+   * request cycle. */
+  async generateExpensePack(orderId: number): Promise<Job> {
+    return request<Job>(`/orders/${orderId}/pack/`, { method: "POST" });
+  },
+
+  /** `POST /api/v1/projects/{id}/audit-readiness/` — the checklist of what
+   * would fail an audit, before an auditor finds it. Queued `Job`; poll
+   * `getJob` then open `download_url`. */
+  async generateAuditChecklist(projectId: number): Promise<Job> {
+    return request<Job>(`/projects/${projectId}/audit-readiness/`, {
       method: "POST",
-      body: { attachment: attachmentId },
     });
   },
 
   async generateProjectReport(
     projectId: number,
-    options?: { includeInvoiceScans?: boolean; includeProjectDocuments?: boolean },
+    options?: {
+      includeInvoiceScans?: boolean;
+      includeProjectDocuments?: boolean;
+    },
   ): Promise<Job> {
     return request<Job>(`/projects/${projectId}/report/`, {
       method: "POST",
@@ -806,7 +1149,9 @@ export const api = {
    * doc comment) depending on which params are supplied. Read requires
    * `asset.view`, further row-scoped per `docs/rbac.md` §1 server-side. */
   async listAssets(params?: AssetListParams): Promise<Paginated<Asset>> {
-    return request<Paginated<Asset>>(`/assets/${buildQuery(params)}`, { method: "GET" });
+    return request<Paginated<Asset>>(`/assets/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** `GET /api/v1/assets/{id}/` — full detail (same `AssetSerializer` shape
@@ -846,7 +1191,9 @@ export const api = {
    * `getAsset`'s 404. NOTE: no trailing slash — a plain `path()` route, not
    * router-registered (matches `dashboard/summary`'s reasoning). */
   async resolveQrToken(token: string): Promise<Asset> {
-    return request<Asset>(`/resolve/${encodeURIComponent(token)}`, { method: "GET" });
+    return request<Asset>(`/resolve/${encodeURIComponent(token)}`, {
+      method: "GET",
+    });
   },
 
   /** `POST /api/v1/assets/{id}/retire/` — requires `asset.retire` (scoped).
@@ -897,7 +1244,9 @@ export const api = {
    * walks all pages (CLAUDE.md: server-side lists) — `?low_stock=true` is the
    * documented low-stock filter. */
   async listStock(params?: StockListParams): Promise<Paginated<StockItem>> {
-    return request<Paginated<StockItem>>(`/stock/${buildQuery(params)}`, { method: "GET" });
+    return request<Paginated<StockItem>>(`/stock/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** `GET /api/v1/stock/{id}/` — detail. */
@@ -925,7 +1274,10 @@ export const api = {
    * Rejects a delta that would drive `quantity_on_hand` negative with a
    * `400` (RFC-7807, surfaced via `err.problem`). Returns the updated
    * `StockItem` + the created ledger row + a `low_stock` flag. */
-  async postStockTxn(stockItemId: number, payload: StockTxnPayload): Promise<StockTxnResponse> {
+  async postStockTxn(
+    stockItemId: number,
+    payload: StockTxnPayload,
+  ): Promise<StockTxnResponse> {
     return request<StockTxnResponse>(`/stock/${stockItemId}/txn/`, {
       method: "POST",
       body: payload,
@@ -934,17 +1286,27 @@ export const api = {
 
   /** `GET /api/v1/reorder-requests/` — one page. Read requires `asset.view`,
    * scope-aware. `?status=` filters to one lifecycle stage. */
-  async listReorderRequests(params?: ReorderRequestListParams): Promise<Paginated<ReorderRequest>> {
-    return request<Paginated<ReorderRequest>>(`/reorder-requests/${buildQuery(params)}`, {
-      method: "GET",
-    });
+  async listReorderRequests(
+    params?: ReorderRequestListParams,
+  ): Promise<Paginated<ReorderRequest>> {
+    return request<Paginated<ReorderRequest>>(
+      `/reorder-requests/${buildQuery(params)}`,
+      {
+        method: "GET",
+      },
+    );
   },
 
   /** `POST /api/v1/reorder-requests/` — requires `reorder.request`, scoped
    * to the target stock item's asset's project. `requested_by`/`status`
    * (`open`) are server-derived. */
-  async createReorderRequest(payload: ReorderRequestCreatePayload): Promise<ReorderRequest> {
-    return request<ReorderRequest>("/reorder-requests/", { method: "POST", body: payload });
+  async createReorderRequest(
+    payload: ReorderRequestCreatePayload,
+  ): Promise<ReorderRequest> {
+    return request<ReorderRequest>("/reorder-requests/", {
+      method: "POST",
+      body: payload,
+    });
   },
 
   /** `PATCH /api/v1/reorder-requests/{id}/` — status transitions
@@ -958,7 +1320,10 @@ export const api = {
     id: number,
     payload: ReorderRequestUpdatePayload,
   ): Promise<ReorderRequest> {
-    return request<ReorderRequest>(`/reorder-requests/${id}/`, { method: "PATCH", body: payload });
+    return request<ReorderRequest>(`/reorder-requests/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
 
   // --- Reservations (docs/api-and-ui.md "Reservations & checkout";
@@ -971,10 +1336,15 @@ export const api = {
    * to one lifecycle stage (used by both the Calendar and the Approvals
    * screen — approvals passes `status=pending`). Never walks all pages
    * (CLAUDE.md: server-side lists). */
-  async listReservations(params?: ReservationListParams): Promise<Paginated<Reservation>> {
-    return request<Paginated<Reservation>>(`/reservations/${buildQuery(params)}`, {
-      method: "GET",
-    });
+  async listReservations(
+    params?: ReservationListParams,
+  ): Promise<Paginated<Reservation>> {
+    return request<Paginated<Reservation>>(
+      `/reservations/${buildQuery(params)}`,
+      {
+        method: "GET",
+      },
+    );
   },
 
   /** `GET /api/v1/reservations/{id}/` — detail. */
@@ -988,8 +1358,13 @@ export const api = {
    * (`apps.reservations.services.create_reservation`); an overlapping window
    * 409s (`ReservationConflict`, `err.status === 409`) — surface that inline
    * as a conflict message, not a generic error. */
-  async createReservation(payload: ReservationCreatePayload): Promise<Reservation> {
-    return request<Reservation>("/reservations/", { method: "POST", body: payload });
+  async createReservation(
+    payload: ReservationCreatePayload,
+  ): Promise<Reservation> {
+    return request<Reservation>("/reservations/", {
+      method: "POST",
+      body: payload,
+    });
   },
 
   /** `POST /api/v1/reservations/{id}/approve/` — requires `reservation.approve`,
@@ -1016,7 +1391,9 @@ export const api = {
    * or a scoped approver. Only `pending`/`approved` reservations are
    * cancellable — the server 400s otherwise. */
   async cancelReservation(id: number): Promise<Reservation> {
-    return request<Reservation>(`/reservations/${id}/cancel/`, { method: "POST" });
+    return request<Reservation>(`/reservations/${id}/cancel/`, {
+      method: "POST",
+    });
   },
 
   // --- Checkouts (docs/api-and-ui.md "Reservations & checkout";
@@ -1032,8 +1409,12 @@ export const api = {
    * `?asset=`/`?reservation=` (post-MVP gap fill) let a caller reliably find
    * "the (open) checkout for this specific asset/reservation" instead of
    * scanning a bounded open-checkouts page client-side. */
-  async listCheckouts(params?: CheckoutListParams): Promise<Paginated<Checkout>> {
-    return request<Paginated<Checkout>>(`/checkouts/${buildQuery(params)}`, { method: "GET" });
+  async listCheckouts(
+    params?: CheckoutListParams,
+  ): Promise<Paginated<Checkout>> {
+    return request<Paginated<Checkout>>(`/checkouts/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** `GET /api/v1/checkouts/{id}/` — detail. */
@@ -1054,7 +1435,10 @@ export const api = {
    * checkout.CheckoutPermission.has_object_permission`) — someone else must
    * use `overrideReturnCheckout` (`checkout.override`) instead. Idempotent:
    * calling this twice is a documented no-op, not an error. */
-  async checkinCheckout(id: number, payload?: CheckinPayload): Promise<Checkout> {
+  async checkinCheckout(
+    id: number,
+    payload?: CheckinPayload,
+  ): Promise<Checkout> {
     return request<Checkout>(`/checkouts/${id}/checkin/`, {
       method: "POST",
       body: payload ?? {},
@@ -1065,7 +1449,10 @@ export const api = {
    * `checkout.override`, scoped to the checkout's asset's project. Force-
    * return by someone other than the holder; audited under the
    * `checkout.override` key. Idempotent, same no-op rule as `checkinCheckout`. */
-  async overrideReturnCheckout(id: number, payload?: CheckinPayload): Promise<Checkout> {
+  async overrideReturnCheckout(
+    id: number,
+    payload?: CheckinPayload,
+  ): Promise<Checkout> {
     return request<Checkout>(`/checkouts/${id}/override-return/`, {
       method: "POST",
       body: payload ?? {},
@@ -1184,7 +1571,9 @@ export const api = {
    * role). Paginated envelope per the default `PageNumberPagination`, though
    * in practice there are only a handful of known event types. */
   async listNotificationPrefs(): Promise<Paginated<NotificationPref>> {
-    return request<Paginated<NotificationPref>>("/notification-prefs/", { method: "GET" });
+    return request<Paginated<NotificationPref>>("/notification-prefs/", {
+      method: "GET",
+    });
   },
 
   /** `PATCH /api/v1/notification-prefs/{event_type}/` — upserts: a user with
@@ -1210,14 +1599,18 @@ export const api = {
    * (BOTH read and write are gated on it server-side; a non-admin 403s on
    * this GET too, not just on writes). */
   async getEmailSettings(): Promise<EmailSettings> {
-    return request<EmailSettings>("/notifications/email-settings", { method: "GET" });
+    return request<EmailSettings>("/notifications/email-settings", {
+      method: "GET",
+    });
   },
 
   /** `PATCH /api/v1/notifications/email-settings` — requires `tenant.manage`.
    * `payload.api_key` has "omit vs blank" semantics — see
    * `EmailSettingsUpdate` doc comment; only include the key when the caller
    * actually means to change/clear it. */
-  async updateEmailSettings(payload: EmailSettingsUpdate): Promise<EmailSettings> {
+  async updateEmailSettings(
+    payload: EmailSettingsUpdate,
+  ): Promise<EmailSettings> {
     return request<EmailSettings>("/notifications/email-settings", {
       method: "PATCH",
       body: payload,
@@ -1231,9 +1624,12 @@ export const api = {
    * sender email configured) — same `ApiError` handling as every other
    * write in this module. */
   async sendTestEmail(): Promise<EmailSettingsTestResult> {
-    return request<EmailSettingsTestResult>("/notifications/email-settings/test", {
-      method: "POST",
-    });
+    return request<EmailSettingsTestResult>(
+      "/notifications/email-settings/test",
+      {
+        method: "POST",
+      },
+    );
   },
 
   // --- Session settings (docs/api-and-ui.md; apps.tenancy.api.
@@ -1245,12 +1641,16 @@ export const api = {
    * (BOTH read and write are gated on it server-side; a non-admin 403s on
    * this GET too, not just on writes). */
   async getSessionSettings(): Promise<SessionSettings> {
-    return request<SessionSettings>("/tenancy/session-settings", { method: "GET" });
+    return request<SessionSettings>("/tenancy/session-settings", {
+      method: "GET",
+    });
   },
 
   /** `PATCH /api/v1/tenancy/session-settings` — requires `tenant.manage`.
    * Out-of-bounds values 400 with RFC-7807 field errors. */
-  async updateSessionSettings(payload: SessionSettingsUpdate): Promise<SessionSettings> {
+  async updateSessionSettings(
+    payload: SessionSettingsUpdate,
+  ): Promise<SessionSettings> {
     return request<SessionSettings>("/tenancy/session-settings", {
       method: "PATCH",
       body: payload,
@@ -1267,8 +1667,12 @@ export const api = {
    * `apps.audit.api.AuditLogViewSet.get_queryset`) — anyone else gets a 403,
    * handled as a normal outcome (CLAUDE.md), never assumed to be a bug.
    * Never walks all pages (CLAUDE.md: server-side lists). */
-  async listAuditLog(params?: AuditLogListParams): Promise<Paginated<AuditLogEntry>> {
-    return request<Paginated<AuditLogEntry>>(`/audit/${buildQuery(params)}`, { method: "GET" });
+  async listAuditLog(
+    params?: AuditLogListParams,
+  ): Promise<Paginated<AuditLogEntry>> {
+    return request<Paginated<AuditLogEntry>>(`/audit/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   // --- Users & Roles admin (Users & Roles screen; apps.accounts.api.UserViewSet,
@@ -1280,7 +1684,9 @@ export const api = {
    * UserManagementPermission`). Used for the "add member" user picker's
    * search-as-you-type and never walked across every page (CLAUDE.md). */
   async listUsers(params?: ListParams): Promise<Paginated<AppUser>> {
-    return request<Paginated<AppUser>>(`/users/${buildQuery(params)}`, { method: "GET" });
+    return request<Paginated<AppUser>>(`/users/${buildQuery(params)}`, {
+      method: "GET",
+    });
   },
 
   /** `POST /api/v1/users/` — Admin-only (tenant-wide `user.manage`).
@@ -1296,7 +1702,9 @@ export const api = {
    * `password` field (same handling as `createUser` — reveal once, never
    * persist). Trailing slash: it's a router `@action`. */
   async resetUserPassword(userId: number): Promise<CreatedUser> {
-    return request<CreatedUser>(`/users/${userId}/reset-password/`, { method: "POST" });
+    return request<CreatedUser>(`/users/${userId}/reset-password/`, {
+      method: "POST",
+    });
   },
 
   /** `GET /api/v1/roles/` — the tenant's 4 seeded system roles. Requires
@@ -1310,8 +1718,12 @@ export const api = {
   /** `GET /api/v1/permissions` — the fixed permission vocabulary the role
    * and per-user matrices are rendered from. Unpaginated by design (a couple
    * of dozen fixed rows), but still wrapped in a `results` envelope. */
-  async listPermissionCatalog(): Promise<{ results: PermissionCatalogEntry[] }> {
-    return request<{ results: PermissionCatalogEntry[] }>("/permissions", { method: "GET" });
+  async listPermissionCatalog(): Promise<{
+    results: PermissionCatalogEntry[];
+  }> {
+    return request<{ results: PermissionCatalogEntry[] }>("/permissions", {
+      method: "GET",
+    });
   },
 
   /** `POST /api/v1/roles/` — create a tenant-authored custom role
@@ -1343,7 +1755,9 @@ export const api = {
   /** `GET /api/v1/users/{id}/permissions` — one user's role grants, their
    * per-user overrides, and the resulting effective set. Admin-only. */
   async getUserPermissions(userId: number): Promise<UserPermissions> {
-    return request<UserPermissions>(`/users/${userId}/permissions`, { method: "GET" });
+    return request<UserPermissions>(`/users/${userId}/permissions`, {
+      method: "GET",
+    });
   },
 
   /** `PUT /api/v1/users/{id}/permissions` — REPLACES the user's whole
@@ -1362,8 +1776,13 @@ export const api = {
    * `user.manage`) sees every tenant Membership; a ProjectLead sees only
    * their own project's (server-enforced, `apps.rbac.api.
    * MembershipViewSet.get_queryset`). */
-  async listMemberships(params?: MembershipListParams): Promise<Paginated<Membership>> {
-    return request<Paginated<Membership>>(`/memberships/${buildQuery(params)}`, { method: "GET" });
+  async listMemberships(
+    params?: MembershipListParams,
+  ): Promise<Paginated<Membership>> {
+    return request<Paginated<Membership>>(
+      `/memberships/${buildQuery(params)}`,
+      { method: "GET" },
+    );
   },
 
   /** `POST /api/v1/memberships/` — grants `role` to `user`, scoped to
@@ -1371,15 +1790,26 @@ export const api = {
    * project; a ProjectLead is further restricted server-side (`apps.rbac.
    * permissions.MembershipPermission`) — this client method itself applies
    * no extra restriction, the server is the authority. */
-  async createMembership(payload: MembershipCreatePayload): Promise<Membership> {
-    return request<Membership>("/memberships/", { method: "POST", body: payload });
+  async createMembership(
+    payload: MembershipCreatePayload,
+  ): Promise<Membership> {
+    return request<Membership>("/memberships/", {
+      method: "POST",
+      body: payload,
+    });
   },
 
   /** `PATCH /api/v1/memberships/{id}/` — role change only; `user`/`project`
    * are read-only past creation (see `MembershipUpdatePayload` doc
    * comment). */
-  async updateMembership(id: number, payload: MembershipUpdatePayload): Promise<Membership> {
-    return request<Membership>(`/memberships/${id}/`, { method: "PATCH", body: payload });
+  async updateMembership(
+    id: number,
+    payload: MembershipUpdatePayload,
+  ): Promise<Membership> {
+    return request<Membership>(`/memberships/${id}/`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
 
   /** `DELETE /api/v1/memberships/{id}/` — removes the membership (a real

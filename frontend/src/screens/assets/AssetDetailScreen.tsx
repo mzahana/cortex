@@ -51,6 +51,7 @@ import { useReservationList } from "../reservations/useReservationList";
 import { AssetReservationMonthCalendar } from "./AssetReservationMonthCalendar";
 import { CheckoutModal } from "./CheckoutModal";
 import { PhotoCapture } from "./PhotoCapture";
+import { AssetUsagePanel } from "./AssetUsagePanel";
 
 /**
  * Asset Detail (T1.6, docs/api-and-ui.md "Asset Detail": "Specs (custom
@@ -97,6 +98,9 @@ export function AssetDetailScreen() {
   const [category, setCategory] = useState<Category | null>(null);
   const [location, setLocation] = useState<Location | null>(null);
   const [project, setProject] = useState<Project | null>(null);
+  // M8: the tenant's projects, for the "Used by" panel's picker. Loaded
+  // alongside the asset so the panel needs no fetch of its own.
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -114,7 +118,9 @@ export function AssetDetailScreen() {
   // without a trip to the separate Stock screen (the gap this fill closes).
   // `undefined` = not yet resolved (still loading), `null` = resolved but no
   // `StockItem` exists yet (asset predates stock setup, or setup failed).
-  const [stockItem, setStockItem] = useState<StockItem | null | undefined>(undefined);
+  const [stockItem, setStockItem] = useState<StockItem | null | undefined>(
+    undefined,
+  );
   // Seeded from `AssetFormScreen`'s post-create navigation state (Feature C:
   // "asset created but stock setup failed" — the asset save itself already
   // succeeded, so this surfaces as a banner here rather than losing the
@@ -128,10 +134,16 @@ export function AssetDetailScreen() {
   // quantity) failed — lets this screen retry just that one call against the
   // already-known `stockItemId`, instead of the dead end of re-running stock
   // setup (which would now 400 "already has a StockItem").
-  const [stockRetry, setStockRetry] = useState<{ stockItemId: number; initialQty: number } | null>(
+  const [stockRetry, setStockRetry] = useState<{
+    stockItemId: number;
+    initialQty: number;
+  } | null>(
     () =>
-      (routerLocation.state as { stockRetry?: { stockItemId: number; initialQty: number } | null } | null)
-        ?.stockRetry ?? null,
+      (
+        routerLocation.state as {
+          stockRetry?: { stockItemId: number; initialQty: number } | null;
+        } | null
+      )?.stockRetry ?? null,
   );
   const [stockRetryBusy, setStockRetryBusy] = useState(false);
 
@@ -169,16 +181,28 @@ export function AssetDetailScreen() {
       setAsset(fetchedAsset);
       setAttachments(fetchedAsset.attachments);
 
-      const [fetchedCategory, defs, fetchedLocation, fetchedProject] = await Promise.all([
+      const [
+        fetchedCategory,
+        defs,
+        fetchedLocation,
+        fetchedProject,
+        fetchedProjects,
+      ] = await Promise.all([
         api.getCategory(fetchedAsset.category).catch(() => null),
         api.listCategoryFields(fetchedAsset.category).catch(() => []),
-        fetchedAsset.location ? api.getLocation(fetchedAsset.location).catch(() => null) : Promise.resolve(null),
-        fetchedAsset.project ? api.getProject(fetchedAsset.project).catch(() => null) : Promise.resolve(null),
+        fetchedAsset.location
+          ? api.getLocation(fetchedAsset.location).catch(() => null)
+          : Promise.resolve(null),
+        fetchedAsset.project
+          ? api.getProject(fetchedAsset.project).catch(() => null)
+          : Promise.resolve(null),
+        api.listProjects({ page_size: 200 }).catch(() => null),
       ]);
       setCategory(fetchedCategory);
       setFieldDefs(defs);
       setLocation(fetchedLocation);
       setProject(fetchedProject);
+      setAllProjects(fetchedProjects?.results ?? []);
 
       // Resolve "do I currently hold this durable asset checked out" via the
       // `?asset=&open=true` filter (post-MVP gap fill, see module doc
@@ -192,7 +216,8 @@ export function AssetDetailScreen() {
             open: true,
             page_size: 100,
           });
-          const mine = openCheckouts.results.find((c) => c.user === me?.id) ?? null;
+          const mine =
+            openCheckouts.results.find((c) => c.user === me?.id) ?? null;
           setMyOpenCheckout(mine);
         } catch {
           setMyOpenCheckout(null);
@@ -200,7 +225,10 @@ export function AssetDetailScreen() {
       } else {
         setMyOpenCheckout(null);
         try {
-          const stock = await api.listStock({ asset: fetchedAsset.id, page_size: 1 });
+          const stock = await api.listStock({
+            asset: fetchedAsset.id,
+            page_size: 1,
+          });
           setStockItem(stock.results[0] ?? null);
         } catch {
           // Treated the same as "not tracked yet" — the "Set up stock
@@ -212,7 +240,7 @@ export function AssetDetailScreen() {
       setAsset(null);
       setError(
         err instanceof ApiError
-          ? err.problem.detail ?? err.problem.title
+          ? (err.problem.detail ?? err.problem.title)
           : "Unable to reach the server. Please try again.",
       );
     } finally {
@@ -239,7 +267,12 @@ export function AssetDetailScreen() {
       <AppLayout title="Asset" backTo="/assets">
         <Center h="60vh" p="md">
           <Stack align="center" gap="sm" maw={420}>
-            <Alert color="red" title="Couldn't load this asset" data-testid="asset-detail-error" w="100%">
+            <Alert
+              color="red"
+              title="Couldn't load this asset"
+              data-testid="asset-detail-error"
+              w="100%"
+            >
               {error ?? "Not found."}
             </Alert>
             <Button onClick={() => navigate("/assets")}>Back to Assets</Button>
@@ -256,7 +289,8 @@ export function AssetDetailScreen() {
   const canCheckout = hasAssetPermission(me, CHECKOUT_MANAGE, asset.project);
   const canPrintLabel = hasAssetPermission(me, LABEL_GENERATE, asset.project);
   const isRetired = asset.status === "retired";
-  const isCheckoutEligible = !asset.is_consumable && ["available", "reserved"].includes(asset.status);
+  const isCheckoutEligible =
+    !asset.is_consumable && ["available", "reserved"].includes(asset.status);
   const isCheckedOutByMe = !!myOpenCheckout;
 
   const handleReservationCreated = (reservation: Reservation) => {
@@ -286,7 +320,7 @@ export function AssetDetailScreen() {
       // client gate above can drift from the server's own scoped/holder check.
       setActionError(
         err instanceof ApiError
-          ? err.problem.detail ?? err.problem.title
+          ? (err.problem.detail ?? err.problem.title)
           : "Unable to reach the server. Please try again.",
       );
     } finally {
@@ -306,7 +340,7 @@ export function AssetDetailScreen() {
       // client gate above can drift from the server's own scoped check.
       setRetireError(
         err instanceof ApiError
-          ? err.problem.detail ?? err.problem.title
+          ? (err.problem.detail ?? err.problem.title)
           : "Unable to reach the server. Please try again.",
       );
     } finally {
@@ -321,266 +355,364 @@ export function AssetDetailScreen() {
       title={asset.name}
       backTo="/assets"
       actions={
-        <Badge color={STATUS_COLORS[asset.status]} variant="light" style={{ flexShrink: 0 }}>
+        <Badge
+          color={STATUS_COLORS[asset.status]}
+          variant="light"
+          style={{ flexShrink: 0 }}
+        >
           {STATUS_LABELS[asset.status]}
         </Badge>
       }
     >
-        <Stack gap="md" pb="xl">
-          {banner && (
-            <Alert color={stockRetry ? "yellow" : "teal"} withCloseButton onClose={() => setBanner(null)}>
-              <Stack gap="xs">
-                <Text size="sm">{banner}</Text>
-                {stockRetry && (
-                  <Group justify="flex-end">
-                    <Button
-                      size="xs"
-                      variant="light"
-                      loading={stockRetryBusy}
-                      onClick={() => void handleRetryStockReceive()}
-                      data-testid="asset-detail-stock-retry"
-                    >
-                      Retry setting initial quantity
-                    </Button>
-                  </Group>
-                )}
-              </Stack>
-            </Alert>
-          )}
-
-          <Card withBorder>
-            <Stack gap={4}>
-              <Text size="xs" c="dimmed">
-                {category?.name ?? `Category #${asset.category}`}
-                {asset.is_consumable ? " · Consumable" : " · Durable"}
-              </Text>
-              {asset.description && <Text size="sm">{asset.description}</Text>}
-              <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs" mt="xs">
-                <DetailField label="Serial #" value={asset.serial_number || "—"} />
-                <DetailField label="Manufacturer" value={asset.manufacturer || "—"} />
-                <DetailField label="Model" value={asset.model || "—"} />
-                <DetailField label="Location" value={location?.name ?? (asset.location ? `#${asset.location}` : "—")} />
-                <DetailField label="Project" value={project?.name ?? (asset.project ? `#${asset.project}` : "General pool")} />
-                <DetailField
-                  label="Workload holder"
-                  value={asset.current_workload_user ? `User #${asset.current_workload_user}` : "—"}
-                />
-                <DetailField label="Purchase date" value={asset.purchase_date ?? "—"} />
-                <DetailField
-                  label="Purchase cost"
-                  value={
-                    asset.purchase_cost
-                      ? `${asset.currency || ""} ${asset.purchase_cost}`.trim()
-                      : "—"
-                  }
-                />
-                <DetailField label="Warranty expiry" value={asset.warranty_expiry ?? "—"} />
-              </SimpleGrid>
-              {asset.url && (
-                <Anchor
-                  href={asset.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  size="sm"
-                  mt="xs"
-                  data-testid="asset-url-link"
-                >
-                  {asset.url}
-                </Anchor>
-              )}
-              {asset.condition && (
-                <Text size="xs" c="dimmed" mt="xs">
-                  Condition notes: {asset.condition}
-                </Text>
-              )}
-              {asset.tags.length > 0 && (
-                <Group gap={4} mt="xs" wrap="wrap">
-                  {asset.tags.map((tag) => (
-                    <Badge key={tag} size="xs" variant="dot" color="grape">
-                      {tag}
-                    </Badge>
-                  ))}
+      <Stack gap="md" pb="xl">
+        {banner && (
+          <Alert
+            color={stockRetry ? "yellow" : "teal"}
+            withCloseButton
+            onClose={() => setBanner(null)}
+          >
+            <Stack gap="xs">
+              <Text size="sm">{banner}</Text>
+              {stockRetry && (
+                <Group justify="flex-end">
+                  <Button
+                    size="xs"
+                    variant="light"
+                    loading={stockRetryBusy}
+                    onClick={() => void handleRetryStockReceive()}
+                    data-testid="asset-detail-stock-retry"
+                  >
+                    Retry setting initial quantity
+                  </Button>
                 </Group>
               )}
             </Stack>
-          </Card>
+          </Alert>
+        )}
 
-          <Card withBorder>
-            <Title order={6} mb="xs">
-              Specs
-            </Title>
-            {specs.length === 0 ? (
-              <Text size="sm" c="dimmed">
-                No custom-field values recorded for this asset.
-              </Text>
-            ) : (
-              <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs">
-                {specs.map(({ def, value }) =>
-                  def.data_type === "url" && typeof value === "string" && value ? (
-                    <Stack key={def.key} gap={0}>
-                      <Text size="xs" c="dimmed">
-                        {def.label}
-                      </Text>
-                      <Anchor href={value} target="_blank" rel="noopener noreferrer" size="sm" truncate>
-                        {value}
-                      </Anchor>
-                    </Stack>
-                  ) : (
-                    <DetailField key={def.key} label={def.label} value={formatFieldValue(def, value)} />
-                  ),
-                )}
-              </SimpleGrid>
-            )}
-          </Card>
-
-          {asset.is_consumable && (
-            <AssetStockCard asset={asset} stockItem={stockItem} me={me} onNavigateToEdit={() => navigate(`/assets/${asset.id}/edit`)} />
-          )}
-
-          <Card withBorder>
-            <PhotoCapture
-              assetId={asset.id}
-              attachments={attachments}
-              canAttach={canAttach}
-              onUploaded={(attachment) => setAttachments((prev) => [attachment, ...prev])}
-              onDeleted={(attachmentId) =>
-                setAttachments((prev) => prev.filter((a) => a.id !== attachmentId))
-              }
-            />
-          </Card>
-
-          {me && <AssetReservationsCard assetId={asset.id} asset={asset} me={me} />}
-
-          <Card withBorder>
-            <Title order={6} mb="xs">
-              History
-            </Title>
-            <Text size="sm" c="dimmed" data-testid="history-placeholder">
-              Checkout/maintenance history lands in a later milestone — this
-              section is a placeholder per T1.6 (reservation history now has
-              its own section above).
+        <Card withBorder>
+          <Stack gap={4}>
+            <Text size="xs" c="dimmed">
+              {category?.name ?? `Category #${asset.category}`}
+              {asset.is_consumable ? " · Consumable" : " · Durable"}
             </Text>
-          </Card>
-
-          <Card withBorder>
-            <Title order={6} mb="xs">
-              Actions
-            </Title>
-            {actionError && (
-              <Alert color="red" mb="xs" data-testid="asset-action-error">
-                {actionError}
-              </Alert>
+            {asset.description && <Text size="sm">{asset.description}</Text>}
+            <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs" mt="xs">
+              <DetailField
+                label="Serial #"
+                value={asset.serial_number || "—"}
+              />
+              <DetailField
+                label="Manufacturer"
+                value={asset.manufacturer || "—"}
+              />
+              <DetailField label="Model" value={asset.model || "—"} />
+              <DetailField
+                label="Location"
+                value={
+                  location?.name ??
+                  (asset.location ? `#${asset.location}` : "—")
+                }
+              />
+              {/* M8: relabelled — this field records who FUNDED the asset. Which
+                    projects USE it is the separate "Used by" panel below,
+                    and conflating the two is what double-counts equipment
+                    across grants. */}
+              <DetailField
+                label="Funding project"
+                value={
+                  project?.name ??
+                  (asset.project ? `#${asset.project}` : "General pool")
+                }
+              />
+              <DetailField
+                label="Workload holder"
+                value={
+                  asset.current_workload_user
+                    ? `User #${asset.current_workload_user}`
+                    : "—"
+                }
+              />
+              <DetailField
+                label="Purchase date"
+                value={asset.purchase_date ?? "—"}
+              />
+              <DetailField
+                label="Purchase cost"
+                value={
+                  asset.purchase_cost
+                    ? `${asset.currency || ""} ${asset.purchase_cost}`.trim()
+                    : "—"
+                }
+              />
+              <DetailField
+                label="Warranty expiry"
+                value={asset.warranty_expiry ?? "—"}
+              />
+            </SimpleGrid>
+            {asset.url && (
+              <Anchor
+                href={asset.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                size="sm"
+                mt="xs"
+                data-testid="asset-url-link"
+              >
+                {asset.url}
+              </Anchor>
             )}
-            <Group gap="xs" wrap="wrap">
-              <PrintLabelButton assetId={asset.id} disabled={!canPrintLabel} />
+            {asset.condition && (
+              <Text size="xs" c="dimmed" mt="xs">
+                Condition notes: {asset.condition}
+              </Text>
+            )}
+            {asset.tags.length > 0 && (
+              <Group gap={4} mt="xs" wrap="wrap">
+                {asset.tags.map((tag) => (
+                  <Badge key={tag} size="xs" variant="dot" color="grape">
+                    {tag}
+                  </Badge>
+                ))}
+              </Group>
+            )}
+          </Stack>
+        </Card>
 
-              {canEdit ? (
-                <Button size="sm" variant="default" onClick={() => navigate(`/assets/${asset.id}/edit`)}>
+        <AssetUsagePanel
+          assetId={asset.id}
+          fundingProjectId={asset.project}
+          projects={allProjects}
+          canEdit={canEdit}
+        />
+
+        <Card withBorder>
+          <Title order={6} mb="xs">
+            Specs
+          </Title>
+          {specs.length === 0 ? (
+            <Text size="sm" c="dimmed">
+              No custom-field values recorded for this asset.
+            </Text>
+          ) : (
+            <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs">
+              {specs.map(({ def, value }) =>
+                def.data_type === "url" &&
+                typeof value === "string" &&
+                value ? (
+                  <Stack key={def.key} gap={0}>
+                    <Text size="xs" c="dimmed">
+                      {def.label}
+                    </Text>
+                    <Anchor
+                      href={value}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      size="sm"
+                      truncate
+                    >
+                      {value}
+                    </Anchor>
+                  </Stack>
+                ) : (
+                  <DetailField
+                    key={def.key}
+                    label={def.label}
+                    value={formatFieldValue(def, value)}
+                  />
+                ),
+              )}
+            </SimpleGrid>
+          )}
+        </Card>
+
+        {asset.is_consumable && (
+          <AssetStockCard
+            asset={asset}
+            stockItem={stockItem}
+            me={me}
+            onNavigateToEdit={() => navigate(`/assets/${asset.id}/edit`)}
+          />
+        )}
+
+        <Card withBorder>
+          <PhotoCapture
+            assetId={asset.id}
+            attachments={attachments}
+            canAttach={canAttach}
+            onUploaded={(attachment) =>
+              setAttachments((prev) => [attachment, ...prev])
+            }
+            onDeleted={(attachmentId) =>
+              setAttachments((prev) =>
+                prev.filter((a) => a.id !== attachmentId),
+              )
+            }
+          />
+        </Card>
+
+        {me && (
+          <AssetReservationsCard assetId={asset.id} asset={asset} me={me} />
+        )}
+
+        <Card withBorder>
+          <Title order={6} mb="xs">
+            History
+          </Title>
+          <Text size="sm" c="dimmed" data-testid="history-placeholder">
+            Checkout/maintenance history lands in a later milestone — this
+            section is a placeholder per T1.6 (reservation history now has its
+            own section above).
+          </Text>
+        </Card>
+
+        <Card withBorder>
+          <Title order={6} mb="xs">
+            Actions
+          </Title>
+          {actionError && (
+            <Alert color="red" mb="xs" data-testid="asset-action-error">
+              {actionError}
+            </Alert>
+          )}
+          <Group gap="xs" wrap="wrap">
+            <PrintLabelButton assetId={asset.id} disabled={!canPrintLabel} />
+
+            {canEdit ? (
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => navigate(`/assets/${asset.id}/edit`)}
+              >
+                Edit
+              </Button>
+            ) : (
+              <Tooltip label="You don't have permission to edit this asset">
+                <Button size="sm" variant="default" disabled>
                   Edit
                 </Button>
-              ) : (
-                <Tooltip label="You don't have permission to edit this asset">
-                  <Button size="sm" variant="default" disabled>
-                    Edit
-                  </Button>
-                </Tooltip>
-              )}
+              </Tooltip>
+            )}
 
-              {canRetire && !isRetired ? (
-                <Button size="sm" color="red" variant="light" onClick={() => setRetireModalOpen(true)}>
+            {canRetire && !isRetired ? (
+              <Button
+                size="sm"
+                color="red"
+                variant="light"
+                onClick={() => setRetireModalOpen(true)}
+              >
+                Retire / mark lost
+              </Button>
+            ) : (
+              <Tooltip
+                label={
+                  isRetired
+                    ? "Already retired"
+                    : "You don't have permission to retire this asset"
+                }
+              >
+                <Button size="sm" color="red" variant="light" disabled>
                   Retire / mark lost
                 </Button>
-              ) : (
-                <Tooltip
-                  label={
-                    isRetired
-                      ? "Already retired"
-                      : "You don't have permission to retire this asset"
-                  }
-                >
-                  <Button size="sm" color="red" variant="light" disabled>
-                    Retire / mark lost
-                  </Button>
-                </Tooltip>
-              )}
+              </Tooltip>
+            )}
 
-              {!asset.is_consumable && canReserve ? (
-                <Button size="sm" variant="default" onClick={() => setReserveOpen(true)} data-testid="reserve-action">
+            {!asset.is_consumable && canReserve ? (
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => setReserveOpen(true)}
+                data-testid="reserve-action"
+              >
+                Reserve
+              </Button>
+            ) : (
+              <Tooltip
+                label={
+                  asset.is_consumable
+                    ? "Consumable assets can't be reserved"
+                    : "You don't have permission to reserve this asset"
+                }
+              >
+                <Button size="sm" variant="default" disabled>
                   Reserve
                 </Button>
-              ) : (
-                <Tooltip
-                  label={
-                    asset.is_consumable
-                      ? "Consumable assets can't be reserved"
-                      : "You don't have permission to reserve this asset"
-                  }
-                >
-                  <Button size="sm" variant="default" disabled>
-                    Reserve
-                  </Button>
-                </Tooltip>
-              )}
+              </Tooltip>
+            )}
 
-              {isCheckedOutByMe ? (
-                canCheckout ? (
-                  <Button
-                    size="sm"
-                    variant="filled"
-                    color="teal"
-                    loading={checkinBusy}
-                    onClick={() => void handleCheckIn()}
-                    data-testid="checkin-action"
-                  >
-                    Check in
-                  </Button>
-                ) : (
-                  <Tooltip label="You don't have permission to check in this asset">
-                    <Button size="sm" variant="filled" color="teal" disabled>
-                      Check in
-                    </Button>
-                  </Tooltip>
-                )
-              ) : canCheckout && isCheckoutEligible ? (
-                <Button size="sm" variant="default" onClick={() => setCheckoutOpen(true)} data-testid="checkout-action">
-                  Check out
+            {isCheckedOutByMe ? (
+              canCheckout ? (
+                <Button
+                  size="sm"
+                  variant="filled"
+                  color="teal"
+                  loading={checkinBusy}
+                  onClick={() => void handleCheckIn()}
+                  data-testid="checkin-action"
+                >
+                  Check in
                 </Button>
               ) : (
-                <Tooltip
-                  label={
-                    asset.is_consumable
-                      ? "Consumable assets can't be checked out"
-                      : !isCheckoutEligible
-                        ? `Asset is '${asset.status}' and can't be checked out right now`
-                        : "You don't have permission to check out this asset"
-                  }
-                >
-                  <Button size="sm" variant="default" disabled>
-                    Check out
+                <Tooltip label="You don't have permission to check in this asset">
+                  <Button size="sm" variant="filled" color="teal" disabled>
+                    Check in
                   </Button>
                 </Tooltip>
-              )}
+              )
+            ) : canCheckout && isCheckoutEligible ? (
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => setCheckoutOpen(true)}
+                data-testid="checkout-action"
+              >
+                Check out
+              </Button>
+            ) : (
+              <Tooltip
+                label={
+                  asset.is_consumable
+                    ? "Consumable assets can't be checked out"
+                    : !isCheckoutEligible
+                      ? `Asset is '${asset.status}' and can't be checked out right now`
+                      : "You don't have permission to check out this asset"
+                }
+              >
+                <Button size="sm" variant="default" disabled>
+                  Check out
+                </Button>
+              </Tooltip>
+            )}
 
-              <StubAction label="Generate label" />
-              <StubAction label="Report issue" />
-            </Group>
-          </Card>
-        </Stack>
-      <Modal opened={retireModalOpen} onClose={() => setRetireModalOpen(false)} title="Retire asset" centered>
+            <StubAction label="Generate label" />
+            <StubAction label="Report issue" />
+          </Group>
+        </Card>
+      </Stack>
+      <Modal
+        opened={retireModalOpen}
+        onClose={() => setRetireModalOpen(false)}
+        title="Retire asset"
+        centered
+      >
         {retireError && (
           <Alert color="red" mb="sm">
             {retireError}
           </Alert>
         )}
         <Text size="sm" mb="md">
-          Retire <strong>{asset.name}</strong>? It will be hidden from the default asset list but its record is
-          retained.
+          Retire <strong>{asset.name}</strong>? It will be hidden from the
+          default asset list but its record is retained.
         </Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={() => setRetireModalOpen(false)}>
             Cancel
           </Button>
-          <Button color="red" loading={retiring} onClick={() => void handleRetire()}>
+          <Button
+            color="red"
+            loading={retiring}
+            onClick={() => void handleRetire()}
+          >
             Retire
           </Button>
         </Group>
@@ -612,9 +744,20 @@ export function AssetDetailScreen() {
  * lockstep with the Calendar/Approvals screens rather than a second
  * implementation.
  */
-function AssetReservationsCard({ assetId, asset, me }: { assetId: number; asset: Asset; me: Me }) {
+function AssetReservationsCard({
+  assetId,
+  asset,
+  me,
+}: {
+  assetId: number;
+  asset: Asset;
+  me: Me;
+}) {
   const [view, setView] = useState<"calendar" | "list">("calendar");
-  const filters = useMemo(() => ({ asset: assetId, ordering: "-start_at" as const }), [assetId]);
+  const filters = useMemo(
+    () => ({ asset: assetId, ordering: "-start_at" as const }),
+    [assetId],
+  );
   const { items, totalCount, loading, error, reload } = useReservationList({
     filters,
     // The month grid does its own fetching (scoped to its own visible-month
@@ -639,7 +782,13 @@ function AssetReservationsCard({ assetId, asset, me }: { assetId: number; asset:
         />
       </Group>
 
-      {view === "calendar" && <AssetReservationMonthCalendar assetId={assetId} asset={asset} me={me} />}
+      {view === "calendar" && (
+        <AssetReservationMonthCalendar
+          assetId={assetId}
+          asset={asset}
+          me={me}
+        />
+      )}
 
       {view === "list" && (
         <>
@@ -666,7 +815,13 @@ function AssetReservationsCard({ assetId, asset, me }: { assetId: number; asset:
           {!loading && !error && items.length > 0 && (
             <Stack gap="xs">
               {items.map((r) => (
-                <ReservationListItem key={r.id} reservation={r} asset={asset} me={me} onChanged={() => reload()} />
+                <ReservationListItem
+                  key={r.id}
+                  reservation={r}
+                  asset={asset}
+                  me={me}
+                  onChanged={() => reload()}
+                />
               ))}
             </Stack>
           )}
@@ -707,7 +862,9 @@ function AssetStockCard({
   const navigate = useNavigate();
   const canManageStock = hasAssetPermission(me, STOCK_ADJUST, asset.project);
   const isLoading = stockItem === undefined;
-  const isLowStock = stockItem != null && stockItem.quantity_on_hand <= stockItem.reorder_threshold;
+  const isLowStock =
+    stockItem != null &&
+    stockItem.quantity_on_hand <= stockItem.reorder_threshold;
 
   return (
     <Card withBorder data-testid="asset-stock-card">
@@ -729,15 +886,22 @@ function AssetStockCard({
       {!isLoading && stockItem === null && (
         <Stack gap="xs" align="flex-start">
           <Text size="sm" c="dimmed" data-testid="asset-stock-not-tracked">
-            Not tracked yet — this consumable has no stock record, so quantity on hand isn't known.
+            Not tracked yet — this consumable has no stock record, so quantity
+            on hand isn't known.
           </Text>
           {canManageStock ? (
-            <Button size="xs" variant="light" onClick={onNavigateToEdit} data-testid="asset-stock-setup-link">
+            <Button
+              size="xs"
+              variant="light"
+              onClick={onNavigateToEdit}
+              data-testid="asset-stock-setup-link"
+            >
               Set up stock tracking
             </Button>
           ) : (
             <Text size="xs" c="dimmed">
-              You don&apos;t have permission to set up stock tracking for this asset.
+              You don&apos;t have permission to set up stock tracking for this
+              asset.
             </Text>
           )}
         </Stack>
@@ -747,10 +911,12 @@ function AssetStockCard({
         <Stack gap={6}>
           <Group gap="lg" wrap="wrap">
             <Text size="sm">
-              On hand: <strong>{stockItem.quantity_on_hand}</strong> {stockItem.unit_of_measure}
+              On hand: <strong>{stockItem.quantity_on_hand}</strong>{" "}
+              {stockItem.unit_of_measure}
             </Text>
             <Text size="sm" c="dimmed">
-              Reorder at {stockItem.reorder_threshold}, target {stockItem.reorder_target}
+              Reorder at {stockItem.reorder_threshold}, target{" "}
+              {stockItem.reorder_target}
             </Text>
           </Group>
           <Button
@@ -791,4 +957,3 @@ function StubAction({ label }: { label: string }) {
     </Tooltip>
   );
 }
-

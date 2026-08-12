@@ -115,14 +115,7 @@ export interface Paginated<T> {
  * (T1.5) alike — keep in lockstep with the backend choices.
  */
 export type CustomFieldDataType =
-  | "text"
-  | "int"
-  | "float"
-  | "bool"
-  | "date"
-  | "enum"
-  | "json"
-  | "url";
+  "text" | "int" | "float" | "bool" | "date" | "enum" | "json" | "url";
 
 /** `GET /api/v1/categories/{id}/fields` item shape
  * (`apps.catalog.serializers.CustomFieldDefSerializer`). `category` is
@@ -374,6 +367,22 @@ export interface ExpenseAttachment {
  * Until that endpoint exists, the Expense form/ledger can only show/accept a
  * category **id**, not its name (see `ExpensesTab`'s own comment for the
  * workaround this forces). */
+/** One `Expense` -> `Asset` link with that asset's share of the line's cost
+ * (`apps.projects.models.ExpenseAssetLink`, M8 §1.5). Carries no currency of
+ * its own — the share is always in the parent line's currency. */
+export interface ExpenseAssetLink {
+  id: number;
+  asset: number;
+  asset_name: string;
+  /** The RAW stored figure. `null` means "auto" — the user did not type an
+   * amount for this asset, so it takes a share of whatever is left. */
+  allocated_amount: string | null;
+  /** What this link actually costs once the auto shares have divided the
+   * remainder. Always a number; this is what the UI displays. */
+  resolved_amount: string;
+  quantity: number;
+}
+
 export interface Expense {
   id: number;
   project: number;
@@ -384,7 +393,17 @@ export interface Expense {
   vendor: string;
   invoice_number: string;
   description: string;
+  /** @deprecated M8 — kept in sync with `asset_links[0]` for one release
+   * while readers migrate; use `asset_links` instead. */
   asset: number | null;
+  /** M8: every asset this expense line paid for, with that asset's share of
+   * the line. Replaces the single `asset` FK — one receipt line routinely
+   * becomes several assets. */
+  asset_links: ExpenseAssetLink[];
+  /** M8 Phase 2: the vendor receipt this line appeared on. `null` = a
+   * standalone cost with no receipt recorded, which is a permanent, valid
+   * state (cash expenses, bank fees, every M7-era row). */
+  purchase: number | null;
   created_by: number | null;
   attachments: ExpenseAttachment[];
   created_at: string;
@@ -403,7 +422,24 @@ export interface ExpenseWritePayload {
   vendor?: string;
   invoice_number?: string;
   description?: string;
+  /** @deprecated M8 — prefer `assets`. Still accepted so an older client
+   * keeps working during the deprecation release. */
   asset?: number | null;
+  /** M8: the full set of linked asset ids, all on an AUTO even share. Sending
+   * it REPLACES the existing links (set semantics); omit the key entirely to
+   * leave links untouched. Prefer `asset_allocations` when the per-item prices
+   * are known — a real receipt does not divide equally. */
+  assets?: number[];
+  /** M8 Phase 2: attach this line to a vendor receipt. */
+  purchase?: number | null;
+  /** M8: per-asset amounts. Omit an entry's `allocated_amount` (or send null)
+   * to leave that asset on an auto share of whatever is left. Wins over
+   * `assets` when both are sent. */
+  asset_allocations?: {
+    asset: number;
+    allocated_amount?: string | null;
+    quantity?: number;
+  }[];
 }
 
 /** `GET /projects/{id}/expenses` query params (`apps.projects.api.
@@ -438,7 +474,8 @@ export interface ExpenseCategoryListParams extends ListParams {
 
 /** `ProjectDocument.Kind` choices (`backend/apps/projects/models.py::
  * ProjectDocument.Kind`). */
-export type ProjectDocumentKind = "proposal" | "contract" | "progress_report" | "other";
+export type ProjectDocumentKind =
+  "proposal" | "contract" | "progress_report" | "other";
 
 /** `GET/POST /projects/{id}/documents` row shape (`apps.projects.
  * serializers.ProjectDocumentSerializer`) — read-only wire shape; creation is
@@ -467,12 +504,7 @@ export interface Tag {
 
 /** `Asset.Status` choices (`backend/apps/assets/models.py::Asset.Status`). */
 export type AssetStatus =
-  | "available"
-  | "in_use"
-  | "reserved"
-  | "maintenance"
-  | "retired"
-  | "lost";
+  "available" | "in_use" | "reserved" | "maintenance" | "retired" | "lost";
 
 /** `GET /api/v1/assets/{id}/attachments` item shape
  * (`apps.assets.serializers.AttachmentSerializer`) — read-only, embedded on
@@ -612,6 +644,9 @@ export interface AssetListParams extends ListParams {
   status?: AssetStatus;
   location?: number;
   project?: number;
+  /** M8: `true` lists general-pool assets (no funding project). `project` has
+   * no way to express "none", so this is the only way to reach them. */
+  unassigned?: boolean;
   tag?: number;
   is_consumable?: boolean;
   /** Retired assets are hidden from the default list server-side; this is
@@ -631,7 +666,8 @@ export type StockTxnReason = "receive" | "consume" | "adjust" | "correction";
  * ReorderRequest.Status`) — valid forward transitions are
  * open -> approved -> ordered -> received, with cancelled reachable from any
  * non-terminal state (server-enforced; see `ReorderRequest.VALID_TRANSITIONS`). */
-export type ReorderRequestStatus = "open" | "approved" | "ordered" | "received" | "cancelled";
+export type ReorderRequestStatus =
+  "open" | "approved" | "ordered" | "received" | "cancelled";
 
 /** `GET /api/v1/stock` (list row) / `GET /api/v1/stock/{id}` (detail) —
  * `apps.stock.serializers.StockItemSerializer`. `asset` is a plain id (not
@@ -676,7 +712,13 @@ export interface StockItemCreatePayload {
  * task adds it; `StockScreen` deliberately has no search input. */
 export interface StockListParams extends ListParams {
   low_stock?: boolean;
-  ordering?: "quantity_on_hand" | "-quantity_on_hand" | "reorder_threshold" | "-reorder_threshold" | "created_at" | "-created_at";
+  ordering?:
+    | "quantity_on_hand"
+    | "-quantity_on_hand"
+    | "reorder_threshold"
+    | "-reorder_threshold"
+    | "created_at"
+    | "-created_at";
 }
 
 /** Ledger row appended by `POST /api/v1/stock/{id}/txn`
@@ -824,7 +866,13 @@ export interface ReservationListParams extends ListParams {
   status?: ReservationStatus;
   asset?: number;
   user?: number;
-  ordering?: "start_at" | "-start_at" | "end_at" | "-end_at" | "created_at" | "-created_at";
+  ordering?:
+    | "start_at"
+    | "-start_at"
+    | "end_at"
+    | "-end_at"
+    | "created_at"
+    | "-created_at";
 }
 
 // --- Checkouts (T3.5; `apps.reservations.checkout.CheckoutViewSet`/
@@ -1349,7 +1397,6 @@ export interface MembershipListParams extends ListParams {
   project?: number;
 }
 
-
 /** `GET /api/v1/assets/{id}/expense-prefill` — the asset's own purchase facts
  * relabeled into expense vocabulary, so the project expense form can offer
  * "fetch from asset" instead of re-keying. `documents` are the asset's
@@ -1380,4 +1427,255 @@ export interface AssetExpensePrefill {
     is_financial: boolean;
     created_at: string;
   }[];
+}
+
+/** One "this project uses this asset" record
+ * (`apps.assets.models.AssetProjectUsage`, M8 §1.6).
+ *
+ * Deliberately carries NO monetary field: usage is operational, funding is
+ * financial. The asset's cost stays booked to its funding project
+ * (`Asset.project`) no matter how many projects use it — adding a row here
+ * moves no money, and the UI says so explicitly. */
+export interface AssetProjectUsage {
+  id: number;
+  asset: number;
+  project: number;
+  project_name: string;
+  start_date: string | null;
+  /** `null` = the project is still using it. */
+  end_date: string | null;
+  note: string;
+  created_by: number | null;
+  created_at: string;
+}
+
+/** `POST /assets/{id}/usages/` / `PATCH /asset-usages/{id}/` body.
+ * `asset`/`created_by` are server-derived, never client-writable. */
+export interface AssetProjectUsageWritePayload {
+  project?: number;
+  start_date?: string | null;
+  end_date?: string | null;
+  note?: string;
+}
+
+// --- M8 Phase 2: the money layer -------------------------------------------
+
+/** One vendor receipt / split shipment (`apps.finance.models.Purchase`).
+ *
+ * Every `*_total`, `variance`, `fx_rate` and `resolved_settled_amount` field is
+ * DERIVED server-side from stored facts, never stored — so they cannot drift
+ * from the receipt they describe. */
+export interface Purchase {
+  id: number;
+  /** `null` = this receipt is not yet matched to a bank charge. A normal
+   * state, not an error. */
+  payment: number | null;
+  vendor: string;
+  vendor_order_number: string;
+  receipt_number: string;
+  date: string;
+  /** Transaction currency — what the receipt is priced in (e.g. "USD"). */
+  currency: string;
+  subtotal: string;
+  shipping: string;
+  tax: string;
+  total: string;
+  /** Typed by the user ONLY for a charge settling several currencies, where
+   * the split cannot be inferred. Otherwise null and derived. */
+  settled_amount: string | null;
+  /** What this receipt cost in the charge's currency, derived or explicit. */
+  resolved_settled_amount: string | null;
+  /** The charge's currency (e.g. "SAR"), or null when unsettled. */
+  settlement_currency: string | null;
+  /** Derived from the actual bank debit — includes the bank's markup. */
+  fx_rate: string | null;
+  items_total: string;
+  overhead_total: string;
+  /** `total - (items + shipping + tax)`. "0.00" = balanced. */
+  variance: string;
+  is_balanced: boolean;
+  notes: string;
+  attachments: PurchaseAttachment[];
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PurchaseAttachment {
+  id: number;
+  purchase: number;
+  storage_key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded_by: number | null;
+  created_at: string;
+}
+
+export interface PaymentAttachment {
+  id: number;
+  payment: number;
+  storage_key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded_by: number | null;
+  created_at: string;
+}
+
+/** One line on the bank statement (`apps.finance.models.Payment`).
+ *
+ * `purchases` is already redacted for the caller: a lead sees only receipts
+ * carrying at least one of their own project's lines. */
+export interface Payment {
+  id: number;
+  /** What the bank actually took, in the settlement currency. */
+  amount: string;
+  currency: string;
+  paid_on: string;
+  method: "card" | "bank_transfer" | "cash" | "other";
+  account_label: string;
+  statement_ref: string;
+  vendor: string;
+  notes: string;
+  purchases: Purchase[];
+  /** Sum of the receipts' settled amounts. */
+  allocated: string;
+  /** `amount - allocated`. "0.00" = fully accounted for. */
+  variance: string;
+  is_balanced: boolean;
+  /** This caller's projects' share of the charge. */
+  my_share: string;
+  /** Everything else, as ONE unnamed total — never a breakdown, never a
+   * project name. Always "0" for a tenant-wide viewer, who sees it all. */
+  other_projects_share: string;
+  attachments: PaymentAttachment[];
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaymentWritePayload {
+  amount: string;
+  currency: string;
+  paid_on: string;
+  method?: Payment["method"];
+  account_label?: string;
+  statement_ref?: string;
+  vendor?: string;
+  notes?: string;
+}
+
+export interface PurchaseWritePayload {
+  payment?: number | null;
+  vendor?: string;
+  vendor_order_number?: string;
+  receipt_number?: string;
+  date: string;
+  currency: string;
+  subtotal?: string;
+  shipping?: string;
+  tax?: string;
+  total: string;
+  settled_amount?: string | null;
+  notes?: string;
+}
+
+export interface PaymentListParams extends ListParams {
+  vendor?: string;
+  paid_on_after?: string;
+  paid_on_before?: string;
+  /** Charges with money still unaccounted for — the reconciliation to-do
+   * list. Derived server-side, so it is not a plain column filter. */
+  unreconciled?: boolean;
+  /** Charges that paid for at least one item booked to this project. */
+  project?: number;
+}
+
+export interface PurchaseListParams extends ListParams {
+  payment?: number;
+  vendor?: string;
+  /** Receipts not yet matched to a bank charge. */
+  unlinked?: boolean;
+  /** Receipts carrying at least one item booked to this project. */
+  project?: number;
+}
+
+// --- M8 Phase 2 (rev): the ORDER — one nested document ----------------------
+
+/** One item inside a split. Backed by `projects.Expense`. */
+export interface OrderItem {
+  id?: number;
+  description: string;
+  amount: string;
+  category?: number | null;
+  /** ONE asset per item — an item is a single line on a receipt. */
+  asset?: number | null;
+}
+
+/** One shipment/receipt within an order. Backed by `finance.Purchase`.
+ *
+ * A simple order still has exactly one of these — the user never sees the
+ * concept unless their order actually arrived in pieces. */
+export interface OrderSplit {
+  id?: number;
+  receipt_number?: string;
+  date?: string | null;
+  /** Blank = priced in the same currency the bank charged. */
+  currency?: string;
+  shipping?: string;
+  tax?: string;
+  /** Omit and the server infers it from the items + shipping + tax. */
+  total?: string | null;
+  /** Only needed when ONE order settles receipts in several different
+   * currencies, where the split cannot be inferred from the debit. */
+  settled_amount?: string | null;
+  items: OrderItem[];
+  attachments?: PurchaseAttachment[];
+}
+
+/** An order: one purchase from a vendor, paid by one bank deduction, holding
+ * one or more splits, each holding items. This is what the user calls "an
+ * expense". */
+export interface Order {
+  id: number;
+  /**
+   * Position in statement order within the project — the same "Order N" shown
+   * in the project report and used in a downloaded audit pack's filename.
+   * Note it is positional, so back-dating a new order renumbers later ones.
+   */
+  number: number;
+  project: number;
+  vendor: string;
+  paid_on: string;
+  /** What the bank actually took. */
+  amount: string;
+  currency: string;
+  method: "card" | "bank_transfer" | "cash" | "other";
+  account_label: string;
+  statement_ref: string;
+  notes: string;
+  splits: OrderSplit[];
+  attachments: PaymentAttachment[];
+  /** Sum of the items, converted to the order's currency. */
+  items_total_settled: string;
+  /** `amount - items_total_settled`. "0.00" = the order is fully itemized. */
+  variance: string;
+  is_balanced: boolean;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrderWritePayload {
+  project: number;
+  vendor?: string;
+  paid_on: string;
+  amount: string;
+  currency: string;
+  method?: Order["method"];
+  account_label?: string;
+  statement_ref?: string;
+  notes?: string;
+  splits?: OrderSplit[];
 }

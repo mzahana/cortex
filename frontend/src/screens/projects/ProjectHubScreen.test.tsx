@@ -7,10 +7,13 @@ import { render } from "@testing-library/react";
 import { theme } from "../../theme";
 import { ProjectHubScreen } from "./ProjectHubScreen";
 import { api } from "../../api/client";
-import type { Expense, Me, Paginated, ProjectDetail } from "../../api/types";
+import type { Order, Me, Paginated, ProjectDetail } from "../../api/types";
 
 vi.mock("../../api/client", async () => {
-  const actual = await vi.importActual<typeof import("../../api/client")>("../../api/client");
+  const actual =
+    await vi.importActual<typeof import("../../api/client")>(
+      "../../api/client",
+    );
   return {
     ...actual,
     api: {
@@ -18,7 +21,15 @@ vi.mock("../../api/client", async () => {
       updateProjectDetail: vi.fn(),
       listUsers: vi.fn(),
       listProjectAssets: vi.fn(),
+      listAssets: vi.fn(),
+      listPurchases: vi.fn(),
       listProjectExpenses: vi.fn(),
+      listOrders: vi.fn(),
+      generateExpensePack: vi.fn(),
+      generateAuditChecklist: vi.fn(),
+      createOrder: vi.fn(),
+      updateOrder: vi.fn(),
+      deleteOrder: vi.fn(),
       listAllExpenseCategories: vi.fn(),
       createExpense: vi.fn(),
       updateExpense: vi.fn(),
@@ -67,7 +78,9 @@ function makeMe(overrides: Partial<Me> = {}): Me {
   } as Me;
 }
 
-function makeProjectDetail(overrides: Partial<ProjectDetail> = {}): ProjectDetail {
+function makeProjectDetail(
+  overrides: Partial<ProjectDetail> = {},
+): ProjectDetail {
   return {
     id: 1,
     name: "Robotics Grant",
@@ -85,7 +98,9 @@ function makeProjectDetail(overrides: Partial<ProjectDetail> = {}): ProjectDetai
     created_at: "2026-01-01T00:00:00Z",
     spent: "1500.00",
     remaining: "8500.00",
-    spend_by_category: [{ category_id: 1, category: "Equipment", total: "1500.00" }],
+    spend_by_category: [
+      { category_id: 1, category: "Equipment", total: "1500.00" },
+    ],
     ...overrides,
   };
 }
@@ -109,30 +124,87 @@ function renderHub() {
 beforeEach(() => {
   mockMe = null;
   Object.values(mockedApi).forEach((fn) => {
-    if (typeof fn === "function" && "mockReset" in fn) (fn as ReturnType<typeof vi.fn>).mockReset();
+    if (typeof fn === "function" && "mockReset" in fn)
+      (fn as ReturnType<typeof vi.fn>).mockReset();
   });
-  mockedApi.exportProjectCsvUrl.mockReturnValue("/api/v1/projects/1/export.csv/");
+  mockedApi.exportProjectCsvUrl.mockReturnValue(
+    "/api/v1/projects/1/export.csv/",
+  );
   mockedApi.exportAssetsCsvUrl.mockReturnValue("/api/v1/exports/assets.csv");
   mockedApi.listUsers.mockResolvedValue(paginated([]));
   mockedApi.listProjectAssets.mockResolvedValue(paginated([]));
+  // M8: the expense form also offers unassigned (general-pool) assets.
+  mockedApi.listAssets.mockResolvedValue(paginated([]));
+  // M8 Phase 2: the expense form offers a receipt to attach the item to.
+  mockedApi.listPurchases.mockResolvedValue(paginated([]));
+  // M8 Phase 2 (rev): the Expenses tab lists ORDERS.
+  mockedApi.listOrders.mockResolvedValue(paginated([]));
   mockedApi.listAllExpenseCategories.mockResolvedValue([]);
 });
 
+/** A minimal `Order` for the Expenses tab — one shipment, one item, which is
+ * what a simple order looks like. */
+function makeOrder(overrides: Partial<Order> = {}): Order {
+  return {
+    id: 5,
+    number: 1,
+    project: 1,
+    vendor: "Amazon",
+    paid_on: "2026-02-01",
+    amount: "359.00",
+    currency: "SAR",
+    method: "card",
+    account_label: "",
+    statement_ref: "",
+    notes: "",
+    splits: [
+      {
+        id: 1,
+        receipt_number: "",
+        currency: "SAR",
+        shipping: "0.00",
+        tax: "0.00",
+        total: "359.00",
+        settled_amount: null,
+        items: [{ id: 2, description: "GPU", amount: "350.00", asset: null }],
+      },
+    ],
+    attachments: [],
+    items_total_settled: "359.00",
+    variance: "0.00",
+    is_balanced: true,
+    created_by: 1,
+    created_at: "2026-02-01T00:00:00Z",
+    updated_at: "2026-02-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
 describe("ProjectHubScreen", () => {
   it("renders all five tabs and the Overview tab's budget figures once loaded", async () => {
-    mockMe = makeMe({ project_permissions: { "1": ["project.view", "expense.view"] } });
+    mockMe = makeMe({
+      project_permissions: { "1": ["project.view", "expense.view"] },
+    });
     mockedApi.getProjectDetail.mockResolvedValue(makeProjectDetail());
 
     renderHub();
 
     const tabs = await screen.findByTestId("project-hub-tabs");
-    expect(within(tabs).getByTestId("project-tab-overview")).toBeInTheDocument();
+    expect(
+      within(tabs).getByTestId("project-tab-overview"),
+    ).toBeInTheDocument();
     expect(within(tabs).getByTestId("project-tab-assets")).toBeInTheDocument();
-    expect(within(tabs).getByTestId("project-tab-expenses")).toBeInTheDocument();
-    expect(within(tabs).getByTestId("project-tab-documents")).toBeInTheDocument();
+    expect(
+      within(tabs).getByTestId("project-tab-expenses"),
+    ).toBeInTheDocument();
+    expect(
+      within(tabs).getByTestId("project-tab-documents"),
+    ).toBeInTheDocument();
     expect(within(tabs).getByTestId("project-tab-report")).toBeInTheDocument();
 
-    await waitFor(() => expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument(),
+    );
     expect(screen.getByText("USD 10000.00")).toBeInTheDocument();
     expect(screen.getAllByText("USD 1500.00").length).toBeGreaterThan(0);
     expect(screen.getByText("USD 8500.00")).toBeInTheDocument();
@@ -141,12 +213,19 @@ describe("ProjectHubScreen", () => {
   it("renders a locked financials affordance (never $0) when budget fields come back null", async () => {
     mockMe = makeMe({ project_permissions: { "1": ["project.view"] } });
     mockedApi.getProjectDetail.mockResolvedValue(
-      makeProjectDetail({ budget_total: null, spent: null, remaining: null, spend_by_category: null }),
+      makeProjectDetail({
+        budget_total: null,
+        spent: null,
+        remaining: null,
+        spend_by_category: null,
+      }),
     );
 
     renderHub();
 
-    await waitFor(() => expect(screen.getByTestId("financials-locked")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("financials-locked")).toBeInTheDocument(),
+    );
     expect(screen.queryByText(/^\$0/)).not.toBeInTheDocument();
     expect(screen.queryByText("USD 0.00")).not.toBeInTheDocument();
   });
@@ -157,7 +236,9 @@ describe("ProjectHubScreen", () => {
     // configured, and the backend still returns a real `spent` (at least
     // "0.00") for an authorized caller regardless. `spent` (not
     // `budget_total`) is the only unambiguous redaction sentinel.
-    mockMe = makeMe({ project_permissions: { "1": ["project.view", "expense.view"] } });
+    mockMe = makeMe({
+      project_permissions: { "1": ["project.view", "expense.view"] },
+    });
     mockedApi.getProjectDetail.mockResolvedValue(
       makeProjectDetail({
         budget_total: null,
@@ -169,7 +250,9 @@ describe("ProjectHubScreen", () => {
 
     renderHub();
 
-    await waitFor(() => expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument(),
+    );
     expect(screen.queryByTestId("financials-locked")).not.toBeInTheDocument();
     expect(screen.getByText("Not set")).toBeInTheDocument();
     expect(screen.getAllByText("USD 0.00").length).toBeGreaterThan(0);
@@ -177,131 +260,112 @@ describe("ProjectHubScreen", () => {
   });
 
   it("hides the grant-details Save button for a caller without project-scoped project.manage", async () => {
-    mockMe = makeMe({ project_permissions: { "1": ["project.view", "expense.view"] } });
+    mockMe = makeMe({
+      project_permissions: { "1": ["project.view", "expense.view"] },
+    });
     mockedApi.getProjectDetail.mockResolvedValue(makeProjectDetail());
 
     renderHub();
 
-    await waitFor(() => expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument());
-    expect(screen.queryByTestId("overview-save-button")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("overview-save-button"),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Read-only")).toBeInTheDocument();
   });
 
-  it("shows the grant-details Save button and lets a scoped Lead submit an expense", async () => {
+  it("shows the grant-details Save button and lets a scoped Lead record an order", async () => {
     mockMe = makeMe({
-      project_permissions: { "1": ["project.view", "project.manage", "expense.view", "expense.manage"] },
+      project_permissions: {
+        "1": [
+          "project.view",
+          "project.manage",
+          "expense.view",
+          "expense.manage",
+        ],
+      },
     });
     mockedApi.getProjectDetail.mockResolvedValue(makeProjectDetail());
-    mockedApi.listProjectExpenses.mockResolvedValue(paginated<Expense>([]));
+    mockedApi.listOrders.mockResolvedValue(paginated<Order>([]));
     mockedApi.listAllExpenseCategories.mockResolvedValue([
       { id: 7, name: "Equipment", is_active: true },
-      { id: 8, name: "Travel", is_active: true },
     ]);
-    mockedApi.createExpense.mockResolvedValue({
-      id: 5,
-      project: 1,
-      category: 7,
-      amount: "42.00",
-      currency: "USD",
-      date: "2026-02-01",
-      vendor: "Acme",
-      invoice_number: "",
-      description: "",
-      asset: null,
-      created_by: 1,
-      attachments: [],
-      created_at: "2026-02-01T00:00:00Z",
-      updated_at: "2026-02-01T00:00:00Z",
-    });
+    mockedApi.createOrder.mockResolvedValue(makeOrder());
 
     renderHub();
-    await waitFor(() => expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-budget-tab")).toBeInTheDocument(),
+    );
     expect(screen.getByTestId("overview-save-button")).toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(screen.getByTestId("project-tab-expenses"));
-    await waitFor(() => expect(screen.getByTestId("expenses-tab")).toBeInTheDocument());
-    expect(await screen.findByTestId("new-expense-button")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("expenses-tab")).toBeInTheDocument(),
+    );
 
-    await user.click(screen.getByTestId("new-expense-button"));
-    const amountInput = await screen.findByLabelText(/^Amount/);
-    await user.type(amountInput, "42");
-    await user.type(screen.getByLabelText("Vendor"), "Acme");
+    // ONE button, ONE form — the whole order is entered in a single place.
+    await user.click(await screen.findByTestId("add-expense"));
+    await user.type(await screen.findByTestId("order-vendor"), "Amazon");
+    await user.type(screen.getByTestId("order-amount"), "359.00");
+    await user.type(screen.getByTestId("order-item-desc-0-0"), "GPU");
+    await user.type(screen.getByTestId("order-item-amount-0-0"), "350.00");
+    await user.click(screen.getByTestId("order-save"));
 
-    // Category is a real `<Select>` fed from `GET /api/v1/expense-categories`
-    // (backend follow-up endpoint) — shows names, submits the id.
-    const categorySelect = screen.getByTestId("expense-category-select");
-    await user.click(categorySelect);
-    expect(await screen.findByText("Equipment")).toBeInTheDocument();
-    expect(screen.getByText("Travel")).toBeInTheDocument();
-    await user.click(screen.getByText("Equipment"));
-
-    await user.click(screen.getByTestId("expense-form-submit"));
-
-    await waitFor(() => expect(mockedApi.createExpense).toHaveBeenCalledTimes(1));
-    const [calledProjectId, payload] = mockedApi.createExpense.mock.calls[0];
-    expect(calledProjectId).toBe(1);
-    expect(payload.amount).toBe("42");
-    expect(payload.vendor).toBe("Acme");
-    expect(payload.category).toBe(7);
+    await waitFor(() => expect(mockedApi.createOrder).toHaveBeenCalledTimes(1));
+    const payload = mockedApi.createOrder.mock.calls[0][0];
+    expect(payload.project).toBe(1);
+    expect(payload.vendor).toBe("Amazon");
+    expect(payload.amount).toBe("359.00");
+    // The order carries its items nested — not a second, separate request.
+    expect(payload.splits?.[0].items[0].description).toBe("GPU");
+    expect(payload.splits?.[0].items[0].amount).toBe("350.00");
   });
 
-  it("shows a loading state for the category select while the expense-categories fetch is in flight, then renders resolved names in the ledger", async () => {
+  it("a simple order never shows the shipment concept, and a split one does", async () => {
     mockMe = makeMe({
-      project_permissions: { "1": ["project.view", "expense.view", "expense.manage"] },
+      project_permissions: {
+        "1": ["project.view", "expense.view", "expense.manage"],
+      },
     });
     mockedApi.getProjectDetail.mockResolvedValue(makeProjectDetail());
-    mockedApi.listProjectExpenses.mockResolvedValue(
-      paginated<Expense>([
-        {
+    mockedApi.listAllExpenseCategories.mockResolvedValue([]);
+    mockedApi.listOrders.mockResolvedValue(
+      paginated<Order>([
+        makeOrder({
           id: 9,
-          project: 1,
-          category: 7,
-          amount: "10.00",
-          currency: "USD",
-          date: "2026-02-01",
           vendor: "Vendor A",
-          invoice_number: "",
-          description: "",
-          asset: null,
-          created_by: 1,
-          attachments: [],
-          created_at: "2026-02-01T00:00:00Z",
-          updated_at: "2026-02-01T00:00:00Z",
-        },
-      ]),
-    );
-    let resolveCategories: (rows: { id: number; name: string; is_active: boolean }[]) => void = () => {};
-    mockedApi.listAllExpenseCategories.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveCategories = resolve;
+          amount: "10.00",
+          splits: [
+            {
+              id: 1,
+              receipt_number: "",
+              currency: "SAR",
+              shipping: "0.00",
+              tax: "0.00",
+              total: "10.00",
+              settled_amount: null,
+              items: [
+                { id: 3, description: "Cable", amount: "10.00", asset: null },
+              ],
+            },
+          ],
         }),
+      ]),
     );
 
     renderHub();
     const user = userEvent.setup();
     await user.click(await screen.findByTestId("project-tab-expenses"));
-    await waitFor(() => expect(screen.getByTestId("expense-row-9")).toBeInTheDocument());
 
-    // Before the categories fetch resolves, the ledger falls back to the
-    // bare id — never blocks rendering the rest of the row.
-    expect(screen.getByText("Category #7")).toBeInTheDocument();
-
-    await user.click(screen.getByTestId("new-expense-button"));
-    await screen.findByText("New expense");
-    expect(await screen.findByPlaceholderText("Loading categories…")).toBeInTheDocument();
-
-    resolveCategories([{ id: 7, name: "Equipment", is_active: true }]);
-
-    // The category loads and the ledger row (behind the modal) re-resolves
-    // its bare id to the real name — the placeholder-based loading state
-    // clears once the fetch settles.
+    // The order is listed by what the user recognizes: vendor and total.
     await waitFor(() =>
-      expect(screen.queryByPlaceholderText("Loading categories…")).not.toBeInTheDocument(),
+      expect(screen.getByText(/Vendor A/)).toBeInTheDocument(),
     );
-    expect(screen.getByPlaceholderText("(uncategorized)")).toBeInTheDocument();
-    expect(screen.getAllByText("Equipment").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Category #7")).not.toBeInTheDocument();
+    expect(screen.getByText(/1 item/)).toBeInTheDocument();
+    // A single-shipment order must not mention shipments at all.
+    expect(screen.queryByText(/shipments/)).not.toBeInTheDocument();
   });
 });

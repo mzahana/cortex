@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { Alert, Button, Card, Checkbox, Group, Loader, SimpleGrid, Stack, Text, Title } from "@mantine/core";
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Group,
+  Loader,
+  SimpleGrid,
+  Stack,
+  Text,
+  Title,
+} from "@mantine/core";
 import { api } from "../../api/client";
 import { useProjectArchiveJob } from "./useProjectArchiveJob";
 import { useProjectReportJob } from "./useProjectReportJob";
@@ -52,16 +63,26 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
   const [archiveDocuments, setArchiveDocuments] = useState(true);
   const [archiveInvoices, setArchiveInvoices] = useState(true);
   const [archiveAssetAttachments, setArchiveAssetAttachments] = useState(false);
-  const [selectedFields, setSelectedFields] = useState<string[]>(CSV_FIELDS.map((f) => f.value));
-  const [includeInvoiceScans, setIncludeInvoiceScans] = useState(false);
+  const [selectedFields, setSelectedFields] = useState<string[]>(
+    CSV_FIELDS.map((f) => f.value),
+  );
+  // Defaults ON: a report generated for an audit is expected to *contain* the
+  // receipts, not merely list their filenames. Leaving this off by default was
+  // reported as "the report didn't include all receipts" — technically the
+  // user's choice, but not one anyone knowingly made.
+  const [includeInvoiceScans, setIncludeInvoiceScans] = useState(true);
   const [includeProjectDocuments, setIncludeProjectDocuments] = useState(false);
 
-  const isPolling = job !== null && (job.status === "queued" || job.status === "running");
-  const isDone = job !== null && (job.status === "succeeded" || job.status === "failed");
+  const isPolling =
+    job !== null && (job.status === "queued" || job.status === "running");
+  const isDone =
+    job !== null && (job.status === "succeeded" || job.status === "failed");
   const archivePolling =
-    archiveJob !== null && (archiveJob.status === "queued" || archiveJob.status === "running");
+    archiveJob !== null &&
+    (archiveJob.status === "queued" || archiveJob.status === "running");
   const archiveDone =
-    archiveJob !== null && (archiveJob.status === "succeeded" || archiveJob.status === "failed");
+    archiveJob !== null &&
+    (archiveJob.status === "succeeded" || archiveJob.status === "failed");
 
   const toggleField = (value: string) => {
     setSelectedFields((prev) =>
@@ -88,10 +109,12 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
               </Alert>
             )}
             <Checkbox
-              label="Include invoice/receipt scans in the PDF"
-              description="Embeds each invoice image directly in the report — makes the PDF larger"
+              label="Include receipt & bank statement scans in the PDF"
+              description="Embeds each scan directly in the report, so it stands alone as an audit document. Uncheck for a smaller PDF that lists them by filename only."
               checked={includeInvoiceScans}
-              onChange={(event) => setIncludeInvoiceScans(event.currentTarget.checked)}
+              onChange={(event) =>
+                setIncludeInvoiceScans(event.currentTarget.checked)
+              }
               mb="sm"
               data-testid="report-include-invoice-scans-checkbox"
             />
@@ -99,12 +122,19 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
               label="Include project documents (proposals, contracts, progress reports) in the PDF"
               description="Appends each document's full pages to the report — can make the PDF much larger."
               checked={includeProjectDocuments}
-              onChange={(event) => setIncludeProjectDocuments(event.currentTarget.checked)}
+              onChange={(event) =>
+                setIncludeProjectDocuments(event.currentTarget.checked)
+              }
               mb="sm"
               data-testid="report-include-project-documents-checkbox"
             />
             <Button
-              onClick={() => void generate(projectId, { includeInvoiceScans, includeProjectDocuments })}
+              onClick={() =>
+                void generate(projectId, {
+                  includeInvoiceScans,
+                  includeProjectDocuments,
+                })
+              }
               loading={submitting}
               data-testid="generate-report-button"
             >
@@ -116,7 +146,9 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
         {isPolling && (
           <Group gap="sm" data-testid="report-job-polling">
             <Loader size="sm" />
-            <Text c="dimmed">{job?.status === "running" ? "Rendering your report…" : "Queued…"}</Text>
+            <Text c="dimmed">
+              {job?.status === "running" ? "Rendering your report…" : "Queued…"}
+            </Text>
           </Group>
         )}
 
@@ -157,8 +189,9 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
         </Title>
         <Text size="sm" c="dimmed" mb="sm">
           The ORIGINAL files, not a rendered PDF — foldered by kind, with a
-          <code> manifest.csv</code> listing every file (size, uploader, timestamp) and the
-          expense ledger as CSV. This is the bundle to keep locally or hand to an auditor.
+          <code> manifest.csv</code> listing every file (size, uploader,
+          timestamp) and the expense ledger as CSV. This is the bundle to keep
+          locally or hand to an auditor.
         </Text>
 
         {!archivePolling && !archiveDone && (
@@ -172,7 +205,9 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
               label="Project documents"
               description="Proposals, contracts, progress reports, other"
               checked={archiveDocuments}
-              onChange={(event) => setArchiveDocuments(event.currentTarget.checked)}
+              onChange={(event) =>
+                setArchiveDocuments(event.currentTarget.checked)
+              }
               mb="xs"
               data-testid="archive-include-documents"
             />
@@ -180,7 +215,9 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
               label="Invoice / receipt scans"
               description="One folder per expense"
               checked={archiveInvoices}
-              onChange={(event) => setArchiveInvoices(event.currentTarget.checked)}
+              onChange={(event) =>
+                setArchiveInvoices(event.currentTarget.checked)
+              }
               mb="xs"
               data-testid="archive-include-invoices"
             />
@@ -188,7 +225,9 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
               label="Asset attachments"
               description="Every file attached to assets on this project — can be very large, so off by default"
               checked={archiveAssetAttachments}
-              onChange={(event) => setArchiveAssetAttachments(event.currentTarget.checked)}
+              onChange={(event) =>
+                setArchiveAssetAttachments(event.currentTarget.checked)
+              }
               mb="sm"
               data-testid="archive-include-asset-attachments"
             />
@@ -201,7 +240,11 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
                 })
               }
               loading={archiveSubmitting}
-              disabled={!archiveDocuments && !archiveInvoices && !archiveAssetAttachments}
+              disabled={
+                !archiveDocuments &&
+                !archiveInvoices &&
+                !archiveAssetAttachments
+              }
               data-testid="generate-archive-button"
             >
               Prepare download
@@ -213,7 +256,9 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
           <Group gap="sm" data-testid="archive-job-polling">
             <Loader size="sm" />
             <Text c="dimmed">
-              {archiveJob?.status === "running" ? "Collecting files…" : "Queued…"}
+              {archiveJob?.status === "running"
+                ? "Collecting files…"
+                : "Queued…"}
             </Text>
           </Group>
         )}
@@ -240,7 +285,8 @@ export function ReportExportTab({ projectId }: ReportExportTabProps) {
         {archiveDone && archiveJob?.status === "failed" && (
           <Stack gap="sm" data-testid="archive-job-failed">
             <Alert color="red" title="Couldn't build the archive">
-              {archiveJob.error || "Something went wrong while collecting the files."}
+              {archiveJob.error ||
+                "Something went wrong while collecting the files."}
             </Alert>
             <Button variant="light" onClick={resetArchive}>
               Try again
