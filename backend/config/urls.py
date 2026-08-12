@@ -10,7 +10,7 @@ test client with an allowed Host header.
 
 from django.contrib import admin
 from django.http import JsonResponse
-from django.urls import include, path
+from django.urls import include, path, re_path
 from rest_framework.routers import DefaultRouter
 
 from apps.accounts.api import (
@@ -23,10 +23,23 @@ from apps.accounts.api import (
     PasswordResetRequestView,
     UserViewSet,
 )
-from apps.assets.api import AssetAttachmentViewSet, AssetResolveView, AssetViewSet
+from apps.assets.api import (
+    AssetAttachmentViewSet,
+    AssetProjectUsageViewSet,
+    AssetResolveView,
+    AssetViewSet,
+)
 from apps.audit.api import AuditLogViewSet
 from apps.catalog.api import CategoryViewSet, LocationViewSet, TagViewSet
+from apps.common.media import ProtectedMediaView
 from apps.dashboard.api import DashboardSummaryView
+from apps.finance.api import (
+    PaymentAttachmentViewSet,
+    PaymentViewSet,
+    PurchaseAttachmentViewSet,
+    PurchaseViewSet,
+)
+from apps.finance.orders import OrderViewSet
 from apps.imports.api import ImportCommitView, ImportDetailView, ImportUploadView
 from apps.imports.exports import AssetExportView
 from apps.jobs.api import JobRetrieveView
@@ -76,12 +89,28 @@ router.register("expense-attachments", ExpenseAttachmentViewSet, basename="expen
 # data for the expense form's category picker (name-to-id resolution) — no
 # create/update/delete, see `apps.projects.api.ExpenseCategoryViewSet`.
 router.register("expense-categories", ExpenseCategoryViewSet, basename="expense-category")
+# M8 Phase 2 — the money layer. Tenant-WIDE tables (a charge spans projects),
+# so unlike every `/projects/...`-nested route these sit at the top level; the
+# project-level visibility rule is applied in the viewset querysets via
+# `apps.finance.permissions.visible_payments`/`visible_purchases`.
+# M8 Phase 2 (rev): the ONE endpoint the expense UI uses — an order with its
+# splits and items, written and read as a single nested document. `payments`/
+# `purchases` below remain for the individual-record operations (attachment
+# upload, targeted edits) that the nested write does not cover.
+router.register("orders", OrderViewSet, basename="order")
+router.register("payments", PaymentViewSet, basename="payment")
+router.register("purchases", PurchaseViewSet, basename="purchase")
+router.register("purchase-attachments", PurchaseAttachmentViewSet, basename="purchase-attachment")
+router.register("payment-attachments", PaymentAttachmentViewSet, basename="payment-attachment")
 router.register("tags", TagViewSet, basename="tag")
 router.register("assets", AssetViewSet, basename="asset")
 # Asset attachment DELETE only — upload/list stay nested under the asset
 # (`POST /assets/{id}/attachments`), same split as `expense-attachments`
 # vs. `POST /expenses/{id}/attachment`.
 router.register("attachments", AssetAttachmentViewSet, basename="attachment")
+# M8: asset-usage PATCH/DELETE only — list/create stay nested under the asset
+# (`GET/POST /assets/{id}/usages`), same split as `attachments` above.
+router.register("asset-usages", AssetProjectUsageViewSet, basename="asset-usage")
 router.register("stock", StockItemViewSet, basename="stock-item")
 router.register("reorder-requests", ReorderRequestViewSet, basename="reorder-request")
 router.register("reservations", ReservationViewSet, basename="reservation")
@@ -112,6 +141,12 @@ def healthz(request):
 
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
+    # M8: uploaded files are no longer served blind by nginx. Django authorizes
+    # the request (logged in, and a member of the tenant that owns the file)
+    # and hands the actual serving back to nginx via `X-Accel-Redirect` — see
+    # `apps.common.media`, and the matching `internal` location in
+    # `docker/nginx/default.conf`.
+    re_path(r"^media/(?P<key>.+)$", ProtectedMediaView.as_view(), name="protected-media"),
     # Mounted at `django-admin/` (not `admin/`) so the SPA owns the `/admin/*`
     # namespace for product-admin screens (categories, locations); see
     # docker/nginx/default.conf. Kept mounted for a future admin strategy even

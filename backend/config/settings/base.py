@@ -72,6 +72,11 @@ INSTALLED_APPS = [
     # (category/location/project name lookups), and `apps.assets` (the
     # assets it creates) — listed after all four.
     "apps.imports",
+    # M8 Phase 2: the money layer (bank charges + vendor receipts). Tenant-wide,
+    # NOT project-scoped — a single charge can pay for several projects, which
+    # is why it is its own app rather than more tables in `apps.projects`.
+    # `projects.Expense` gains an FK pointing here, so this is listed after it.
+    "apps.finance",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
