@@ -5,6 +5,10 @@
 *.pem
 *.key
 secrets/
+# Local-only ops notes (NAS SSH creds, etc.) for operators/agents working on
+# this machine — never meant to leave it, so never committed. See
+# docs/NAS-ACCESS.local.md's own header for what belongs here.
+*.local.md
 
 # --- Python / Django ---
 __pycache__/
