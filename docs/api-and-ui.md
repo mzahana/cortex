@@ -279,8 +279,9 @@ window and the holder's active-reservation cap without a manual cancel.
 | GET | `/api/v1/assets/{id}/expense-prefill` | The asset's purchase facts shaped as an expense draft + **every** attachment as a copy candidate, ranked by `doc_type` (invoice → receipt → PO → quote, then the rest). `asset.view`, read-only |
 | POST | `/api/v1/expenses/{id}/attachment-from-asset` | Copy an asset's PO/invoice onto this expense (`expense.manage` here **and** `asset.view` on the source asset) |
 | GET | `/api/v1/jobs/{id}` | Poll background job (import/label/export) |
-| POST | `/api/v1/imports` | Upload spreadsheet → dry-run validation |
-| POST | `/api/v1/imports/{id}/commit` | Commit mapped import |
+| GET | `/api/v1/exports/asset-import-template.xlsx` | Blank, tenant-aware import template (`import.run`): the exact header row the importer expects + this tenant's categories/locations/projects/custom fields on an `Instructions` sheet |
+| POST | `/api/v1/imports` | Upload spreadsheet → dry-run validation. Optional `create_missing` (any of `category`/`location`/`project`) stops an unknown name being a row error; the dry-run reports them under `missing_references` and creates nothing. `on_duplicate` (`reject` default / `skip` / `create`) decides what happens to a row matching an existing asset's name+category — `reject` makes it a row error so nothing is committed |
+| POST | `/api/v1/imports/{id}/commit` | Commit mapped import. Takes the same `create_missing` (defaults to the dry-run's), creating those config rows in the same all-or-nothing transaction as the assets — gated on `category.manage`/`location.manage`/`tenant.manage`, not just `import.run`. Also takes `on_duplicate` (defaults to the dry-run's) |
 | GET | `/api/v1/exports/assets.csv` | Filtered export |
 | GET | `/api/v1/dashboard/summary` | Aggregates (cached) |
 | GET | `/api/v1/audit` | Audit log (scoped) |

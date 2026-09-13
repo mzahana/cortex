@@ -18,6 +18,115 @@ no longer only a convention: pushing a `vX.Y.Z` tag fails CI's
 matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 `docs/development.md`.
 
+## [Unreleased]
+
+### Added
+
+- **The importer, exporter and template now cover every asset field.** The
+  original bulk importer only understood 8 columns, so a `Serial #`,
+  `Manufacturer`, `Model`, `Description`, `Supplier`, `Purchase cost`,
+  `Currency`, `Purchase date` or `Warranty expiry` typed into a spreadsheet
+  was silently demoted to a per-category custom field, or dropped. All nine
+  are now first-class columns in the template, the CSV export and the
+  importer.
+- **Headers are matched by meaning, not spelling.** `Serial #`, `Serial
+  Number`, `SERIAL-NO` and `S/N` all map to `serial_number`; `Cost` /
+  `Unit Price` to `purchase_cost`; `Vendor` / `Purchased From` to
+  `supplier`; `Make` / `Brand` to `manufacturer`. Anything unrecognised
+  still falls through to custom-field matching and can be re-pointed by
+  hand in the mapping step.
+- Dates must be written `YYYY-MM-DD` (an ambiguous `03/04/2026` is rejected
+  rather than guessed at), costs accept spreadsheet formatting (`$1,999.00`)
+  but reject more than 2 decimal places, and currency codes are normalised
+  to upper case. Values too long for their column are now per-row errors
+  instead of a database error that fails the whole commit with no
+  indication of which cell was at fault.
+- **Downloadable blank Excel import template** (`GET /api/v1/exports/
+  asset-import-template.xlsx`, Admin/`import.run`), with a "Download blank
+  Excel template" button on the Bulk Import screen. The workbook's `Assets`
+  sheet carries exactly the header row the importer expects — the core
+  columns plus one column per custom field defined anywhere in your
+  categories — and an `Instructions` sheet lists your tenant's own valid
+  category, location and project names, the allowed status values, and a
+  per-column "required?"/notes guide. Unlike the CSV export, the columns
+  come from your *configuration* rather than from the assets you already
+  have, so a brand-new tenant with zero assets still gets a complete
+  starting sheet. Filling it in and uploading it round-trips with no manual
+  column mapping.
+- **Drop-downs for category, location, project and status in the import
+  template**, filled from what your tenant has defined right now (a `Lists`
+  sheet wired up through workbook defined names, so long lists and names
+  containing commas both work). They warn rather than block, so you can
+  type a name that isn't in the list yet — Excel asks "continue?", choose
+  Yes — and have it created on import (see the next entry).
+- **Duplicate detection on import, with the choice left to you.** A row
+  whose name + category matches an asset you already have — or an earlier
+  row of the same file — is flagged, and the Import screen shows the
+  offending rows with what they collide with, plus three options: don't
+  import anything until they're fixed (the **new default**), skip the
+  duplicates and import the rest, or import them anyway because they really
+  are separate units. Matching is case-insensitive and trims whitespace;
+  the same name under a different category isn't a duplicate. Costs one
+  extra query for the whole file.
+- **The importer can now create the categories, locations and projects a
+  sheet names but your tenant doesn't have yet.** The dry-run report lists
+  every unknown name under `missing_references`, and the Import screen
+  offers a per-kind checkbox ("Create 2 new locations: Rack 9, Shelf B2")
+  before you commit. Opting in is explicit and per-kind (`create_missing`
+  on `POST /imports` and `POST /imports/{id}/commit`), a dry-run still
+  creates nothing, the new rows are created in the same all-or-nothing
+  transaction as the assets, and existing categories/locations/projects are
+  reused untouched — never renamed, re-parented or deleted. Creating them
+  additionally requires the same `category.manage` / `location.manage` /
+  `tenant.manage` permissions as the admin screens, not just `import.run`.
+  An *ambiguous* name (two categories share it) is still rejected rather
+  than resolved by creating a third.
+- The Bulk Import screen now states, and the template repeats, that
+  importing only **adds** assets — it never edits, overwrites or deletes
+  assets already in Cortex (and so uploading the same file twice creates
+  duplicates).
+
+### Changed
+
+- **Re-uploading a spreadsheet no longer silently creates duplicate
+  assets.** Previously an import blindly inserted every row, so uploading
+  the same sheet twice doubled your inventory with no warning. Duplicates
+  now block the commit until you pick what to do with them
+  (`on_duplicate` on `POST /imports` and `POST /imports/{id}/commit`;
+  `reject` by default, `skip` or `create` to proceed). An automated client
+  that relied on the old behaviour must now send `on_duplicate=create`.
+
+### Fixed
+
+- **The column-mapping dropdown on the Import screen was missing `url`**, a
+  target the server has always supported and one the new template ships as
+  a column — the mapping row for a `url` column rendered blank, and
+  re-submitting the mapping silently dropped it to a custom field.
+- **A multi-sheet `.xlsx` upload now imports the sheet named `Assets`**
+  rather than whichever tab happened to be selected when the file was
+  saved. Excel and Google Sheets both persist the last-viewed tab as the
+  workbook's active sheet, so a template whose instructions tab was left
+  open would previously have been parsed as the asset data. Single-sheet
+  spreadsheets are unaffected.
+- **The nightly backup script (`docker/backup/backup.sh`) now works on a
+  stock Synology Container Manager install.** It previously hardcoded the
+  `docker compose` plugin subcommand, which this DSM's bundled Docker CLI
+  doesn't register (`docker: 'compose' is not a docker command` — only the
+  standalone `docker-compose` binary is present), and assumed `docker` was
+  already on `PATH`, which a DSM Task Scheduler cron job's minimal `PATH`
+  doesn't guarantee. The script now detects both and falls back
+  automatically, so the documented nightly `cortex-nightly-backup` Task
+  Scheduler job (`docs/deployment-runbook.md` §5a) actually produces a dump
+  instead of silently failing every run.
+
+### Docs
+
+- **New step-by-step "Upgrading an existing deployment" guide**
+  (`docs/deployment-runbook.md` §3f), linked from the README, covering
+  backing up first, pulling the new images, recreating containers, verifying
+  the upgrade actually took, and rolling back — written from an actual
+  version upgrade run against a live Synology deploy.
+
 ## [0.16.0] - 2026-08-12
 
 ### Added

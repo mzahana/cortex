@@ -36,14 +36,34 @@ from apps.common.errors import problem_response
 from apps.jobs.models import Job
 
 from .models import ImportJob
-from .permissions import ImportRunPermission
+from .permissions import ImportRunPermission, missing_create_permissions
 from .serializers import (
     ImportCommitRequestSerializer,
     ImportJobSerializer,
     ImportUploadRequestSerializer,
 )
-from .services import save_import_source_file
+from .services import (
+    DEFAULT_ON_DUPLICATE,
+    ON_DUPLICATE_CHOICES,
+    save_import_source_file,
+)
 from .tasks import run_commit, run_dry_run
+
+
+def _create_missing_forbidden(denied: list[str]):
+    """`create_missing` asked for a target this user can't create. A 403,
+    not a 400: the request is well-formed, the caller just lacks
+    `category.manage`/`location.manage`/`tenant.manage` (see
+    `apps.imports.permissions.CREATE_MISSING_PERMISSION_KEYS`)."""
+    return problem_response(
+        status_code=status.HTTP_403_FORBIDDEN,
+        title="Not allowed to create missing references",
+        detail=(
+            "You do not have permission to create new "
+            f"{', '.join(denied)} records. Re-run the import without "
+            "those in `create_missing`, or ask an admin to add them first."
+        ),
+    )
 
 
 class ImportUploadView(APIView):
@@ -55,6 +75,12 @@ class ImportUploadView(APIView):
         serializer.is_valid(raise_exception=True)
         uploaded_file = serializer.validated_data["file"]
         mapping_override: dict = serializer.validated_data.get("mapping") or {}
+        create_missing: list[str] = serializer.validated_data.get("create_missing") or []
+        on_duplicate: str = serializer.validated_data.get("on_duplicate") or DEFAULT_ON_DUPLICATE
+
+        denied = missing_create_permissions(request.user, create_missing)
+        if denied:
+            return _create_missing_forbidden(denied)
 
         import_job = ImportJob.objects.create(
             tenant=request.user.tenant,
@@ -96,6 +122,8 @@ class ImportUploadView(APIView):
                 import_job_id=import_job.id,
                 tenant_id=import_job.tenant_id,
                 mapping_override=mapping_override,
+                create_missing=create_missing,
+                on_duplicate=on_duplicate,
             )
         )
 
@@ -159,6 +187,35 @@ class ImportCommitView(APIView):
         serializer = ImportCommitRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         mapping_override: dict = serializer.validated_data.get("mapping") or {}
+        # Same fallback shape as `mapping` (see the task): an explicit
+        # request value wins, otherwise re-use whatever the last dry-run was
+        # asked to create, so ticking the boxes, re-validating, then
+        # committing doesn't silently drop the choice. Either way the
+        # permission check below runs against what will ACTUALLY be created
+        # — a colleague committing someone else's import is re-checked, not
+        # trusted because the dry-run's author was allowed.
+        create_missing: list[str] = serializer.validated_data.get("create_missing") or (
+            (import_job.report or {}).get("create_missing") or []
+        )
+
+        # Same "explicit value wins, else re-use the dry-run's" fallback as
+        # `mapping`/`create_missing`: the user picked how to handle
+        # duplicates while looking at the dry-run report, and an empty
+        # commit body must not silently revert that to the default.
+        # Presence in `request.data`, not the serializer's default (which is
+        # always populated and would defeat the fallback entirely). The
+        # value itself is already validated by the `ChoiceField` above.
+        on_duplicate: str = (
+            serializer.validated_data["on_duplicate"]
+            if "on_duplicate" in request.data
+            else ((import_job.report or {}).get("on_duplicate") or DEFAULT_ON_DUPLICATE)
+        )
+        if on_duplicate not in ON_DUPLICATE_CHOICES:  # pragma: no cover - defensive
+            on_duplicate = DEFAULT_ON_DUPLICATE
+
+        denied = missing_create_permissions(request.user, create_missing)
+        if denied:
+            return _create_missing_forbidden(denied)
 
         job = Job.objects.create(
             tenant=request.user.tenant,
@@ -174,6 +231,9 @@ class ImportCommitView(APIView):
                 import_job_id=import_job.id,
                 tenant_id=import_job.tenant_id,
                 mapping_override=mapping_override,
+                create_missing=create_missing,
+                on_duplicate=on_duplicate,
+                actor_id=request.user.id,
             )
         )
 

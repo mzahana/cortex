@@ -59,7 +59,9 @@ Acceptance criteria are given for MVP items.
 
 ### F11. Bulk import/export
 - CSV/Excel import with column mapping + validation preview; CSV export of filtered lists. Runs as a background job for large files.
-- **Acceptance:** A messy spreadsheet imports via a mapping step with a dry-run error report; valid rows create assets (incl. custom fields); export round-trips.
+- A **downloadable blank template** (`GET /exports/asset-import-template.xlsx`) carries the exact header row plus drop-downs for category/location/project/status built from the tenant's own config, so a sheet can be filled in without guessing names.
+- Import is **additive only** — it creates assets and never edits or deletes existing ones. Two guards on top of that: a row naming a category/location/project the tenant doesn't have can be **created on request** (`create_missing`, per kind, gated on the same permissions as the admin screens), and a row matching an existing asset's name+category is flagged as a **duplicate** for the user to reject / skip / import anyway (`on_duplicate`, rejecting by default).
+- **Acceptance:** A messy spreadsheet imports via a mapping step with a dry-run error report; valid rows create assets (incl. custom fields); export round-trips; re-uploading the same sheet does not silently duplicate anything.
 
 ## Phase 2 — "operate & maintain"
 - Maintenance & calibration scheduling with due/overdue flags and reminders (data model is in MVP; scheduling UI + Beat scans here).

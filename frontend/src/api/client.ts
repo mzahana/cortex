@@ -50,8 +50,10 @@ import type {
   ExpenseCategoryListParams,
   ExpenseListParams,
   ExpenseWritePayload,
+  ImportCreatableTarget,
   ImportJob,
   ImportMapping,
+  ImportOnDuplicate,
   Job,
   LabelGenerateRequest,
   ListParams,
@@ -1506,12 +1508,21 @@ export const api = {
    * and returns immediately (`202`) with the new `ImportJob` — poll
    * `getImport` until its `status` lands on `dry_run_succeeded`/
    * `dry_run_failed`. */
-  async createImport(file: File, mapping?: ImportMapping): Promise<ImportJob> {
+  async createImport(
+    file: File,
+    mapping?: ImportMapping,
+    createMissing?: ImportCreatableTarget[],
+    onDuplicate?: ImportOnDuplicate,
+  ): Promise<ImportJob> {
     const formData = new FormData();
     formData.append("file", file);
     if (mapping && Object.keys(mapping).length > 0) {
       formData.append("mapping", JSON.stringify(mapping));
     }
+    if (createMissing && createMissing.length > 0) {
+      formData.append("create_missing", JSON.stringify(createMissing));
+    }
+    if (onDuplicate) formData.append("on_duplicate", onDuplicate);
 
     const headers = new Headers();
     const token = readCookie(CSRF_COOKIE_NAME);
@@ -1544,11 +1555,22 @@ export const api = {
    * server-side: if the re-validation at commit time finds ANY invalid row,
    * nothing is created and the job lands on `commit_failed` with the same
    * per-row report. */
-  async commitImport(id: number, mapping?: ImportMapping): Promise<ImportJob> {
-    return request<ImportJob>(`/imports/${id}/commit`, {
-      method: "POST",
-      body: mapping && Object.keys(mapping).length > 0 ? { mapping } : {},
-    });
+  async commitImport(
+    id: number,
+    mapping?: ImportMapping,
+    createMissing?: ImportCreatableTarget[],
+    onDuplicate?: ImportOnDuplicate,
+  ): Promise<ImportJob> {
+    const body: Record<string, unknown> = {};
+    if (mapping && Object.keys(mapping).length > 0) body.mapping = mapping;
+    // Sent explicitly even when empty, so un-ticking the boxes after a
+    // dry-run that HAD them ticked actually takes effect — the server falls
+    // back to the dry-run's choice only when the key is absent.
+    if (createMissing) body.create_missing = createMissing;
+    // Same reason as `create_missing`: sent explicitly so the commit uses
+    // what the user is looking at, not the dry-run's stored fallback.
+    if (onDuplicate) body.on_duplicate = onDuplicate;
+    return request<ImportJob>(`/imports/${id}/commit`, { method: "POST", body });
   },
 
   /** `GET /api/v1/exports/assets.csv` — requires `asset.export`, honors the
@@ -1560,6 +1582,18 @@ export const api = {
    * itself. */
   exportAssetsCsvUrl(params?: AssetListParams): string {
     return `${API_BASE}/exports/assets.csv${buildQuery(params)}`;
+  },
+
+  /** `GET /api/v1/exports/asset-import-template.xlsx` — requires
+   * `import.run` (Admin, tenant-wide). A BLANK workbook whose header row is
+   * the import schema, plus one column per custom field this tenant's
+   * categories define, and an `Instructions` sheet listing the tenant's own
+   * valid category/location/project/status values
+   * (`apps.imports.import_template`). Same "build the URL, let the browser
+   * fetch it" shape as `exportAssetsCsvUrl` — it's a streamed file download
+   * riding the session cookie, not a JSON call. */
+  importTemplateXlsxUrl(): string {
+    return `${API_BASE}/exports/asset-import-template.xlsx`;
   },
 
   // --- Notification preferences (docs/api-and-ui.md "Per-user prefs";

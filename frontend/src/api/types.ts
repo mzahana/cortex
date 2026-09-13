@@ -1208,14 +1208,30 @@ export type ImportJobStatus =
  * header omitted falls back to the server's auto-detected default. */
 export type ImportMapping = Record<string, string>;
 
+/** Every core mapping target the server accepts
+ * (`apps.imports.services.CORE_TARGETS`), in the template's column order.
+ * Must stay in step: a target missing here leaves the mapping Select with
+ * no option matching the server's own resolved mapping, which blanks that
+ * row of the mapping table and silently demotes the column to a custom
+ * field if the user re-submits. */
 export const IMPORT_CORE_TARGETS = [
   "name",
   "category",
+  "description",
+  "serial_number",
+  "manufacturer",
+  "model",
   "location",
   "project",
   "status",
   "condition",
   "tags",
+  "purchase_date",
+  "purchase_cost",
+  "currency",
+  "supplier",
+  "warranty_expiry",
+  "url",
 ] as const;
 export type ImportCoreTarget = (typeof IMPORT_CORE_TARGETS)[number];
 /** Every valid mapping target — the 7 core fields above, plus `"custom"`
@@ -1241,8 +1257,43 @@ export interface ImportReportRow {
     condition: string;
     custom_field_values: Record<string, unknown>;
   };
+  /** `{target: raw spreadsheet text}` for each `category`/`location`/
+   * `project` cell naming something this tenant doesn't have yet. Present
+   * whether or not the caller opted in to creating them. */
+  unresolved_references: Record<string, string>;
+  /** Existing assets with the same name + category as this row. */
+  duplicate_of_asset_ids: number[];
+  /** An EARLIER row of this same file with the same name + category. */
+  duplicate_of_row: number | null;
+  /** `on_duplicate: "skip"` — valid, but deliberately not created. */
+  skipped: boolean;
   errors: Record<string, unknown>;
 }
+
+/** What to do with a row naming an asset the tenant already has
+ * (`apps.imports.services.annotate_duplicates`). `reject` is the default:
+ * the row becomes an error, so the all-or-nothing commit creates nothing
+ * until a human decides. */
+export const IMPORT_ON_DUPLICATE_CHOICES = ["reject", "skip", "create"] as const;
+export type ImportOnDuplicate = (typeof IMPORT_ON_DUPLICATE_CHOICES)[number];
+
+/** One flagged row in `ImportReport.duplicate_rows`. */
+export interface ImportDuplicateRow {
+  row_number: number;
+  name: string | null;
+  category: string | null;
+  existing_asset_ids: number[];
+  duplicate_of_row: number | null;
+  skipped: boolean;
+}
+
+/** The three reference kinds an import may be allowed to CREATE
+ * (`apps.imports.services.CREATABLE_TARGETS`). */
+export const IMPORT_CREATABLE_TARGETS = ["category", "location", "project"] as const;
+export type ImportCreatableTarget = (typeof IMPORT_CREATABLE_TARGETS)[number];
+
+/** `{target: [names]}`, one key per `IMPORT_CREATABLE_TARGET`. */
+export type ImportReferenceNames = Record<ImportCreatableTarget, string[]>;
 
 /** `ImportJob.report` (`apps.imports.services.build_report`/
  * `commit_import_rows`) — the latest dry-run OR commit-pass validation
@@ -1253,6 +1304,19 @@ export interface ImportReport {
   total_rows: number;
   valid_count: number;
   invalid_count: number;
+  /** Names the file references that don't exist yet — what a commit WOULD
+   * create if asked. A dry-run never creates them. */
+  missing_references: ImportReferenceNames;
+  /** Which targets this pass was allowed to create. */
+  create_missing: ImportCreatableTarget[];
+  /** What a COMMIT actually created (always empty on a dry-run report). */
+  created_references: ImportReferenceNames;
+  /** How this pass was told to treat duplicates. */
+  on_duplicate: ImportOnDuplicate;
+  duplicate_count: number;
+  duplicate_rows: ImportDuplicateRow[];
+  /** Rows NOT created because they were duplicates (`on_duplicate: "skip"`). */
+  skipped_count: number;
 }
 
 /** Minimal nested view of the underlying `Job` (`apps.imports.serializers.

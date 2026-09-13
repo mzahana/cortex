@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../api/client";
-import type { ImportJob, ImportMapping } from "../../api/types";
+import type {
+  ImportCreatableTarget,
+  ImportJob,
+  ImportMapping,
+  ImportOnDuplicate,
+} from "../../api/types";
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -24,10 +29,19 @@ interface UseImportJobResult {
   /** `POST /api/v1/imports` (multipart upload + optional mapping override),
    * then starts polling `GET /api/v1/imports/{id}` until the dry-run lands
    * on `dry_run_succeeded`/`dry_run_failed`. */
-  upload: (file: File, mapping?: ImportMapping) => Promise<void>;
+  upload: (
+    file: File,
+    mapping?: ImportMapping,
+    createMissing?: ImportCreatableTarget[],
+    onDuplicate?: ImportOnDuplicate,
+  ) => Promise<void>;
   /** `POST /api/v1/imports/{id}/commit` against the CURRENT `importJob`,
    * then polls until `committed`/`commit_failed`. */
-  commit: (mapping?: ImportMapping) => Promise<void>;
+  commit: (
+    mapping?: ImportMapping,
+    createMissing?: ImportCreatableTarget[],
+    onDuplicate?: ImportOnDuplicate,
+  ) => Promise<void>;
   /** Clears all state so the wizard can start over with a fresh file. */
   reset: () => void;
 }
@@ -51,31 +65,48 @@ export function useImportJob(): UseImportJobResult {
       ? (err.problem.detail ?? err.problem.title)
       : "Unable to reach the server. Please try again.";
 
-  const upload = useCallback(async (file: File, mapping?: ImportMapping) => {
-    const requestId = ++requestIdRef.current;
-    setSubmitting(true);
-    setError(null);
-    setImportJob(null);
-    try {
-      const created = await api.createImport(file, mapping);
-      if (requestId !== requestIdRef.current) return; // superseded — drop
-      setImportJob(created);
-    } catch (err) {
-      if (requestId !== requestIdRef.current) return;
-      setError(toMessage(err));
-    } finally {
-      if (requestId === requestIdRef.current) setSubmitting(false);
-    }
-  }, []);
+  const upload = useCallback(
+    async (
+      file: File,
+      mapping?: ImportMapping,
+      createMissing?: ImportCreatableTarget[],
+      onDuplicate?: ImportOnDuplicate,
+    ) => {
+      const requestId = ++requestIdRef.current;
+      setSubmitting(true);
+      setError(null);
+      setImportJob(null);
+      try {
+        const created = await api.createImport(file, mapping, createMissing, onDuplicate);
+        if (requestId !== requestIdRef.current) return; // superseded — drop
+        setImportJob(created);
+      } catch (err) {
+        if (requestId !== requestIdRef.current) return;
+        setError(toMessage(err));
+      } finally {
+        if (requestId === requestIdRef.current) setSubmitting(false);
+      }
+    },
+    [],
+  );
 
   const commit = useCallback(
-    async (mapping?: ImportMapping) => {
+    async (
+      mapping?: ImportMapping,
+      createMissing?: ImportCreatableTarget[],
+      onDuplicate?: ImportOnDuplicate,
+    ) => {
       if (!importJob) return;
       const requestId = ++requestIdRef.current;
       setSubmitting(true);
       setError(null);
       try {
-        const updated = await api.commitImport(importJob.id, mapping);
+        const updated = await api.commitImport(
+          importJob.id,
+          mapping,
+          createMissing,
+          onDuplicate,
+        );
         if (requestId !== requestIdRef.current) return; // superseded — drop
         setImportJob(updated);
       } catch (err) {

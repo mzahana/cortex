@@ -42,6 +42,7 @@ from apps.finance.api import (
 from apps.finance.orders import OrderViewSet
 from apps.imports.api import ImportCommitView, ImportDetailView, ImportUploadView
 from apps.imports.exports import AssetExportView
+from apps.imports.import_template import AssetImportTemplateView
 from apps.jobs.api import JobRetrieveView
 from apps.labels.api import LabelGenerateView
 from apps.notifications.api import (
@@ -238,6 +239,11 @@ urlpatterns = [
         name="import-commit",
     ),
     path("api/v1/exports/assets.csv", AssetExportView.as_view(), name="export-assets-csv"),
+    path(
+        "api/v1/exports/asset-import-template.xlsx",
+        AssetImportTemplateView.as_view(),
+        name="export-asset-import-template",
+    ),
     path("api/v1/", include(router.urls)),
     path("api/v1/", include(checkout_router.urls)),
 ]

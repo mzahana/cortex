@@ -19,12 +19,13 @@ from __future__ import annotations
 from celery import shared_task
 from django.core.files.storage import default_storage
 
+from apps.accounts.models import User
 from apps.dashboard.cache import invalidate_tenant_dashboard
 from apps.tenancy.context import tenant_context
 from apps.tenancy.models import Tenant
 
 from .models import ImportJob
-from .services import build_report, commit_import_rows
+from .services import DEFAULT_ON_DUPLICATE, build_report, commit_import_rows
 
 # `Job.mark_succeeded` requires `result_key`/`result_filename`/
 # `result_content_type` (T4.5's shape: it always represents a downloadable
@@ -44,7 +45,15 @@ _NO_RESULT_BLOB = {"result_key": "", "result_filename": "", "result_content_type
     name="apps.imports.run_dry_run",
     max_retries=0,  # deterministic (bad file/mapping/data) — a retry would fail identically.
 )
-def run_dry_run(self, *, import_job_id: int, tenant_id: int, mapping_override: dict) -> None:
+def run_dry_run(
+    self,
+    *,
+    import_job_id: int,
+    tenant_id: int,
+    mapping_override: dict,
+    create_missing: list[str] | None = None,
+    on_duplicate: str = DEFAULT_ON_DUPLICATE,
+) -> None:
     with tenant_context(tenant_id):
         try:
             import_job = ImportJob.objects.select_related("dry_run_job").get(pk=import_job_id)
@@ -65,6 +74,8 @@ def run_dry_run(self, *, import_job_id: int, tenant_id: int, mapping_override: d
                     source_stream=fileobj,
                     filename=import_job.source_filename,
                     mapping_override=mapping_override,
+                    create_missing=create_missing or (),
+                    on_duplicate=on_duplicate,
                 )
 
             import_job.mapping = report["resolved_mapping"]
@@ -86,7 +97,16 @@ def run_dry_run(self, *, import_job_id: int, tenant_id: int, mapping_override: d
     name="apps.imports.run_commit",
     max_retries=0,
 )
-def run_commit(self, *, import_job_id: int, tenant_id: int, mapping_override: dict) -> None:
+def run_commit(
+    self,
+    *,
+    import_job_id: int,
+    tenant_id: int,
+    mapping_override: dict,
+    create_missing: list[str] | None = None,
+    on_duplicate: str = DEFAULT_ON_DUPLICATE,
+    actor_id: int | None = None,
+) -> None:
     with tenant_context(tenant_id):
         try:
             import_job = ImportJob.objects.select_related("commit_job").get(pk=import_job_id)
@@ -111,11 +131,27 @@ def run_commit(self, *, import_job_id: int, tenant_id: int, mapping_override: di
                     source_stream=fileobj,
                     filename=import_job.source_filename,
                     mapping_override=override,
+                    create_missing=create_missing or (),
+                    on_duplicate=on_duplicate,
+                    # Only used for the audit entry a newly-created
+                    # `Project` writes; resolved here (in the worker) rather
+                    # than passed as an object, since Celery kwargs must be
+                    # JSON-serializable.
+                    actor=(
+                        User.objects.filter(pk=actor_id).first()
+                        if actor_id is not None
+                        else import_job.created_by
+                    ),
                 )
 
             import_job.report = report
             import_job.mapping = report["resolved_mapping"]
-            if created_ids:
+            # Not `if created_ids:` — under `on_duplicate="skip"` a file
+            # whose rows were ALL already in Cortex legitimately creates
+            # nothing and is still a success ("0 created, 4 skipped"), which
+            # the old condition would have reported as a failed commit.
+            # A file with no rows at all stays a failure, as before.
+            if report["invalid_count"] == 0 and report["total_rows"] > 0:
                 import_job.status = ImportJob.Status.COMMITTED
                 import_job.created_asset_ids = created_ids
                 import_job.save(
@@ -138,6 +174,8 @@ def run_commit(self, *, import_job_id: int, tenant_id: int, mapping_override: di
                         error=(
                             f"{report['invalid_count']} row(s) failed validation; "
                             "no assets were created (all-or-nothing commit)."
+                            if report["invalid_count"]
+                            else "The file contained no data rows."
                         )
                     )
         except Exception as exc:  # noqa: BLE001

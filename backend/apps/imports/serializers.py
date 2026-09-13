@@ -10,7 +10,13 @@ from rest_framework import serializers
 from apps.jobs.models import Job
 
 from .models import ImportJob
-from .services import SUPPORTED_EXTENSIONS, file_extension
+from .services import (
+    CREATABLE_TARGETS,
+    DEFAULT_ON_DUPLICATE,
+    ON_DUPLICATE_CHOICES,
+    SUPPORTED_EXTENSIONS,
+    file_extension,
+)
 
 
 class MappingField(serializers.Field):
@@ -43,6 +49,61 @@ class MappingField(serializers.Field):
 
     def to_representation(self, value: Any) -> Any:
         return value
+
+
+class CreateMissingField(serializers.Field):
+    """The `create_missing` opt-in: which of `category`/`location`/`project`
+    the importer may CREATE when a row names one the tenant doesn't have
+    (`apps.imports.services`'s module docstring).
+
+    Accepted in the same two shapes as `MappingField`, and for the same
+    reason — a real JSON array on the JSON-bodied commit endpoint, or a
+    JSON-encoded string field on the multipart upload. A bare `true` is
+    also accepted as "all three", since that's the obvious thing a client
+    sends for a single "create anything missing" checkbox.
+    """
+
+    def to_internal_value(self, data: Any) -> list[str]:
+        if data in (None, "", False):
+            return []
+        if data is True or data in ("true", "True"):
+            return sorted(CREATABLE_TARGETS)
+        if isinstance(data, (str, bytes)):
+            try:
+                data = json.loads(data)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError("'create_missing' must be valid JSON.") from None
+        if data is True:
+            return sorted(CREATABLE_TARGETS)
+        if not isinstance(data, (list, tuple)):
+            raise serializers.ValidationError(
+                "'create_missing' must be a list of " f"{', '.join(sorted(CREATABLE_TARGETS))}."
+            )
+        targets = [str(item) for item in data]
+        unknown = sorted(set(targets) - CREATABLE_TARGETS)
+        if unknown:
+            raise serializers.ValidationError(
+                f"Unknown create_missing target(s): {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(CREATABLE_TARGETS))}."
+            )
+        return sorted(set(targets))
+
+    def to_representation(self, value: Any) -> Any:
+        return value
+
+
+def _on_duplicate_field():
+    """`on_duplicate` — what to do with a row that names an asset the tenant
+    already has (`apps.imports.services.annotate_duplicates`). A plain
+    `ChoiceField` works in both request shapes (multipart form value and
+    JSON string alike), unlike `mapping`/`create_missing`, because the value
+    is a bare string rather than JSON.
+    """
+    return serializers.ChoiceField(
+        choices=sorted(ON_DUPLICATE_CHOICES),
+        required=False,
+        default=DEFAULT_ON_DUPLICATE,
+    )
 
 
 class ImportJobJobSerializer(serializers.ModelSerializer):
@@ -89,6 +150,8 @@ class ImportUploadRequestSerializer(serializers.Serializer):
 
     file = serializers.FileField()
     mapping = MappingField(required=False, allow_null=True)
+    create_missing = CreateMissingField(required=False, allow_null=True)
+    on_duplicate = _on_duplicate_field()
 
     def validate_file(self, uploaded_file):
         ext = file_extension(uploaded_file.name or "")
@@ -110,3 +173,5 @@ class ImportCommitRequestSerializer(serializers.Serializer):
     """
 
     mapping = MappingField(required=False, allow_null=True)
+    create_missing = CreateMissingField(required=False, allow_null=True)
+    on_duplicate = _on_duplicate_field()

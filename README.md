@@ -191,6 +191,12 @@ That gets you `latest`, which always points at the newest **released** version
 `CORTEX_IMAGE_TAG=0.12.0`. Use `docker compose ... up -d` — not `restart` — when
 upgrading, or Docker keeps running the old image.
 
+**Already running Cortex and upgrading to a newer release?** Your database,
+media, and `.env` are never touched by an upgrade — only the app images
+change. **➡️ [Upgrading an existing deployment, §3f](docs/deployment-runbook.md#3f-upgrading-an-existing-deployment-new-release-keep-your-data)**
+walks through it step by step, including taking a backup first and how to
+roll back if something goes wrong.
+
 You don't have to open any ports on your router — Cortex reaches the internet
 through a secure outbound tunnel, and your connection is encrypted (HTTPS)
 automatically.

@@ -24,8 +24,8 @@ Revisit as a background job only if a future tenant's asset count grows
 far past the M1-proven range.
 
 **Round-trip with the importer (T6.1 exit criterion).** Columns are exactly
-`apps.imports.services`'s expected import schema: `name, category, location,
-status, condition, project, tags`, plus one column per DISTINCT
+`apps.imports.services`'s expected import schema (every scalar `Asset`
+column — see `CORE_EXPORT_COLUMNS`), plus one column per DISTINCT
 custom-field KEY used by ANY exported asset's category (a category whose
 fields a given row doesn't have simply gets a blank cell for that column) —
 re-importing an unmodified export via `POST /imports` (auto-mapping,
@@ -49,14 +49,29 @@ from apps.tenancy.context import tenant_context
 
 from .permissions import AssetExportPermission
 
+#: Every scalar `Asset` column, grouped the way a person reads an inventory
+#: sheet (identity -> where/who -> state -> purchase -> link) rather than in
+#: model-definition order. This IS the import schema (`apps.imports.
+#: services.CORE_TARGETS`) and the downloadable template's header row, so
+#: an export re-imports cleanly and a filled template imports with no manual
+#: mapping.
 CORE_EXPORT_COLUMNS = [
     "name",
     "category",
+    "description",
+    "serial_number",
+    "manufacturer",
+    "model",
     "location",
+    "project",
     "status",
     "condition",
-    "project",
     "tags",
+    "purchase_date",
+    "purchase_cost",
+    "currency",
+    "supplier",
+    "warranty_expiry",
     "url",
 ]
 
@@ -128,11 +143,20 @@ class AssetExportView(generics.GenericAPIView):
                     row = [
                         asset.name,
                         asset.category.name if asset.category else "",
+                        asset.description,
+                        asset.serial_number,
+                        asset.manufacturer,
+                        asset.model,
                         asset.location.name if asset.location else "",
+                        asset.project.name if asset.project else "",
                         asset.status,
                         asset.condition,
-                        asset.project.name if asset.project else "",
                         ", ".join(sorted(link.tag.name for link in asset.tag_links.all())),
+                        asset.purchase_date.isoformat() if asset.purchase_date else "",
+                        asset.purchase_cost if asset.purchase_cost is not None else "",
+                        asset.currency,
+                        asset.supplier,
+                        asset.warranty_expiry.isoformat() if asset.warranty_expiry else "",
                         asset.url,
                     ]
                     for key in custom_columns:

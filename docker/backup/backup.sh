@@ -65,6 +65,34 @@ POSTGRES_USER="$(grep -E '^POSTGRES_USER=' "${ENV_FILE}" | tail -n1 | cut -d= -f
 [ -n "${POSTGRES_DB}" ] || fail "POSTGRES_DB not set in ${ENV_FILE}"
 [ -n "${POSTGRES_USER}" ] || fail "POSTGRES_USER not set in ${ENV_FILE}"
 
+# --- Docker/Compose command detection -----------------------------------
+# A DSM Task Scheduler cron job's PATH is minimal (often just
+# /usr/bin:/bin:/usr/sbin:/sbin) and doesn't include Synology Container
+# Manager's binaries — see docs/deployment-runbook.md §3e. Add the known
+# install path if `docker` isn't already resolvable.
+if ! command -v docker >/dev/null 2>&1; then
+  for candidate in /usr/local/bin/docker /var/packages/ContainerManager/target/usr/bin/docker; do
+    if [ -x "${candidate}" ]; then
+      export PATH="$(dirname "${candidate}"):${PATH}"
+      break
+    fi
+  done
+fi
+command -v docker >/dev/null 2>&1 || fail "docker binary not found (checked PATH and known Synology Container Manager paths)"
+
+# Some Synology Container Manager builds ship only the standalone
+# `docker-compose` binary and don't register `compose` as a docker CLI
+# subcommand (`docker: 'compose' is not a docker command`) — prefer the
+# `docker compose` plugin where available and fall back transparently so
+# this script works on both a stock Compose-plugin install and Synology's.
+if docker compose version >/dev/null 2>&1; then
+  dc() { docker compose "$@"; }
+elif command -v docker-compose >/dev/null 2>&1; then
+  dc() { docker-compose "$@"; }
+else
+  fail "neither 'docker compose' nor 'docker-compose' is available"
+fi
+
 # shellcheck disable=SC2206
 COMPOSE_ARGS=(${COMPOSE_FILES})
 if [ -n "${COMPOSE_PROJECT_NAME}" ]; then
@@ -76,7 +104,7 @@ log "Starting backup: db=${POSTGRES_DB} user=${POSTGRES_USER} project_dir=${PROJ
 # Confirm the postgres service is actually up before attempting the dump —
 # fail loudly (and non-zero) rather than silently writing an empty/broken
 # dump file that a later restore would fail on.
-if ! docker compose "${COMPOSE_ARGS[@]}" ps --status running "${POSTGRES_SERVICE}" \
+if ! dc "${COMPOSE_ARGS[@]}" ps --status running "${POSTGRES_SERVICE}" \
       | grep -q "${POSTGRES_SERVICE}"; then
   fail "${POSTGRES_SERVICE} service is not running — aborting backup"
 fi
@@ -91,19 +119,19 @@ TMP_FILE="${DAILY_FILE}.in-progress"
 # simpler to eyeball/grep but loses those restore-flexibility properties and
 # is slower to restore on anything beyond toy data volumes — not worth the
 # tradeoff here since pg_restore is already available in the same image.
-if ! docker compose "${COMPOSE_ARGS[@]}" exec -T "${POSTGRES_SERVICE}" \
+if ! dc "${COMPOSE_ARGS[@]}" exec -T "${POSTGRES_SERVICE}" \
       pg_dump -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Fc -f "/tmp/cortex-${DATE_STAMP}.dump"; then
   fail "pg_dump failed"
 fi
 
-if ! docker compose "${COMPOSE_ARGS[@]}" cp \
+if ! dc "${COMPOSE_ARGS[@]}" cp \
       "${POSTGRES_SERVICE}:/tmp/cortex-${DATE_STAMP}.dump" "${TMP_FILE}"; then
   fail "failed to copy dump out of the ${POSTGRES_SERVICE} container"
 fi
 
 # Clean up the in-container temp file regardless of the copy's outcome above
 # having already been checked.
-docker compose "${COMPOSE_ARGS[@]}" exec -T "${POSTGRES_SERVICE}" \
+dc "${COMPOSE_ARGS[@]}" exec -T "${POSTGRES_SERVICE}" \
   rm -f "/tmp/cortex-${DATE_STAMP}.dump" || log "WARNING: could not remove in-container temp dump (non-fatal)"
 
 [ -s "${TMP_FILE}" ] || fail "dump file is empty or missing after copy: ${TMP_FILE}"

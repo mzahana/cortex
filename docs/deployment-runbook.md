@@ -443,12 +443,12 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 docker compose ps
 ```
 
-**Updating a running deploy** (new image pushed to `main`): re-run steps 1-2
-above — `pull` fetches the new `latest` (or pinned `CORTEX_IMAGE_TAG`) image,
-then `up -d` recreates only the containers whose image actually changed
-(`restart` does **not** pick up a newly pulled image — see the root
-`CLAUDE.md` gotcha on `up -d` vs `restart`, which applies here exactly the
-same as it does to a locally built image).
+**Updating a running deploy to a new release:** see §3f below for the full
+step-by-step (backup, pull, recreate, verify, rollback) — the short version
+is re-running steps 1-2 above (`pull` fetches the new `latest`/pinned image,
+`up -d` recreates only the containers whose image actually changed —
+`restart` does **not** pick up a newly pulled image, see the root
+`CLAUDE.md` gotcha), but always take a backup first.
 
 **Create the first tenant + admin user.** There is a demo-only seed command
 (`python manage.py seed_t0_6`) used in dev/CI that creates two throwaway
@@ -639,6 +639,90 @@ would be correct there instead.
   reload, not a new image) after editing `docker/nginx/nginx.conf` or
   `docker/nginx/default.conf`.
 
+### 3f. Upgrading an existing deployment (new release, keep your data)
+
+The whole point of the pull-based deploy (§3a) is that upgrading never
+touches your database, media, or `.env` — only the `mzahana/cortex`/
+`mzahana/cortex-nginx` image versions change. Every command below was run
+against a real Synology deploy to write this section. **Use full binary
+paths and `sudo` on Synology** — see §3e's "No `docker`/`docker compose` in
+the SSH user's PATH" note; the commands below assume you've either exported
+`alias docker-compose='sudo /usr/local/bin/docker-compose'` for your shell
+session or substitute the full paths yourself.
+
+```bash
+cd /volume1/docker/cortex
+
+# 1. Back up the database first. Reuses the same script/rotation as the
+#    nightly job (§5) — name the file after the version you're upgrading
+#    TO, so it's obvious later which backup corresponds to which rollback
+#    point (this matches the naming already used for past upgrades on a
+#    real deploy, e.g. `cortex-pre-0.16.0-<timestamp>.dump`):
+sudo PROJECT_DIR=/volume1/docker/cortex BACKUP_DIR=/volume1/docker/cortex/backups \
+  bash docker/backup/backup.sh
+#    Copy (don't move) the resulting backups/daily/cortex-<timestamp>.dump
+#    to backups/cortex-pre-<new-version>-<timestamp>.dump so the nightly
+#    rotation (§5a, keeps 7 daily) never deletes your pre-upgrade point.
+
+# 2. Tag the currently-running images as a rollback point, in case the new
+#    release needs to be backed out:
+sudo /usr/local/bin/docker tag mzahana/cortex:latest       mzahana/cortex:pre-upgrade-rollback
+sudo /usr/local/bin/docker tag mzahana/cortex-nginx:latest mzahana/cortex-nginx:pre-upgrade-rollback
+
+# 3. Pull the new images (defaults to `latest`; set CORTEX_IMAGE_TAG in
+#    .env first if you want to pin a specific released version instead):
+sudo /usr/local/bin/docker-compose -f docker-compose.yml -f docker-compose.prod.yml pull
+
+# 4. Recreate only the containers whose image changed. `migrate` runs first
+#    (idempotent — safe even if there's nothing new to apply) and web/
+#    worker/beat/nginx wait on it, exactly like first-time bring-up (§3c):
+sudo /usr/local/bin/docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+**Verify the upgrade actually took:**
+
+```bash
+# All services Up, web/nginx/postgres/redis "(healthy)":
+sudo /usr/local/bin/docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps
+
+# migrate applied cleanly (look for "Applying ... OK" lines, no traceback):
+sudo /usr/local/bin/docker logs cortex-migrate-1 --tail 30
+
+# App and edge health endpoints:
+sudo /usr/local/bin/docker exec cortex-web-1 wget -qO- http://localhost:8000/healthz
+sudo /usr/local/bin/docker exec cortex-nginx-1 wget -qO- http://127.0.0.1/healthz
+
+# Confirms the served frontend bundle is actually the new version (matches
+# frontend/package.json's `version` — see the root CLAUDE.md versioning
+# section):
+sudo /usr/local/bin/docker exec cortex-nginx-1 sh -c \
+  "grep -ro '\"[0-9]*\.[0-9]*\.[0-9]*\"' /usr/share/nginx/html/static-assets/index-*.js | sort -u"
+```
+
+Then log in and click through the app once — the automated checks above
+confirm the containers are healthy, not that a given feature actually works
+end to end.
+
+**Rolling back**, if something's wrong: point the compose file at the
+rollback tags instead of pulling again — either set `CORTEX_IMAGE_TAG=pre-
+upgrade-rollback` in `.env` temporarily and re-run step 4's `up -d`, or
+`docker tag mzahana/cortex:pre-upgrade-rollback mzahana/cortex:latest`
+(and the nginx equivalent) then `up -d`. If the new release's migrations
+also need reverting (rare — check `CHANGELOG.md` for the release; most
+Cortex migrations are additive), restore the pre-upgrade dump from step 1
+using the restore procedure in §5d.
+
+**Don't hand-edit `docker-compose.yml` into a "resolved" form** (e.g. by
+redirecting `docker compose config` output over it, or pasting real secret
+values into the `environment:` blocks in place of `${VAR}` references) —
+it defeats the `env_file: .env` indirection the repo relies on to keep
+secrets in exactly one place, and it silently diverges from what `git
+status` on this checkout would otherwise show you as clean. If you ever
+find `docker-compose.yml` modified relative to git with literal secrets
+baked in, restore it with `git checkout -- docker-compose.yml` (`.env`
+alone still supplies every value the template needs — see §3b) and re-run
+step 4 above; this only recreates containers, no data is at risk.
+
 ---
 
 ## 4. Verification checklist
@@ -729,6 +813,20 @@ authoring this task; see §5d for the exact transcript and what it verified.
    prompts; non-zero exit on any failure (missing `.env`, `postgres` not
    running, `pg_dump` failure, empty/missing dump after copy) so a cron
    failure is visible in Task Scheduler's own run history/exit-code column.
+
+The script auto-detects the right `docker`/compose invocation instead of
+assuming a stock install: it adds Container Manager's binary path if
+`docker` isn't already on `PATH` (a Task Scheduler cron job's `PATH` is
+often just `/usr/bin:/bin:/usr/sbin:/sbin`, missing `/usr/local/bin` — see
+§3e), and falls back to the standalone `docker-compose` binary if `docker
+compose` isn't registered as a CLI subcommand (also §3e — confirmed on a
+real DS220+: the bundled Docker CLI doesn't understand `compose` at all).
+You shouldn't need to set anything for this — it's automatic — but if the
+task's log shows `docker binary not found` or `neither 'docker compose' nor
+'docker-compose' is available`, your NAS's install differs from both paths
+the script checks; find the real binary (`find / -maxdepth 6 -iname docker
+2>/dev/null`) and either symlink it onto `PATH` or add its directory to the
+Task Scheduler task's own PATH/environment.
 
 **DSM Task Scheduler wiring:**
 

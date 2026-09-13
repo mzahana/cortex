@@ -26,7 +26,13 @@ from __future__ import annotations
 
 from rest_framework.permissions import BasePermission
 
-from apps.rbac.permission_keys import ASSET_EXPORT, IMPORT_RUN
+from apps.rbac.permission_keys import (
+    ASSET_EXPORT,
+    CATEGORY_MANAGE,
+    IMPORT_RUN,
+    LOCATION_MANAGE,
+    TENANT_MANAGE,
+)
 from apps.rbac.services import user_has_permission, user_has_permission_in_any_scope
 
 
@@ -45,3 +51,35 @@ class AssetExportPermission(BasePermission):
         if user is None or not user.is_authenticated:
             return False
         return user_has_permission_in_any_scope(user, ASSET_EXPORT)
+
+
+#: Creating a `Category`/`Location`/`Project` from a spreadsheet is the same
+#: privileged act as creating one in the admin screens, so it needs the same
+#: permission — `import.run` alone is NOT enough. Keys mirror
+#: `apps.catalog.api.CategoryViewSet`/`LocationViewSet` and
+#: `apps.projects.permissions.ProjectPermission`'s `create` branch (which
+#: uses `tenant.manage`, rbac.md having no dedicated `project.manage` for
+#: structural project CRUD — see that module's flagged ASSUMPTION). All
+#: three are tenant-wide-only checks, like `ImportRunPermission` itself.
+CREATE_MISSING_PERMISSION_KEYS: dict[str, str] = {
+    "category": CATEGORY_MANAGE,
+    "location": LOCATION_MANAGE,
+    "project": TENANT_MANAGE,
+}
+
+
+def missing_create_permissions(user, targets) -> list[str]:
+    """The subset of `targets` this user may NOT create, so the caller can
+    reject with a 403 naming exactly what's missing. Empty list = allowed.
+
+    In practice this never fires for a stock role set (`import.run` is
+    Admin-only and an Admin holds all three keys) — it is the guard that
+    keeps that true under rbac.md §6's editable grants / custom roles,
+    rather than an invariant left to luck.
+    """
+    denied = []
+    for target in targets:
+        key = CREATE_MISSING_PERMISSION_KEYS.get(target)
+        if key is None or not user_has_permission(user, key, project=None):
+            denied.append(target)
+    return denied
