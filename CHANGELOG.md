@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-13
+
 ### Added
 
 - **The importer, exporter and template now cover every asset field.** The
