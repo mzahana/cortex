@@ -20,6 +20,17 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-09
+
+### Fixed
+
+- **The Celery worker crash-looped on 0.17.1.** `kombu` (Celery's messaging
+  library) was not pinned, and the 0.17.1 image build picked up kombu 5.7.0,
+  which refuses to start its Redis transport with the pinned redis-py 5.0.8
+  (`VersionMismatch`). Background jobs — expense packs, project reports,
+  labels, imports — could not run. `kombu` is now pinned to 5.6.2, the
+  version 0.17.0 shipped with.
+
 ## [0.17.1] - 2026-11-09
 
 ### Fixed
