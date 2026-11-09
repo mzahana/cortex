@@ -196,7 +196,7 @@ export function OverviewBudgetTab({ project, canManage, onUpdated }: OverviewBud
                     const spentTotal = Number(project.spent ?? 0);
                     const pct = spentTotal > 0 ? (Number(row.total) / spentTotal) * 100 : 0;
                     return (
-                      <Table.Tr key={row.category_id ?? "uncategorized"}>
+                      <Table.Tr key={`${row.category_id ?? "none"}-${row.category}`}>
                         <Table.Td>{row.category ?? "Uncategorized"}</Table.Td>
                         <Table.Td>
                           {project.currency ? `${project.currency} ` : ""}

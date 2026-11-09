@@ -20,6 +20,26 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Fixed
+
+- **A project's Spent/Remaining now counts foreign-currency receipts at what
+  the bank actually took.** A receipt priced in USD (e.g. AliExpress) and paid
+  by a SAR card was added to the budget at face value — USD 26.68 counted as
+  SAR 26.68 — so Remaining overstated the money left by the exchange
+  difference plus card charges. Each such item now counts at its share of the
+  bank debit (shipping/tax included, card charges absorbed into the effective
+  rate), and the spend-by-category breakdown still sums to Spent.
+  Same-currency orders are unchanged. Read-only derivation — no migration, no
+  stored data is touched.
+
+### Added
+
+- **The order view shows the SAR cost of foreign-priced items.** Each item on
+  a receipt in another currency shows "≈ SAR x" under its price, and the
+  shipment notes the effective rate and its SAR total. The order API exposes
+  these as read-only `settled` (per item) and `settled_total`/`fx_rate` (per
+  shipment), `null` for same-currency shipments.
+
 ## [0.17.0] - 2026-09-13
 
 ### Added

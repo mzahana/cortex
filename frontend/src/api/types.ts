@@ -1675,6 +1675,10 @@ export interface OrderItem {
   category?: number | null;
   /** ONE asset per item — an item is a single line on a receipt. */
   asset?: number | null;
+  /** Read-only. The item's cost in the bank's currency (its share of the
+   * debit, shipping/tax included) when its split is priced in another
+   * currency; null otherwise. */
+  settled?: string | null;
 }
 
 /** One shipment/receipt within an order. Backed by `finance.Purchase`.
@@ -1694,6 +1698,10 @@ export interface OrderSplit {
   /** Only needed when ONE order settles receipts in several different
    * currencies, where the split cannot be inferred from the debit. */
   settled_amount?: string | null;
+  /** Read-only. What this split cost in the bank's currency, and the
+   * effective rate (bank / receipt), when priced in another currency. */
+  settled_total?: string | null;
+  fx_rate?: string | null;
   items: OrderItem[];
   attachments?: PurchaseAttachment[];
 }

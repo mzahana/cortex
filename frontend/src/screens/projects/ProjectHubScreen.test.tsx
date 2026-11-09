@@ -368,4 +368,57 @@ describe("ProjectHubScreen", () => {
     // A single-shipment order must not mention shipments at all.
     expect(screen.queryByText(/shipments/)).not.toBeInTheDocument();
   });
+
+  it("a foreign-priced item also shows what it cost in the bank's currency", async () => {
+    mockMe = makeMe({
+      project_permissions: { "1": ["project.view", "expense.view"] },
+    });
+    mockedApi.getProjectDetail.mockResolvedValue(makeProjectDetail());
+    mockedApi.listOrders.mockResolvedValue(
+      paginated<Order>([
+        makeOrder({
+          id: 11,
+          vendor: "AliExpress",
+          amount: "129.41",
+          splits: [
+            {
+              id: 4,
+              receipt_number: "1123819941968674",
+              currency: "USD",
+              shipping: "0.00",
+              tax: "0.00",
+              total: "33.69",
+              settled_amount: null,
+              settled_total: "129.41",
+              fx_rate: "3.84120006",
+              items: [
+                {
+                  id: 7,
+                  description: "M12 cable",
+                  amount: "33.69",
+                  asset: null,
+                  settled: "129.41",
+                },
+              ],
+            },
+          ],
+        }),
+        // Same-currency order: its items must NOT get a converted figure.
+        makeOrder({ id: 12, vendor: "Jarir" }),
+      ]),
+    );
+
+    renderHub();
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("project-tab-expenses"));
+    await user.click(await screen.findByText(/Jarir/));
+    expect(await screen.findByText("GPU")).toBeInTheDocument();
+    expect(screen.queryByTestId("item-settled-2")).not.toBeInTheDocument();
+    await user.click(await screen.findByText(/AliExpress/));
+
+    expect(await screen.findByTestId("item-settled-7")).toHaveTextContent(
+      /129\.41/,
+    );
+    expect(screen.getByText(/1 USD = 3\.8412 SAR/)).toBeInTheDocument();
+  });
 });

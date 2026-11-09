@@ -191,6 +191,41 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        # Read-only derived figures for a split priced in another currency:
+        # what it (and each item) cost in the bank's currency, and the
+        # effective rate. Null for a same-currency split, where they would
+        # just repeat the entered numbers. Reuses the cached resolution, so no
+        # extra queries.
+        resolution = self._resolution(instance)
+        resolved = {r.purchase_id: r for r in resolution.purchases}
+
+        def _cents(value: Decimal) -> str:
+            # Always two places, so a freshly-saved instance (whose amount is
+            # the validated Decimal) and one read back from the DB print the
+            # same way.
+            return str(value.quantize(Decimal("0.01")))
+
+        def _converted(purchase):
+            r = resolved.get(purchase.id)
+            same = (purchase.currency or "").upper() == (instance.currency or "").upper()
+            if r is None or same or r.settled_amount is None:
+                return None
+            return r
+
+        def _split_extras(purchase):
+            r = _converted(purchase)
+            return {
+                "settled_total": None if r is None else _cents(r.settled_amount),
+                "fx_rate": None if r is None or r.fx_rate is None else str(r.fx_rate),
+            }
+
+        def _item_settled(purchase, item):
+            r = _converted(purchase)
+            if r is None:
+                return None
+            line = next((ln for ln in r.lines if ln.expense_id == item.id), None)
+            return None if line is None else _cents(line.settled)
+
         # `splits` is declared for WRITING; on read, build it from the real
         # child rows so the client gets back exactly the tree it sent.
         data["splits"] = [
@@ -208,6 +243,7 @@ class OrderSerializer(serializers.ModelSerializer):
                 "attachments": PurchaseAttachmentSerializer(
                     purchase.attachments.all(), many=True
                 ).data,
+                **_split_extras(purchase),
                 "items": [
                     {
                         "id": item.id,
@@ -215,6 +251,7 @@ class OrderSerializer(serializers.ModelSerializer):
                         "amount": str(item.amount),
                         "category": item.category_id,
                         "asset": next((link.asset_id for link in item.asset_links.all()), None),
+                        "settled": _item_settled(purchase, item),
                     }
                     for item in purchase.expenses.all()
                 ],
@@ -326,6 +363,12 @@ class OrderSerializer(serializers.ModelSerializer):
         instance.save()
         if splits is not None:
             self._write_splits(instance, splits or [{"items": []}])
+        # The view serialized `instance` for the audit `before` snapshot,
+        # which cached its reconciliation (`_resolution`) and its prefetched
+        # splits on the object. Drop both, or the response and the audit
+        # `after` would report the pre-save figures.
+        instance.__dict__.pop("_resolution", None)
+        getattr(instance, "_prefetched_objects_cache", {}).clear()
         return instance
 
 

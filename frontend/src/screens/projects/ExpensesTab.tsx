@@ -288,6 +288,18 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
                                     item.amount,
                                     split.currency || order.currency,
                                   )}
+                                  {/* A foreign-priced item also shows what it
+                                      actually cost the project in the bank's
+                                      currency — the figure the budget uses. */}
+                                  {item.settled != null && (
+                                    <Text
+                                      size="xs"
+                                      c="dimmed"
+                                      data-testid={`item-settled-${item.id}`}
+                                    >
+                                      ≈ {money(item.settled, order.currency)}
+                                    </Text>
+                                  )}
                                 </Table.Td>
                               </Table.Tr>
                             ))}
@@ -341,7 +353,12 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
                           split.currency !== order.currency && (
                             <Text size="xs" c="dimmed">
                               Priced in {split.currency}; converted at the rate
-                              your bank actually charged.
+                              your bank actually charged
+                              {split.settled_total != null &&
+                              split.fx_rate != null
+                                ? ` (1 ${split.currency} = ${Number(split.fx_rate).toFixed(4)} ${order.currency}, receipt = ${money(split.settled_total, order.currency)})`
+                                : ""}
+                              .
                             </Text>
                           )}
                       </Stack>

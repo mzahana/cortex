@@ -200,6 +200,104 @@ def _overhead_total(project: Project) -> Decimal:
     return (totals["shipping"] or Decimal("0.00")) + (totals["tax"] or Decimal("0.00"))
 
 
+def restate_foreign_receipt(payment, purchase, resolved) -> dict[str, Any] | None:
+    """One receipt's figures in its bank charge's currency, or `None`.
+
+    `None` means there is nothing to restate: the receipt is priced in the
+    same currency as the charge (its figures already are what was paid), or it
+    is not settled yet. Otherwise returns:
+
+    - `lines`: per item, `(expense_id, project_id, amount, item_part,
+      overhead_part)` — its settled cost (`resolve_payment`, the same
+      derivation the order view and the audit pack use) split back into item
+      and shipping/tax parts in proportion to `amount : overhead`, rounded so
+      the two parts always sum exactly to the settled cost;
+    - `unitemized`: the settled cost of a receipt with no items yet;
+    - `raw_overhead`: its shipping + tax at face value, which the raw ledger
+      (`_overhead_total`) counted and the caller must take back out.
+
+    Shared by the budget rollup and the project report so the "Total spent"
+    card and the report's expense table cannot disagree.
+    """
+    if (purchase.currency or "").upper() == (payment.currency or "").upper():
+        return None
+    if resolved is None or resolved.settled_amount is None:
+        return None
+    cent = Decimal("0.01")
+    lines = []
+    for line in resolved.lines:
+        if line.loaded:
+            item_part = (line.settled * line.amount / line.loaded).quantize(
+                cent, rounding=ROUND_HALF_UP
+            )
+        else:
+            item_part = line.settled
+        lines.append(
+            (line.expense_id, line.project_id, line.amount, item_part, line.settled - item_part)
+        )
+    return {
+        "lines": lines,
+        "unitemized": Decimal("0.00") if resolved.lines else resolved.settled_amount,
+        "raw_overhead": (purchase.shipping or Decimal("0")) + (purchase.tax or Decimal("0")),
+    }
+
+
+def _fx_restatement(project: Project) -> tuple[dict[int | None, Decimal], Decimal, Decimal]:
+    """How far the raw ledger is off for foreign-currency receipts.
+
+    Returns `(item_deltas, overhead_delta, unitemized)`: per expense-category,
+    the amount to ADD to `sum(Expense.amount)`; the amount to add to the raw
+    shipping + tax total; and the settled cost of foreign receipts that have no
+    items yet (reported as their own "Unitemized" row rather than mislabelled
+    as shipping). Together they make every receipt priced in a currency other
+    than its bank charge count at its settled cost instead of its face value.
+
+    Overhead follows the existing rule (`_overhead_total`): ALL of an order's
+    shipping + tax belongs to the order's project, so the settled overhead of
+    every line on the receipt is counted here, even a line whose item was
+    booked to another project.
+
+    Only orders with at least one foreign-currency receipt are loaded (an
+    `Exists` filter), with their receipts and lines prefetched, so a project
+    with none costs one cheap query and the rollup stays N+1-free.
+    """
+    from django.db.models import Exists, OuterRef
+
+    from apps.finance.models import Payment, Purchase
+    from apps.finance.services import resolve_payment
+
+    item_deltas: dict[int | None, Decimal] = {}
+    overhead_delta = Decimal("0.00")
+    unitemized = Decimal("0.00")
+
+    foreign_receipts = Purchase.objects.filter(payment=OuterRef("pk")).exclude(
+        currency__iexact=OuterRef("currency")
+    )
+    payments = (
+        Payment.objects.filter(project=project)
+        .filter(Exists(foreign_receipts))
+        .prefetch_related("purchases__expenses")
+    )
+    for payment in payments:
+        by_id = {r.purchase_id: r for r in resolve_payment(payment).purchases}
+        for purchase in payment.purchases.all():
+            restated = restate_foreign_receipt(payment, purchase, by_id.get(purchase.id))
+            if restated is None:
+                continue
+            overhead_delta -= restated["raw_overhead"]
+            unitemized += restated["unitemized"]
+            category_of = {e.id: e.category_id for e in purchase.expenses.all()}
+            for expense_id, project_id, amount, item_part, overhead_part in restated["lines"]:
+                overhead_delta += overhead_part
+                if project_id != project.id:
+                    continue
+                category_id = category_of.get(expense_id)
+                item_deltas[category_id] = (
+                    item_deltas.get(category_id, Decimal("0.00")) + item_part - amount
+                )
+    return item_deltas, overhead_delta, unitemized
+
+
 def budget_rollup(project: Project) -> dict[str, Any]:
     """Compute the M7 budget rollup for `project` in two aggregated queries
     (`docs/tasks/M7-project-grants.md`: "Compute with a single aggregated
@@ -209,7 +307,9 @@ def budget_rollup(project: Project) -> dict[str, Any]:
     - `budget_total`: `project.budget_total` (or `None` if not set).
     - `spent`: every `Expense.amount` booked against this project, **plus** the
       shipping and tax on its receipts — i.e. what actually left the account,
-      not just what the line items list.
+      not just what the line items list. Lines on a receipt priced in a
+      different currency from its bank charge count at their settled cost in
+      the charge's currency (`_fx_restatement`), never at face value.
     - `remaining`: `budget_total - spent` (`None` if no budget was set — a
       project with no awarded budget has nothing to be "remaining" against).
     - `spend_by_category`: `[{"category_id", "category", "total"}, ...]`,
@@ -229,10 +329,6 @@ def budget_rollup(project: Project) -> dict[str, Any]:
         .order_by("category__name")
     )
 
-    spent = sum(
-        (row["total"] for row in category_totals if row["total"] is not None), Decimal("0.00")
-    )
-
     # Shipping and tax are held on the receipt (`Purchase`), not on the item
     # lines, so summing `Expense.amount` alone understates what the project
     # actually spent by exactly the overhead — the project would show less
@@ -242,7 +338,26 @@ def budget_rollup(project: Project) -> dict[str, Any]:
     # apportion elsewhere. Costs one extra aggregate query, which keeps the
     # figures derived rather than denormalized onto `Expense`.
     overhead = _overhead_total(project)
-    spent += overhead
+
+    # Receipts priced in another currency (a USD AliExpress receipt paid by a
+    # SAR card) were being added up at face value — USD 26.68 counted as
+    # SAR 26.68 — so "spent" fell short of what the bank took by the whole
+    # exchange difference. Re-state those lines at their settled cost (their
+    # share of the actual debit, which already carries any card charges).
+    # Same-currency receipts are untouched: their figures stay exactly as
+    # entered, so nothing changes for an ordinary domestic order.
+    item_deltas, overhead_delta, unitemized = _fx_restatement(project)
+    if item_deltas:
+        for row in category_totals:
+            row["total"] = (row["total"] or Decimal("0.00")) + item_deltas.get(
+                row["category_id"], Decimal("0.00")
+            )
+    overhead += overhead_delta
+
+    spent = sum(
+        (row["total"] for row in category_totals if row["total"] is not None), Decimal("0.00")
+    )
+    spent += overhead + unitemized
 
     budget_total = project.budget_total
     remaining = (budget_total - spent) if budget_total is not None else None
@@ -261,6 +376,12 @@ def budget_rollup(project: Project) -> dict[str, Any]:
         # breakdown should see why the categories do not sum to the total.
         spend_by_category.append(
             {"category_id": None, "category": "Shipping & tax", "total": overhead}
+        )
+    if unitemized:
+        # A foreign receipt settled by the bank but with no items entered yet:
+        # real spend, but neither a category nor shipping — say so.
+        spend_by_category.append(
+            {"category_id": None, "category": "Unitemized", "total": unitemized}
         )
 
     return {
@@ -615,17 +736,38 @@ def resolve_project_report_data(
     }
 
     # One row per EXPENSE — i.e. per order — not per item. See `ExpenseRow`.
+    # Lazy, for the same import-loop reason as `_reconciliation_rows`.
+    from apps.finance.services import resolve_payment
+
     expense_rows: list[ExpenseRow] = []
     for order in orders:
         items = [item for purchase in order.purchases.all() for item in purchase.expenses.all()]
-        item_cost = sum((item.amount or Decimal("0.00") for item in items), Decimal("0.00"))
-        overhead = sum(
-            (
-                (purchase.shipping or Decimal("0.00")) + (purchase.tax or Decimal("0.00"))
-                for purchase in order.purchases.all()
-            ),
-            Decimal("0.00"),
-        )
+        # In the CHARGE's currency (the column is labelled with it): a receipt
+        # priced in another currency counts at its settled share of the debit,
+        # exactly as the budget rollup counts it, so this table still sums to
+        # "Total spent". Same-currency receipts are taken as entered.
+        resolved_by_id = None
+        item_cost = Decimal("0.00")
+        overhead = Decimal("0.00")
+        for purchase in order.purchases.all():
+            restated = None
+            if (purchase.currency or "").upper() != (order.currency or "").upper():
+                if resolved_by_id is None:
+                    resolved_by_id = {r.purchase_id: r for r in resolve_payment(order).purchases}
+                restated = restate_foreign_receipt(order, purchase, resolved_by_id.get(purchase.id))
+            if restated is None:
+                item_cost += sum(
+                    (item.amount or Decimal("0.00") for item in purchase.expenses.all()),
+                    Decimal("0.00"),
+                )
+                overhead += (purchase.shipping or Decimal("0.00")) + (
+                    purchase.tax or Decimal("0.00")
+                )
+            else:
+                item_cost += restated["unitemized"] + sum(
+                    (line[3] for line in restated["lines"]), Decimal("0.00")
+                )
+                overhead += sum((line[4] for line in restated["lines"]), Decimal("0.00"))
         expense_rows.append(
             ExpenseRow(
                 seq=charge_number[order.id],
