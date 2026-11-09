@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-09
+
 ### Fixed
 
 - **A project's Spent/Remaining now counts foreign-currency receipts at what
