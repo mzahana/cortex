@@ -20,6 +20,32 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Fixed
+
+- **A project's Expenses tab showed at most 25 orders.** The order list fell
+  back to the global default paginator, which ignores `?page_size=`, so a
+  project with more than 25 orders silently lost the older ones. The list now
+  pages at up to 100, and a **Show more** button loads the rest onto the same
+  page, with a count of how many expenses there are in total.
+- **Searching a project's Assets tab failed** (it worked on the main Assets
+  page). The project lookup behind every project-hub tab was being filtered
+  by the tab's own query string, so `?search=` was matched against the
+  *project's* name (no hit → "No Project matches the given query") and the
+  asset Status filter was rejected as an invalid *project* status. Project
+  tabs now look the project up by id only; search and filters apply to the
+  assets, exactly as on the main list.
+- **Project leads could read, create, or edit orders in projects they don't
+  lead** through the orders API. Orders are now limited to projects where the
+  caller holds the finance permission, for both reads and writes.
+
+### Added
+
+- **Quick search on the Expenses tab.** Filters a project's orders server-side
+  by vendor, notes, statement/receipt/vendor-order references, item
+  descriptions, order number (`#12`) and the amount the bank took. Matching
+  orders keep their real order number, so a search result still matches the
+  project report and the audit pack.
+
 ## [0.17.2] - 2026-11-09
 
 ### Fixed

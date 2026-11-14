@@ -274,6 +274,18 @@ class ProjectViewSet(viewsets.ModelViewSet):
     ordering = ["name"]
     pagination_class = BoundedPageNumberPagination
 
+    def filter_queryset(self, queryset):
+        # The search/filter/ordering backends above describe the PROJECT LIST
+        # only. DRF's `get_object()` also runs `filter_queryset()`, so without
+        # this a nested list's own query string (`/projects/{id}/assets/
+        # ?search=gpu&status=in_use`) was applied to the project lookup —
+        # `?search=` matched against the project's name (404 unless the term
+        # happened to be in it) and the asset `?status=` validated against
+        # project statuses (400). A single-project lookup is by pk, full stop.
+        if self.action != "list":
+            return queryset
+        return super().filter_queryset(queryset)
+
     def get_serializer_class(self):
         if self.action in ("retrieve", "update", "partial_update"):
             return ProjectDetailSerializer

@@ -40,6 +40,7 @@ from rest_framework.permissions import SAFE_METHODS, BasePermission
 from apps.rbac.permission_keys import PAYMENT_MANAGE, PAYMENT_VIEW
 from apps.rbac.services import (
     get_viewable_project_scope,
+    user_has_permission,
     user_has_permission_in_any_scope,
 )
 
@@ -129,6 +130,23 @@ class PaymentPermission(BasePermission):
         if not user_has_permission_in_any_scope(user, PAYMENT_MANAGE):
             return False
         return _covers_every_line(user, obj)
+
+
+class OrderPermission(PaymentPermission):
+    """`apps.finance.orders.OrderViewSet`.
+
+    An order belongs to exactly one project, so a write is decided by THAT
+    project, not by its lines. `PaymentPermission._covers_every_line` treats a
+    charge with no lines as covered by anyone holding `payment.manage`
+    anywhere — a lead who could merely view project B could then edit or
+    delete B's still-empty orders. Reads keep the parent rule (the viewset's
+    queryset already narrows to viewable projects).
+    """
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        if request.method in SAFE_METHODS:
+            return super().has_object_permission(request, view, obj)
+        return user_has_permission(request.user, PAYMENT_MANAGE, project=obj.project)
 
 
 class PurchasePermission(BasePermission):

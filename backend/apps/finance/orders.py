@@ -33,23 +33,29 @@ concept unless their order actually arrived in pieces.
 
 from __future__ import annotations
 
-from decimal import Decimal
+import re
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
+from django.db.models.lookups import IsNull
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.assets.models import Asset
 from apps.audit.services import client_ip, write_audit_log
+from apps.common.pagination import BoundedPageNumberPagination
 from apps.jobs.models import Job
 from apps.jobs.serializers import JobSerializer
 from apps.projects.models import Expense, ExpenseCategory, Project
 from apps.projects.services import sync_expense_asset_links
 from apps.rbac.permission_keys import PAYMENT_MANAGE
+from apps.rbac.services import user_has_permission
 
 from .models import Payment, Purchase
-from .permissions import PaymentPermission
+from .permissions import OrderPermission, finance_scope
 from .serializers import PaymentAttachmentSerializer, PurchaseAttachmentSerializer
 from .services import order_number_expr, resolve_payment
 from .tasks import generate_order_pack_pdf
@@ -171,6 +177,16 @@ class OrderSerializer(serializers.ModelSerializer):
     def validate_project(self, value):
         if value is None:
             raise serializers.ValidationError("An order must belong to a project.")
+        # `PaymentPermission.has_permission` only checks that the caller holds
+        # `payment.manage` SOMEWHERE; the project in the payload is the actual
+        # scope of this write. Without this a lead of project A could file an
+        # order against project B (or move one there with PATCH).
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None or not user_has_permission(user, PAYMENT_MANAGE, project=value):
+            raise serializers.ValidationError(
+                "You do not have permission to record expenses for this project."
+            )
         return value
 
     def _resolution(self, payment):
@@ -372,30 +388,136 @@ class OrderSerializer(serializers.ModelSerializer):
         return instance
 
 
+def _order_number_subquery():
+    """An order's number as a correlated count — the row-local equivalent of
+    `order_number_expr()`, used whenever the queryset is filtered by more
+    than whole projects (search, and `get_object()`'s `pk=` — see
+    `OrderViewSet.get_queryset`). Counts every order of the same project that
+    sorts at or before this one, regardless of the outer filter."""
+    same_project = Q(project_id=OuterRef("project_id")) | (
+        # `= NULL` never matches, but the window partitions legacy no-project
+        # orders together — count them the same way.
+        Q(project__isnull=True)
+        & Q(IsNull(OuterRef("project_id"), True))
+    )
+    earlier_or_same = (
+        Payment.objects.filter(same_project)
+        .filter(
+            Q(paid_on__lt=OuterRef("paid_on"))
+            | Q(paid_on=OuterRef("paid_on"), id__lte=OuterRef("id"))
+        )
+        .order_by()
+        .values("project_id")
+        .annotate(n=Count("id"))
+        .values("n")
+    )
+    return Coalesce(Subquery(earlier_or_same, output_field=IntegerField()), 0)
+
+
+def _order_search_q(term: str) -> Q:
+    """`?search=` for the Expenses tab: the order's own text fields, anything
+    on its receipts, and the item lines inside them. A bare or `#`-prefixed
+    number also matches the order number; a decimal also matches the amount
+    the bank took. Matching sub-records go through `pk__in` subqueries so an
+    order with several matching items is still returned once."""
+    receipt_match = Purchase.objects.filter(
+        Q(vendor__icontains=term)
+        | Q(vendor_order_number__icontains=term)
+        | Q(receipt_number__icontains=term)
+        | Q(notes__icontains=term)
+    ).values("payment_id")
+    item_match = Expense.objects.filter(
+        Q(description__icontains=term)
+        | Q(vendor__icontains=term)
+        | Q(invoice_number__icontains=term)
+    ).values("purchase__payment_id")
+
+    q = (
+        Q(vendor__icontains=term)
+        | Q(notes__icontains=term)
+        | Q(statement_ref__icontains=term)
+        | Q(account_label__icontains=term)
+        | Q(pk__in=receipt_match)
+        | Q(pk__in=item_match)
+    )
+    number = re.fullmatch(r"#?\s*(\d+)", term)
+    if number:
+        q |= Q(number=int(number.group(1)))
+    try:
+        amount = Decimal(term.replace(",", ""))
+    except InvalidOperation:
+        amount = None
+    # Only something that could BE a stored amount (`numeric(14, 2)`): at most
+    # 2 decimal places and under 1e12. Anything else — `1e999999` or
+    # `1e-999999` — overflows Postgres `numeric` and would 500.
+    # `is_finite()` FIRST: `normalize()` raises on a signalling NaN (`sNaN`).
+    exponent = (
+        amount.normalize().as_tuple().exponent
+        if amount is not None and amount.is_finite()
+        else None
+    )
+    if (
+        amount is not None
+        and isinstance(exponent, int)  # str ('n'/'N'/'F') for NaN/Infinity
+        and exponent >= -2
+        and abs(amount) < Decimal("1e12")
+    ):
+        q |= Q(amount=amount)
+    return q
+
+
 class OrderViewSet(viewsets.ModelViewSet):
     """`/api/v1/orders/` — the one endpoint the expense UI talks to.
 
     `?project=` scopes the list to a project, which is how the project hub's
-    Expenses tab shows a project its own orders.
+    Expenses tab shows a project its own orders. `?search=` narrows it (see
+    `_order_search_q`); `?page`/`?page_size` (max 100) page it.
     """
 
     serializer_class = OrderSerializer
-    permission_classes = [PaymentPermission]
+    permission_classes = [OrderPermission]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+    # Without this the list fell back to DRF's global `PageNumberPagination`,
+    # which has no `page_size_query_param` — so the Expenses tab's
+    # `?page_size=100` was silently ignored and a project never showed more
+    # than its 25 newest orders.
+    pagination_class = BoundedPageNumberPagination
 
     def get_queryset(self):
-        queryset = (
-            Payment.objects.select_related("project", "created_by")
-            .prefetch_related(
-                "attachments",
-                "purchases__attachments",
-                "purchases__expenses__asset_links",
-            )
-            .annotate(number=order_number_expr())
+        queryset = Payment.objects.select_related("project", "created_by").prefetch_related(
+            "attachments",
+            "purchases__attachments",
+            "purchases__expenses__asset_links",
         )
+        # Row-level RBAC (union of memberships, docs/rbac.md): an order belongs
+        # to exactly one project, so a project-scoped caller sees only orders
+        # of projects where they hold `payment.view`. `finance_payment` RLS is
+        # tenant-only, so this filter IS the boundary — not a convenience.
+        tenant_wide, project_ids = finance_scope(self.request.user)
+        if not tenant_wide:
+            queryset = queryset.filter(project_id__in=project_ids)
+
         project_id = self.request.query_params.get("project")
         if project_id:
-            queryset = queryset.filter(project_id=project_id)
+            if not project_id.isdigit():
+                return queryset.none()
+            queryset = queryset.filter(project_id=int(project_id))
+
+        # NUL can't be sent to Postgres as text (psycopg raises DataError).
+        search = (self.request.query_params.get("search") or "").replace("\x00", "").strip()
+        if self.action == "list" and not search:
+            # Filters above only ever remove WHOLE projects, so the per-project
+            # window numbering is unaffected — one cheap query for the list.
+            return queryset.annotate(number=order_number_expr())
+
+        # Anything else narrows rows WITHIN a project — a search, or
+        # `get_object()`'s `pk=` — and a window function is evaluated AFTER
+        # `WHERE`, so `order_number_expr()` would renumber what's left from 1
+        # ("Order 7" would no longer be the "Order 7" in the report and the
+        # pack filename). Count instead, with the same rule.
+        queryset = queryset.annotate(number=_order_number_subquery())
+        if self.action == "list":
+            queryset = queryset.filter(_order_search_q(search))
         return queryset
 
     def perform_create(self, serializer):

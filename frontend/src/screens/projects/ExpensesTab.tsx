@@ -11,7 +11,7 @@
  * made the user assemble the structure by hand across screens. Whatever else
  * changes here, that must not come back.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Accordion,
   ActionIcon,
@@ -25,7 +25,9 @@ import {
   Stack,
   Table,
   Text,
+  TextInput,
 } from "@mantine/core";
+import { useDebouncedValue } from "@mantine/hooks";
 
 import { api } from "../../api/client";
 import { useAuth } from "../../hooks/useAuth";
@@ -49,12 +51,29 @@ function money(amount: string, currency: string): string {
   })}`;
 }
 
+function appendUnique(existing: Order[], incoming: Order[]): Order[] {
+  const seen = new Set(existing.map((o) => o.id));
+  return [...existing, ...incoming.filter((o) => !seen.has(o.id))];
+}
+
 export function ExpensesTab({ projectId }: ExpensesTabProps) {
   const { me } = useAuth();
   const canView = hasProjectScopedPermission(me, EXPENSE_VIEW, projectId);
   const canManage = hasProjectScopedPermission(me, EXPENSE_MANAGE, projectId);
 
   const [orders, setOrders] = useState<Order[]>([]);
+  /** Total matching orders server-side, and the last page fetched — the list
+   * is paged (100 per request) and "Show more" appends the next page, so a
+   * project with more orders than one page still lists them all here. */
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch] = useDebouncedValue(search.trim(), 300);
+  /** Bumped per fresh load so a slow response for an older search term can't
+   * overwrite the results of the newer one. */
+  const loadSeq = useRef(0);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,18 +88,65 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
   const [packError, setPackError] = useState<string | null>(null);
   const [checklistBusy, setChecklistBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  /** Fetch pages 1..`pages` afresh. A new search starts at one page; a
+   * reload after an edit/delete re-fetches as many pages as were already
+   * showing, so the list doesn't collapse back to the first 100 under the
+   * user. */
+  const load = useCallback(
+    async (pages = 1) => {
+      const seq = ++loadSeq.current;
+      setLoading(true);
+      setError(null);
+      try {
+        let rows: Order[] = [];
+        let last: Awaited<ReturnType<typeof api.listOrders>> | null = null;
+        for (let p = 1; p <= pages; p += 1) {
+          last = await api.listOrders(projectId, {
+            search: debouncedSearch || undefined,
+            page: p,
+          });
+          if (seq !== loadSeq.current) return;
+          rows = appendUnique(rows, last.results);
+          if (last.next === null) {
+            pages = p;
+            break;
+          }
+        }
+        setOrders(rows);
+        setTotal(last?.count ?? 0);
+        setPage(pages);
+        setHasMore(last?.next != null);
+      } catch {
+        if (seq === loadSeq.current) setError("Could not load expenses.");
+      } finally {
+        if (seq === loadSeq.current) setLoading(false);
+      }
+    },
+    [projectId, debouncedSearch],
+  );
+
+  async function loadMore() {
+    const seq = loadSeq.current;
+    setLoadingMore(true);
     setError(null);
     try {
-      const page = await api.listOrders(projectId);
-      setOrders(page.results);
+      const next = await api.listOrders(projectId, {
+        search: debouncedSearch || undefined,
+        page: page + 1,
+      });
+      if (seq !== loadSeq.current) return;
+      // Offset paging: an order added/removed since page 1 shifts the rows,
+      // so the boundary row can come back twice — never render it twice.
+      setOrders((prev) => appendUnique(prev, next.results));
+      setTotal(next.count);
+      setPage(page + 1);
+      setHasMore(next.next !== null);
     } catch {
-      setError("Could not load expenses.");
+      if (seq === loadSeq.current) setError("Could not load more expenses.");
     } finally {
-      setLoading(false);
+      setLoadingMore(false);
     }
-  }, [projectId]);
+  }
 
   useEffect(() => {
     if (canView) void load();
@@ -203,6 +269,34 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
         </Group>
       </Group>
 
+      <TextInput
+        placeholder="Search vendor, item, receipt #, order #, amount…"
+        value={search}
+        onChange={(e) => setSearch(e.currentTarget.value)}
+        rightSection={
+          search ? (
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              aria-label="Clear search"
+              onClick={() => setSearch("")}
+            >
+              ×
+            </ActionIcon>
+          ) : null
+        }
+        data-testid="expense-search"
+      />
+
+      {!loading && !error && (orders.length > 0 || debouncedSearch) && (
+        <Text size="xs" c="dimmed" data-testid="expense-count">
+          {debouncedSearch
+            ? `${total} matching expense${total === 1 ? "" : "s"}`
+            : `${total} expense${total === 1 ? "" : "s"}`}
+          {orders.length < total ? ` · showing ${orders.length}` : ""}
+        </Text>
+      )}
+
       {error && (
         <Alert color="red" variant="light">
           {error}
@@ -220,7 +314,9 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
       ) : orders.length === 0 ? (
         <Card withBorder>
           <Text size="sm" c="dimmed">
-            No expenses recorded for this project yet.
+            {debouncedSearch
+              ? "No expenses match this search."
+              : "No expenses recorded for this project yet."}
           </Text>
         </Card>
       ) : (
@@ -420,10 +516,22 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
         </Accordion>
       )}
 
+      {!loading && hasMore && (
+        <Button
+          variant="light"
+          size="xs"
+          loading={loadingMore}
+          onClick={() => void loadMore()}
+          data-testid="expenses-load-more"
+        >
+          Show more ({total - orders.length} remaining)
+        </Button>
+      )}
+
       <OrderFormModal
         opened={formOpen}
         onClose={() => setFormOpen(false)}
-        onSaved={() => void load()}
+        onSaved={() => void load(page)}
         projectId={projectId}
         assets={assets}
         categories={categories}
@@ -442,7 +550,7 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
           onConfirm={async () => {
             await api.deleteOrder(deleteTarget.id);
           }}
-          onDeleted={() => void load()}
+          onDeleted={() => void load(page)}
         />
       )}
     </Stack>

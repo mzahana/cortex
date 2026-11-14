@@ -879,11 +879,16 @@ export const api = {
 
   // --- M8 Phase 2 (rev): orders — the ONE call the expense UI makes ---------
 
-  /** `GET /api/v1/orders/?project={id}` — a project's orders, each with its
-   * splits and items nested. */
-  async listOrders(projectId: number): Promise<Paginated<Order>> {
+  /** `GET /api/v1/orders/?project={id}` — one page of a project's orders,
+   * each with its splits and items nested. `search` matches vendor, notes,
+   * receipt/statement refs, item descriptions, the order number (`#12`) and
+   * the amount; `page_size` is capped at 100 server-side. */
+  async listOrders(
+    projectId: number,
+    params?: { search?: string; page?: number; page_size?: number },
+  ): Promise<Paginated<Order>> {
     return request<Paginated<Order>>(
-      `/orders/?project=${projectId}&page_size=100`,
+      `/orders/${buildQuery({ project: projectId, page_size: 100, ...params })}`,
       {
         method: "GET",
       },
