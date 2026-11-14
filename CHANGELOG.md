@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-11-14
+
 ### Added
 
 - **Filter a project's expenses by payment date.** The Expenses tab has
