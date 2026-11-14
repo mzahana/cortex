@@ -20,6 +20,8 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-11-14
+
 ### Fixed
 
 - **A project's Expenses tab showed at most 25 orders.** The order list fell
