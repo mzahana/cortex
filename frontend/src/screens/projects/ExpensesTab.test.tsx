@@ -138,7 +138,7 @@ describe("ExpensesTab search and paging", () => {
     mockedApi.listOrders.mockResolvedValue(page([], 0, null));
     await userEvent.setup().type(screen.getByTestId("expense-search"), "zzz");
     expect(
-      await screen.findByText("No expenses match this search."),
+      await screen.findByText("No expenses match these filters."),
     ).toBeInTheDocument();
   });
 
@@ -206,3 +206,147 @@ describe("ExpensesTab search and paging", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("ExpensesTab payment-date range", () => {
+  it("typing a From date sends date_from and keeps To open", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("expense-date-from"), "2026-01-04");
+    await user.tab();
+
+    await waitFor(() =>
+      expect(mockedApi.listOrders).toHaveBeenLastCalledWith(1, {
+        search: undefined,
+        date_from: "2026-01-04",
+        date_to: undefined,
+        page: 1,
+      }),
+    );
+  });
+
+  it("a full range combines with the search term", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("expense-date-from"), "2026-01-01");
+    await user.tab();
+    await user.type(screen.getByTestId("expense-date-to"), "2026-03-31");
+    await user.tab();
+    await user.type(screen.getByTestId("expense-search"), "amazon");
+
+    await waitFor(() =>
+      expect(mockedApi.listOrders).toHaveBeenLastCalledWith(1, {
+        search: "amazon",
+        date_from: "2026-01-01",
+        date_to: "2026-03-31",
+        page: 1,
+      }),
+    );
+  });
+
+  it("an empty filtered result says no expenses match the filters", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+
+    mockedApi.listOrders.mockResolvedValue(page([], 0, null));
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("expense-date-from"), "2030-01-01");
+    await user.tab();
+
+    await screen.findByText("No expenses match these filters.");
+    expect(screen.getByTestId("expense-count")).toHaveTextContent("0 matching expenses");
+  });
+
+  it("Show more keeps the date range on the next page", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+
+    // Answer by params: typing a date fires intermediate loads, so a
+    // one-shot mock would be consumed by the wrong call.
+    mockedApi.listOrders.mockImplementation(async (_id, params) => {
+      if (params?.date_to !== "2026-06-30") return page([makeOrder(1, "Alpha")], 1, null);
+      return params.page === 2
+        ? page([makeOrder(3, "Charlie")], 2, null)
+        : page([makeOrder(2, "Bravo")], 2, "next-url");
+    });
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("expense-date-to"), "2026-06-30");
+    await user.tab();
+    await screen.findByText(/Bravo/);
+
+    await user.click(screen.getByTestId("expenses-load-more"));
+    await screen.findByText(/Charlie/);
+    expect(mockedApi.listOrders).toHaveBeenLastCalledWith(1, {
+      search: undefined,
+      date_from: undefined,
+      date_to: "2026-06-30",
+      page: 2,
+    });
+  });
+
+  it("half-typed dates never fire a request; only the complete date does", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+    const callsBefore = mockedApi.listOrders.mock.calls.length;
+
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("expense-date-from"), "2026-01-04");
+    await waitFor(() =>
+      expect(mockedApi.listOrders).toHaveBeenLastCalledWith(1, {
+        search: undefined,
+        date_from: "2026-01-04",
+        date_to: undefined,
+        page: 1,
+      }),
+    );
+    const dateCalls = mockedApi.listOrders.mock.calls.slice(callsBefore);
+    expect(dateCalls).toHaveLength(1);
+    expect(screen.queryByText("Could not load expenses.")).not.toBeInTheDocument();
+  });
+
+  it("an impossible date (Feb 30) is never sent", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+    const callsBefore = mockedApi.listOrders.mock.calls.length;
+
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId("expense-date-from"), "2026-02-30");
+    await user.tab();
+    expect(mockedApi.listOrders.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("clearing the date removes the filter", async () => {
+    mockedApi.listOrders.mockResolvedValue(page([makeOrder(1, "Alpha")], 1, null));
+    renderTab();
+    await screen.findByText(/Alpha/);
+
+    const user = userEvent.setup();
+    const input = screen.getByTestId("expense-date-to");
+    await user.type(input, "2026-06-30");
+    await waitFor(() =>
+      expect(mockedApi.listOrders).toHaveBeenLastCalledWith(
+        1,
+        expect.objectContaining({ date_to: "2026-06-30" }),
+      ),
+    );
+    await user.clear(input);
+    await waitFor(() =>
+      expect(mockedApi.listOrders).toHaveBeenLastCalledWith(1, {
+        search: undefined,
+        date_from: undefined,
+        date_to: undefined,
+        page: 1,
+      }),
+    );
+  });
+});
+

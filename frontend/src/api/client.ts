@@ -882,10 +882,18 @@ export const api = {
   /** `GET /api/v1/orders/?project={id}` — one page of a project's orders,
    * each with its splits and items nested. `search` matches vendor, notes,
    * receipt/statement refs, item descriptions, the order number (`#12`) and
-   * the amount; `page_size` is capped at 100 server-side. */
+   * the amount; `date_from`/`date_to` bound the payment date; `page_size` is
+   * capped at 100 server-side. */
   async listOrders(
     projectId: number,
-    params?: { search?: string; page?: number; page_size?: number },
+    params?: {
+      search?: string;
+      /** Inclusive payment-date (`paid_on`) bounds, `YYYY-MM-DD`. */
+      date_from?: string;
+      date_to?: string;
+      page?: number;
+      page_size?: number;
+    },
   ): Promise<Paginated<Order>> {
     return request<Paginated<Order>>(
       `/orders/${buildQuery({ project: projectId, page_size: 100, ...params })}`,

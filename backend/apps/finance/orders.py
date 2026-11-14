@@ -34,6 +34,7 @@ concept unless their order actually arrived in pieces.
 from __future__ import annotations
 
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -466,12 +467,30 @@ def _order_search_q(term: str) -> Q:
     return q
 
 
+def _query_date(request, name: str) -> date | None:
+    """An optional `YYYY-MM-DD` query param; a malformed value is a 400 (with
+    the offending param named), never a silently ignored filter — a user who
+    typed a range must not be shown unfiltered totals as if they matched."""
+    raw = (request.query_params.get(name) or "").strip()
+    if not raw:
+        return None
+    # Strictly `YYYY-MM-DD`: `fromisoformat` alone would also take `20260104`
+    # or ISO week dates, which nothing in the UI sends.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        raise serializers.ValidationError({name: ["Enter a date as YYYY-MM-DD."]})
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise serializers.ValidationError({name: ["Enter a date as YYYY-MM-DD."]}) from None
+
+
 class OrderViewSet(viewsets.ModelViewSet):
     """`/api/v1/orders/` — the one endpoint the expense UI talks to.
 
     `?project=` scopes the list to a project, which is how the project hub's
     Expenses tab shows a project its own orders. `?search=` narrows it (see
-    `_order_search_q`); `?page`/`?page_size` (max 100) page it.
+    `_order_search_q`), `?date_from=`/`?date_to=` bound the payment date;
+    `?page`/`?page_size` (max 100) page it.
     """
 
     serializer_class = OrderSerializer
@@ -505,19 +524,34 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         # NUL can't be sent to Postgres as text (psycopg raises DataError).
         search = (self.request.query_params.get("search") or "").replace("\x00", "").strip()
-        if self.action == "list" and not search:
+        # `?date_from=`/`?date_to=` — inclusive, on the PAYMENT date
+        # (`paid_on`, the bank-statement date the tab and the pack show).
+        # Either end may be given alone. Same param names as the expense-line
+        # list (`apps.projects.api.ExpenseFilterSet`).
+        # List only: detail/PATCH/DELETE/pack ignore these entirely, even a
+        # malformed value.
+        is_list = self.action == "list"
+        date_from = _query_date(self.request, "date_from") if is_list else None
+        date_to = _query_date(self.request, "date_to") if is_list else None
+        narrowed = bool(search) or date_from is not None or date_to is not None
+        if self.action == "list" and not narrowed:
             # Filters above only ever remove WHOLE projects, so the per-project
             # window numbering is unaffected — one cheap query for the list.
             return queryset.annotate(number=order_number_expr())
 
-        # Anything else narrows rows WITHIN a project — a search, or
-        # `get_object()`'s `pk=` — and a window function is evaluated AFTER
-        # `WHERE`, so `order_number_expr()` would renumber what's left from 1
-        # ("Order 7" would no longer be the "Order 7" in the report and the
-        # pack filename). Count instead, with the same rule.
+        # Anything else narrows rows WITHIN a project — a search, a date
+        # range, or `get_object()`'s `pk=` — and a window function is
+        # evaluated AFTER `WHERE`, so `order_number_expr()` would renumber
+        # what's left from 1 ("Order 7" would no longer be the "Order 7" in
+        # the report and the pack filename). Count instead, with the same rule.
         queryset = queryset.annotate(number=_order_number_subquery())
         if self.action == "list":
-            queryset = queryset.filter(_order_search_q(search))
+            if search:
+                queryset = queryset.filter(_order_search_q(search))
+            if date_from is not None:
+                queryset = queryset.filter(paid_on__gte=date_from)
+            if date_to is not None:
+                queryset = queryset.filter(paid_on__lte=date_to)
         return queryset
 
     def perform_create(self, serializer):

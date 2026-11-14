@@ -20,6 +20,14 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Added
+
+- **Filter a project's expenses by payment date.** The Expenses tab has
+  *Paid from* / *Paid to* date pickers (inclusive, either end optional) that
+  filter on the date the bank took the payment. They combine with the quick
+  search, the count and "Show more" respect the range, and filtered orders
+  keep their real order numbers.
+
 ## [0.17.3] - 2026-11-14
 
 ### Fixed

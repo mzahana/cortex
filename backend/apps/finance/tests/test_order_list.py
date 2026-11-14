@@ -601,3 +601,165 @@ def test_view_only_on_b_cannot_write_b_even_when_the_order_is_empty(client):
         client.patch(url_b, {"notes": "admin"}, content_type="application/json").status_code == 200
     )
     assert client.delete(url_b).status_code == 204
+
+
+# --- 9. payment-date range (`?date_from=` / `?date_to=`) ----------------------
+#
+# BASE is 2026-01-01, so `_order(..., day=N)` is paid on 2026-01-(N+1).
+
+
+@pytest.fixture
+def dated(setup):
+    """Five orders paid Jan 1..5 (numbers 1..5), plus one in another project
+    paid inside every range below."""
+    tenant, project = setup
+    with tenant_context(tenant.id):
+        orders = [_order(tenant, project, d, vendor=f"Shop{d}") for d in range(5)]
+        other = ProjectFactory(tenant=tenant)
+        _order(tenant, other, 2, vendor="Shop2")
+    return tenant, project, orders
+
+
+def test_date_range_is_inclusive_on_both_ends(client, dated):
+    _tenant, project, orders = dated
+    body = _list(client, project, date_from="2026-01-02", date_to="2026-01-04")
+    assert sorted(_ids(body)) == sorted(o.id for o in orders[1:4])
+    assert body["count"] == 3
+
+
+def test_date_from_alone_is_open_ended(client, dated):
+    _tenant, project, orders = dated
+    body = _list(client, project, date_from="2026-01-04")
+    assert sorted(_ids(body)) == sorted(o.id for o in orders[3:])
+
+
+def test_date_to_alone_is_open_ended(client, dated):
+    _tenant, project, orders = dated
+    body = _list(client, project, date_to="2026-01-02")
+    assert sorted(_ids(body)) == sorted(o.id for o in orders[:2])
+
+
+def test_single_day_range(client, dated):
+    _tenant, project, orders = dated
+    body = _list(client, project, date_from="2026-01-03", date_to="2026-01-03")
+    assert _ids(body) == [orders[2].id]
+
+
+def test_inverted_range_is_empty_not_an_error(client, dated):
+    _tenant, project, _orders = dated
+    body = _list(client, project, date_from="2026-01-05", date_to="2026-01-01")
+    assert body["count"] == 0
+
+
+def test_date_filtered_results_keep_their_real_numbers(client, dated):
+    """The key regression guard: a date filter narrows rows WITHIN a project,
+    so the window numbering must not renumber the survivors from 1."""
+    _tenant, project, orders = dated
+    body = _list(client, project, date_from="2026-01-04")
+    numbers = {row["id"]: row["number"] for row in body["results"]}
+    assert numbers == {orders[3].id: 4, orders[4].id: 5}
+
+
+def test_date_range_combines_with_search(client, dated):
+    tenant, project, orders = dated
+    with tenant_context(tenant.id):
+        _order(tenant, project, 2, vendor="Amazon")  # Jan 3
+        _order(tenant, project, 9, vendor="Amazon")  # Jan 10, out of range
+    body = _list(client, project, search="amazon", date_from="2026-01-01", date_to="2026-01-05")
+    assert [row["vendor"] for row in body["results"]] == ["Amazon"]
+    assert body["results"][0]["paid_on"] == "2026-01-03"
+
+
+def test_date_range_never_leaks_another_projects_orders(client, dated):
+    _tenant, project, orders = dated
+    body = _list(client, project, date_from="2026-01-01", date_to="2026-01-31")
+    assert sorted(_ids(body)) == sorted(o.id for o in orders)
+
+
+def test_date_range_pages_with_correct_count(client, setup):
+    tenant, project = setup
+    with tenant_context(tenant.id):
+        for d in range(40):
+            _order(tenant, project, d)  # Jan 1 .. Feb 9
+    body = _list(client, project, date_from="2026-01-01", date_to="2026-01-31", page_size=25)
+    assert body["count"] == 31
+    assert len(body["results"]) == 25 and body["next"] is not None
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [
+        ("date_from", "not-a-date"),
+        ("date_to", "2026-13-01"),
+        ("date_from", "2026-02-30"),
+        ("date_to", "%00"),
+        ("date_from", "0000-01-01"),
+        ("date_from", "20260104"),
+        ("date_to", "2026-W01-1"),
+        ("date_from", "2026-1-4"),
+    ],
+)
+def test_malformed_dates_are_a_400_naming_the_param(client, setup, param, value):
+    _tenant, project = setup
+    response = client.get(f"/api/v1/orders/?project={project.id}&{param}={value}")
+    assert response.status_code == 400, response.content
+    assert param in response.content.decode()
+
+
+def test_blank_dates_mean_no_filter(client, dated):
+    _tenant, project, orders = dated
+    body = _list(client, project, date_from="", date_to="")
+    assert body["count"] == len(orders)
+
+
+def test_date_params_ignored_on_detail_routes(client, dated):
+    _tenant, project, orders = dated
+    response = client.get(f"/api/v1/orders/{orders[0].id}/?date_from=2026-12-01")
+    assert response.status_code == 200, response.content
+    assert response.json()["number"] == 1
+
+
+def test_lead_date_range_never_reaches_another_project(client, lead_setup):
+    """A date range with no `?project=` must still be RBAC-scoped."""
+    tenant, _admin, lead, a, b, order_a, order_b = lead_setup
+    _login(client, tenant, lead)
+    for url in (
+        "/api/v1/orders/?date_from=2000-01-01&date_to=2100-01-01",
+        f"/api/v1/orders/?project={b.id}&date_from=2000-01-01",
+    ):
+        response = client.get(url)
+        assert response.status_code == 200, response.content
+        assert order_b.id not in {row["id"] for row in response.json()["results"]}, url
+    own = client.get("/api/v1/orders/?date_from=2000-01-01")
+    assert [row["id"] for row in own.json()["results"]] == [order_a.id]
+
+
+def test_date_filtered_query_count_does_not_scale_with_results(client, setup):
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    tenant, project = setup
+    _seed_matching(tenant, project, 3)  # paid 2026-04-11 onwards (day 100+)
+
+    def count():
+        with CaptureQueriesContext(connection) as c:
+            response = client.get(
+                f"/api/v1/orders/?project={project.id}&date_from=2026-04-01&date_to=2026-12-31"
+            )
+        assert response.status_code == 200
+        return len(c.captured_queries), response.json()["count"]
+
+    count()  # warm
+    few, few_n = count()
+    _seed_matching(tenant, project, 7)
+    many, many_n = count()
+    assert (few_n, many_n) == (3, 10)
+    assert many == few, f"query count scales with results: {few} -> {many}"
+
+
+def test_malformed_dates_are_ignored_on_detail_routes(client, dated):
+    _tenant, project, orders = dated
+    url = f"/api/v1/orders/{orders[0].id}/?date_from=junk&date_to=also-junk"
+    assert client.get(url).status_code == 200
+    response = client.patch(url, {"notes": "x"}, content_type="application/json")
+    assert response.status_code == 200, response.content

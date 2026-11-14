@@ -27,6 +27,7 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
+import { DateInput } from "@mantine/dates";
 import { useDebouncedValue } from "@mantine/hooks";
 
 import { api } from "../../api/client";
@@ -51,6 +52,29 @@ function money(amount: string, currency: string): string {
   })}`;
 }
 
+/** Local calendar date as `YYYY-MM-DD` — NOT `toISOString()`, which shifts
+ * to UTC and would move the boundary a day in a UTC+ timezone. */
+function toIsoDate(d: Date | null): string | undefined {
+  if (!d) return undefined;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+/** Strict `YYYY-MM-DD` for the date pickers. Mantine's default parser falls
+ * back to `new Date(text)`, so half-typed input ("202", "2026-01") became a
+ * real date and fired a filtered load per keystroke — one of them a 400. A
+ * `null` here means "not a date yet", which `DateInput` ignores. */
+function parseIsoDate(text: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text.trim());
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(y, mo - 1, d);
+  return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d
+    ? date
+    : null;
+}
+
 function appendUnique(existing: Order[], incoming: Order[]): Order[] {
   const seen = new Set(existing.map((o) => o.id));
   return [...existing, ...incoming.filter((o) => !seen.has(o.id))];
@@ -71,6 +95,13 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebouncedValue(search.trim(), 300);
+  /** Payment-date range (inclusive, either end optional) — filtered
+   * server-side on `paid_on`, combined with the text search. */
+  const [dateFrom, setDateFrom] = useState<Date | null>(null);
+  const [dateTo, setDateTo] = useState<Date | null>(null);
+  const dateFromIso = toIsoDate(dateFrom);
+  const dateToIso = toIsoDate(dateTo);
+  const filtered = Boolean(debouncedSearch || dateFromIso || dateToIso);
   /** Bumped per fresh load so a slow response for an older search term can't
    * overwrite the results of the newer one. */
   const loadSeq = useRef(0);
@@ -96,6 +127,9 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
     async (pages = 1) => {
       const seq = ++loadSeq.current;
       setLoading(true);
+      // A "Show more" for the previous filter may still be in flight; its
+      // result is discarded (seq), so don't leave its spinner behind.
+      setLoadingMore(false);
       setError(null);
       try {
         let rows: Order[] = [];
@@ -103,6 +137,8 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
         for (let p = 1; p <= pages; p += 1) {
           last = await api.listOrders(projectId, {
             search: debouncedSearch || undefined,
+            date_from: dateFromIso,
+            date_to: dateToIso,
             page: p,
           });
           if (seq !== loadSeq.current) return;
@@ -122,7 +158,7 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
         if (seq === loadSeq.current) setLoading(false);
       }
     },
-    [projectId, debouncedSearch],
+    [projectId, debouncedSearch, dateFromIso, dateToIso],
   );
 
   async function loadMore() {
@@ -132,6 +168,8 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
     try {
       const next = await api.listOrders(projectId, {
         search: debouncedSearch || undefined,
+        date_from: dateFromIso,
+        date_to: dateToIso,
         page: page + 1,
       });
       if (seq !== loadSeq.current) return;
@@ -288,9 +326,36 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
         data-testid="expense-search"
       />
 
-      {!loading && !error && (orders.length > 0 || debouncedSearch) && (
+      <Group grow gap="xs">
+        <DateInput
+          label="Paid from"
+          placeholder="Any date"
+          value={dateFrom}
+          onChange={setDateFrom}
+          maxDate={dateTo ?? undefined}
+          valueFormat="YYYY-MM-DD"
+          dateParser={parseIsoDate}
+          clearable
+          size="xs"
+          data-testid="expense-date-from"
+        />
+        <DateInput
+          label="Paid to"
+          placeholder="Any date"
+          value={dateTo}
+          onChange={setDateTo}
+          minDate={dateFrom ?? undefined}
+          valueFormat="YYYY-MM-DD"
+          dateParser={parseIsoDate}
+          clearable
+          size="xs"
+          data-testid="expense-date-to"
+        />
+      </Group>
+
+      {!loading && !error && (orders.length > 0 || filtered) && (
         <Text size="xs" c="dimmed" data-testid="expense-count">
-          {debouncedSearch
+          {filtered
             ? `${total} matching expense${total === 1 ? "" : "s"}`
             : `${total} expense${total === 1 ? "" : "s"}`}
           {orders.length < total ? ` · showing ${orders.length}` : ""}
@@ -314,8 +379,8 @@ export function ExpensesTab({ projectId }: ExpensesTabProps) {
       ) : orders.length === 0 ? (
         <Card withBorder>
           <Text size="sm" c="dimmed">
-            {debouncedSearch
-              ? "No expenses match this search."
+            {filtered
+              ? "No expenses match these filters."
               : "No expenses recorded for this project yet."}
           </Text>
         </Card>
