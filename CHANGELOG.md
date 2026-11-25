@@ -20,6 +20,16 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-25
+
+### Upgrade notes
+
+- Includes database migration `assets.0006_asset_tracking_quantity`: two
+  columns added with constant defaults (every existing asset becomes
+  *Individual*, quantity 1) plus CHECK constraints. Additive only; no data is
+  rewritten. Follow the normal upgrade procedure (`docs/deployment-runbook.md`
+  §3f, backup first).
+
 ### Added
 
 - **`convert_to_counted` management command** to bulk-convert existing assets to
