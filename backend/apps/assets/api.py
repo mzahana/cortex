@@ -24,8 +24,11 @@ per `docs/rbac.md` §1 in `get_queryset()` — see the T1.4 comment there.
 
 Audit (golden-path step 5): `retire` is in `docs/rbac.md` §5's mandatory
 audit list — writes an `AuditLog` entry (before/after status, actor, ip) in
-the same request/transaction. Attachment upload is NOT in that list (only
-`asset.retire` is, among asset actions), so it is not separately audited.
+the same request/transaction. Also audited: asset CREATE (`asset.create`,
+always, here and in the spreadsheet import) and asset EDIT (`asset.edit`,
+ONLY when `tracking`/`quantity`/`is_consumable` change, recording only those
+three fields before/after). Other field edits and attachment upload are not
+audited.
 
 T4.1 — `AssetResolveView`, `GET /api/v1/resolve/{qr_token}`: the scan/label
 target. It is a thin `RetrieveAPIView` sharing `_asset_detail_queryset()`
@@ -57,7 +60,13 @@ from apps.audit.services import client_ip, write_audit_log
 from apps.common.errors import problem_response
 from apps.common.pagination import AssetCursorPagination, BoundedPageNumberPagination
 from apps.dashboard.cache import invalidate_tenant_dashboard
-from apps.rbac.permission_keys import ASSET_ATTACH, ASSET_EDIT, ASSET_RETIRE, ASSET_VIEW
+from apps.rbac.permission_keys import (
+    ASSET_ATTACH,
+    ASSET_CREATE,
+    ASSET_EDIT,
+    ASSET_RETIRE,
+    ASSET_VIEW,
+)
 from apps.rbac.services import get_viewable_project_scope
 
 from .models import Asset, AssetFieldValue, AssetProjectUsage, Attachment
@@ -67,7 +76,7 @@ from .permissions import (
     AssetProjectUsagePermission,
 )
 from .serializers import AssetProjectUsageSerializer, AssetSerializer, AttachmentSerializer
-from .services import save_attachment_file, validate_attachment_upload
+from .services import asset_tracking_snapshot, save_attachment_file, validate_attachment_upload
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +119,7 @@ class AssetFilterSet(filters.FilterSet):
     tag = filters.NumberFilter(method="filter_tag")
     status = filters.ChoiceFilter(choices=Asset.Status.choices)
     is_consumable = filters.BooleanFilter()
+    tracking = filters.ChoiceFilter(choices=Asset.Tracking.choices)
 
     class Meta:
         model = Asset
@@ -121,6 +131,7 @@ class AssetFilterSet(filters.FilterSet):
             "tag",
             "status",
             "is_consumable",
+            "tracking",
         ]
 
     def filter_tag(self, queryset, name, value):
@@ -294,6 +305,39 @@ class AssetViewSet(
         # `OrderingFilter` overrides it whenever `?ordering=` IS given; absent
         # both, this order stands untouched all the way to the response.
         return _asset_detail_queryset().order_by("-created_at")
+
+    def perform_create(self, serializer):
+        asset = serializer.save()
+        write_audit_log(
+            tenant_id=asset.tenant_id,
+            actor=self.request.user,
+            action=ASSET_CREATE,
+            entity_type="asset",
+            entity_id=asset.id,
+            before=None,
+            after=asset_tracking_snapshot(asset),
+            ip=client_ip(self.request),
+        )
+
+    def perform_update(self, serializer):
+        # Only unit-tracking edits are audited here (an asset's count is
+        # inventory-of-record); ordinary field edits stay unaudited as before.
+        asset = serializer.save()
+        # `before` is captured by `AssetSerializer.update` from the row it
+        # locked, so it reflects the state actually overwritten.
+        before = serializer.tracking_before
+        after = asset_tracking_snapshot(asset)
+        if before != after:
+            write_audit_log(
+                tenant_id=asset.tenant_id,
+                actor=self.request.user,
+                action=ASSET_EDIT,
+                entity_type="asset",
+                entity_id=asset.id,
+                before=before,
+                after=after,
+                ip=client_ip(self.request),
+            )
 
     @action(detail=True, methods=["post"])
     def retire(self, request, pk=None):

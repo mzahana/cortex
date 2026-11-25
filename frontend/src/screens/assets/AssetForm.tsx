@@ -10,6 +10,7 @@ import {
   Loader,
   Modal,
   NumberInput,
+  SegmentedControl,
   Select,
   SimpleGrid,
   Stack,
@@ -39,6 +40,7 @@ import { AppLayout } from "../../layout/AppLayout";
 import type {
   Asset,
   AssetStatus,
+  AssetTracking,
   AssetWritePayload,
   Category,
   CustomFieldDef,
@@ -57,6 +59,8 @@ interface FormValues {
   name: string;
   description: string;
   is_consumable: boolean;
+  tracking: AssetTracking;
+  quantity: number | "";
   project: string | null;
   serial_number: string;
   manufacturer: string;
@@ -78,6 +82,8 @@ const EMPTY_VALUES: FormValues = {
   name: "",
   description: "",
   is_consumable: false,
+  tracking: "individual",
+  quantity: 1,
   project: null,
   serial_number: "",
   manufacturer: "",
@@ -273,6 +279,10 @@ export function AssetFormScreen() {
       // Mirrors `AssetSerializer.validate_url` for immediate feedback; the
       // server is still the authority (it stores only http/https, since the
       // detail screen renders this as a real link).
+      quantity: (v, values) =>
+        values.tracking === "counted" && !values.is_consumable && (v === "" || !Number.isInteger(v) || v < 1)
+          ? "Quantity must be a whole number, 1 or more."
+          : null,
       url: (v) =>
         !v.trim() || /^https?:\/\//i.test(v.trim()) ? null : "Must start with http:// or https://.",
     },
@@ -303,6 +313,8 @@ export function AssetFormScreen() {
             name: asset.name,
             description: asset.description,
             is_consumable: asset.is_consumable,
+            tracking: asset.tracking ?? "individual",
+            quantity: asset.quantity ?? 1,
             project: asset.project ? String(asset.project) : null,
             serial_number: asset.serial_number,
             manufacturer: asset.manufacturer,
@@ -635,11 +647,15 @@ export function AssetFormScreen() {
       return;
     }
 
+    // Consumables use stock tracking, never counted; individual is always 1.
+    const isCounted = values.tracking === "counted" && !values.is_consumable;
     const payload: AssetWritePayload = {
       category: Number(values.category),
       name: values.name.trim(),
       description: values.description,
       is_consumable: values.is_consumable,
+      tracking: isCounted ? "counted" : "individual",
+      quantity: isCounted ? Number(values.quantity) : 1,
       project: values.project ? Number(values.project) : null,
       serial_number: values.serial_number,
       manufacturer: values.manufacturer,
@@ -851,8 +867,49 @@ export function AssetFormScreen() {
                   onChange={(e) => {
                     isConsumableTouchedRef.current = true;
                     form.setFieldValue("is_consumable", e.currentTarget.checked);
+                    if (e.currentTarget.checked) {
+                      form.setFieldValue("tracking", "individual");
+                      form.setFieldValue("quantity", 1);
+                    }
                   }}
                 />
+                {!form.values.is_consumable && (
+                  <Stack gap={4} data-testid="asset-form-tracking">
+                    <Text size="sm" fw={500}>
+                      Tracking
+                    </Text>
+                    <SegmentedControl
+                      fullWidth
+                      aria-label="Tracking"
+                      value={form.values.tracking}
+                      onChange={(v) => {
+                        form.setFieldValue("tracking", v as AssetTracking);
+                        if (v === "individual") form.setFieldValue("quantity", 1);
+                      }}
+                      data={[
+                        { value: "individual", label: "Individual" },
+                        { value: "counted", label: "Counted" },
+                      ]}
+                    />
+                    <Text size="xs" c={form.errors.tracking ? "red" : "dimmed"}>
+                      {form.errors.tracking ??
+                        (form.values.tracking === "counted"
+                          ? "Identical items tracked as a count, e.g. 10 screwdrivers; not reservable"
+                          : "One record per physical item; can be reserved and checked out")}
+                    </Text>
+                    {form.values.tracking === "counted" && (
+                      <NumberInput
+                        label="Quantity"
+                        min={1}
+                        allowDecimal={false}
+                        allowNegative={false}
+                        required
+                        data-testid="asset-form-quantity"
+                        {...form.getInputProps("quantity")}
+                      />
+                    )}
+                  </Stack>
+                )}
                 <TagsInput
                   label="Tags"
                   placeholder="Type a tag and press Enter"

@@ -127,6 +127,22 @@ class CustomFieldDefSerializer(serializers.ModelSerializer):
         # `apps.catalog.api.CategoryViewSet.fields`).
         category = self.context.get("category") or getattr(self.instance, "category", None)
         key = attrs.get("key", getattr(self.instance, "key", None))
+        # A NEW key (or a changed one) may not collide with a core asset
+        # import/export column (`quantity`, `tracking`, `name`, ...): the
+        # sheet would carry two same-named columns. Existing fields are left
+        # alone. Local import: `apps.imports` imports `apps.catalog`.
+        if key and (self.instance is None or key != getattr(self.instance, "key", None)):
+            from apps.imports.services import is_reserved_custom_key
+
+            if is_reserved_custom_key(key):
+                raise serializers.ValidationError(
+                    {
+                        "key": (
+                            f"'{key}' is reserved for a built-in asset column; "
+                            "choose a different key."
+                        )
+                    }
+                )
         if category is not None and key:
             qs = CustomFieldDef.objects.filter(category=category, key=key)
             if self.instance is not None:

@@ -224,7 +224,10 @@ class TestF2MilestoneAcceptanceEndToEnd:
             assert Asset.objects.filter(pk=pool_component["id"]).exists()
 
         entry = AuditLog.all_objects.get(
-            tenant=tenant, entity_type="asset", entity_id=str(pool_component["id"])
+            tenant=tenant,
+            entity_type="asset",
+            entity_id=str(pool_component["id"]),
+            action="asset.retire",
         )
         assert entry.action == "asset.retire"
         assert entry.before is not None and entry.before["status"] == "available"

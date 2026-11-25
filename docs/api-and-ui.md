@@ -195,7 +195,7 @@
 ### Assets
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/assets` | Paginated list; filters: `category,status,location,project,tag,is_consumable`; `search=` (FTS+fuzzy) |
+| GET | `/api/v1/assets` | Paginated list; filters: `category,status,location,project,tag,is_consumable,tracking`; `search=` (FTS+fuzzy) |
 | POST | `/api/v1/assets` | Create (incl. custom field values) |
 | GET/PATCH | `/api/v1/assets/{id}` | Detail / edit |
 | POST | `/api/v1/assets/{id}/retire` | Retire / mark lost |

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.db import transaction
 from rest_framework import serializers
 
 from apps.accounts.models import User
@@ -22,7 +23,7 @@ from apps.catalog.models import Category, Location, Tag
 from apps.projects.models import Project
 
 from .models import Asset, AssetProjectUsage, Attachment
-from .services import replace_asset_field_values
+from .services import asset_tracking_snapshot, counted_blockers, replace_asset_field_values
 
 
 class AssetProjectUsageSerializer(serializers.ModelSerializer):
@@ -106,6 +107,9 @@ class AttachmentSerializer(serializers.ModelSerializer):
 
 
 class AssetSerializer(serializers.ModelSerializer):
+    #: Set by `update()` from the row it locked; read by the view's audit.
+    tracking_before: dict[str, Any]
+
     # Write-only: `Asset.tags` is a real M2M manager attribute (through
     # `TagLink`), so DRF's default attribute-lookup `to_representation()`
     # can't render it directly from a plain `ListField` of names (it would
@@ -133,6 +137,8 @@ class AssetSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "is_consumable",
+            "tracking",
+            "quantity",
             "project",
             "serial_number",
             "manufacturer",
@@ -156,6 +162,9 @@ class AssetSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "uuid", "qr_token", "retired_at", "created_at", "updated_at"]
+        # The DB constraint is `quantity >= 1`; `PositiveIntegerField` alone
+        # would let 0 through to an IntegrityError (500).
+        extra_kwargs = {"quantity": {"min_value": 1}}
 
     def get_fields(self):
         fields = super().get_fields()
@@ -207,6 +216,8 @@ class AssetSerializer(serializers.ModelSerializer):
             if category is not None:
                 attrs["is_consumable"] = category.default_is_consumable
 
+        self._validate_tracking(attrs)
+
         # `status` is edit-able for ordinary lifecycle moves (available <->
         # in_use <-> maintenance <-> lost) but NOT to/from `retired` — that
         # transition only ever happens through the dedicated `retire` action
@@ -223,6 +234,61 @@ class AssetSerializer(serializers.ModelSerializer):
                 {"status": "A retired asset cannot be edited back to another status here."}
             )
         return attrs
+
+    def _validate_tracking(self, attrs: dict[str, Any], instance: Asset | None = None) -> None:
+        """Mirror the `asset_*` tracking/quantity DB CheckConstraints as 400s
+        (never an IntegrityError 500). Runs AFTER the `is_consumable`
+        category default above. On PATCH any of the three inputs that the
+        payload omits falls back to the instance's current value, so a
+        partial edit is judged against the state it would produce.
+        """
+        if instance is None:
+            instance = self.instance  # type: ignore[assignment]
+        tracking = attrs.get(
+            "tracking", instance.tracking if instance else Asset.Tracking.INDIVIDUAL
+        )
+        quantity = attrs.get("quantity", instance.quantity if instance else 1)
+        is_consumable = attrs.get("is_consumable", instance.is_consumable if instance else False)
+        counted = tracking == Asset.Tracking.COUNTED
+
+        if counted and is_consumable:
+            key = "tracking" if "tracking" in attrs or instance is None else "is_consumable"
+            raise serializers.ValidationError(
+                {key: "A consumable can't be counted; consumables are tracked via stock."}
+            )
+
+        if not counted and quantity != 1:
+            if instance is not None and instance.tracking == Asset.Tracking.COUNTED:
+                if "quantity" not in attrs:
+                    raise serializers.ValidationError(
+                        {
+                            "tracking": (
+                                "Set quantity to 1 to convert a counted asset back to "
+                                "individual."
+                            )
+                        }
+                    )
+            raise serializers.ValidationError(
+                {
+                    "quantity": (
+                        "An individual asset has a quantity of 1. Set tracking to "
+                        "'counted' to track more than one unit."
+                    )
+                }
+            )
+
+        if counted and instance is not None and instance.tracking != Asset.Tracking.COUNTED:
+            self._assert_can_become_counted(instance)
+
+    @staticmethod
+    def _assert_can_become_counted(asset: Asset) -> None:
+        """Counted assets are never reservable/checkout-able, so an asset that
+        already has an ACTIVE reservation or an open checkout can't switch.
+        The rules live in `counted_blockers` (shared with the
+        `convert_to_counted` command)."""
+        blockers = counted_blockers(asset)
+        if blockers:
+            raise serializers.ValidationError({"tracking": blockers[0][1]})
 
     def _sync_tags(self, asset: Asset, tag_names: list[str]) -> None:
         from .models import TagLink
@@ -261,9 +327,23 @@ class AssetSerializer(serializers.ModelSerializer):
     def update(self, instance: Asset, validated_data: dict[str, Any]) -> Asset:
         tag_names = validated_data.pop("tags", None)
         custom_field_values = validated_data.pop("custom_field_values", None)
-        for field, value in validated_data.items():
-            setattr(instance, field, value)
-        instance.save()
+        with transaction.atomic():
+            # Lock the row and apply the edit onto the LOCKED copy: saving the
+            # pre-lock `instance` would overwrite concurrent writes (e.g. a
+            # check-in flipping `status`) with stale values. The lock also
+            # serializes with checkout/reservation creation, which re-check
+            # `tracking` under the same row lock.
+            locked = Asset.objects.select_for_update().get(pk=instance.pk)
+            self.tracking_before = asset_tracking_snapshot(locked)
+            # Re-run the FULL tracking rules against the locked row merged
+            # with the incoming attrs (a concurrent edit may have changed the
+            # state `validate()` saw) -> 400, never a DB IntegrityError 500.
+            self._validate_tracking(validated_data, locked)
+            for field, value in validated_data.items():
+                setattr(locked, field, value)
+            locked.save()
+        # Keep prefetch caches of the view's instance out of the response.
+        instance = locked
         category = validated_data.get("category", instance.category)
         # Only touch custom fields when the client's raw payload actually
         # included the key — distinguishing "omitted" (leave untouched) from

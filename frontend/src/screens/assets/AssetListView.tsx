@@ -30,6 +30,7 @@ function defaultFilters(): AssetFiltersValue {
     tagId: null,
     status: null,
     isConsumable: null,
+    tracking: null,
     includeRetired: false,
     ordering: "relevance",
     viewMode: "card",
@@ -167,6 +168,7 @@ export function AssetListView({
         filterState.isConsumable === null || filterState.isConsumable === ""
           ? undefined
           : filterState.isConsumable === "true",
+      tracking: (filterState.tracking as AssetListParams["tracking"]) || undefined,
       include_retired: filterState.includeRetired || undefined,
     }),
     [
@@ -178,6 +180,7 @@ export function AssetListView({
       filterState.tagId,
       filterState.status,
       filterState.isConsumable,
+      filterState.tracking,
       filterState.includeRetired,
       showProjectFilter,
     ],

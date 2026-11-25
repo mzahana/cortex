@@ -267,6 +267,8 @@ class CheckoutSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Only a durable (non-consumable) asset may be checked out."
             )
+        if asset.tracking == Asset.Tracking.COUNTED:
+            raise serializers.ValidationError("Counted assets can't be checked out.")
         if asset.status not in CHECKOUT_ELIGIBLE_ASSET_STATUSES:
             raise serializers.ValidationError(
                 f"Asset is '{asset.status}' and cannot be checked out right now."
@@ -398,6 +400,9 @@ class CheckoutSerializer(serializers.ModelSerializer):
             # the second request re-reads `status` with the first's write
             # already visible instead of racing past the eligibility check.
             locked_asset = Asset.objects.select_for_update().get(pk=asset.pk)
+            if locked_asset.tracking == Asset.Tracking.COUNTED:
+                # Race with a concurrent individual->counted switch.
+                raise serializers.ValidationError({"asset": "Counted assets can't be checked out."})
             if locked_asset.status not in CHECKOUT_ELIGIBLE_ASSET_STATUSES:
                 raise serializers.ValidationError(
                     {

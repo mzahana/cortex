@@ -288,9 +288,10 @@ export function AssetDetailScreen() {
   const canReserve = hasAssetPermission(me, RESERVATION_CREATE, asset.project);
   const canCheckout = hasAssetPermission(me, CHECKOUT_MANAGE, asset.project);
   const canPrintLabel = hasAssetPermission(me, LABEL_GENERATE, asset.project);
+  const isCounted = asset.tracking === "counted";
   const isRetired = asset.status === "retired";
   const isCheckoutEligible =
-    !asset.is_consumable && ["available", "reserved"].includes(asset.status);
+    !asset.is_consumable && !isCounted && ["available", "reserved"].includes(asset.status);
   const isCheckedOutByMe = !!myOpenCheckout;
 
   const handleReservationCreated = (reservation: Reservation) => {
@@ -395,6 +396,9 @@ export function AssetDetailScreen() {
             <Text size="xs" c="dimmed">
               {category?.name ?? `Category #${asset.category}`}
               {asset.is_consumable ? " · Consumable" : " · Durable"}
+              {isCounted && (
+                <span data-testid="asset-counted-line"> · Counted · Quantity {asset.quantity}</span>
+              )}
             </Text>
             {asset.description && <Text size="sm">{asset.description}</Text>}
             <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs" mt="xs">
@@ -617,7 +621,7 @@ export function AssetDetailScreen() {
               </Tooltip>
             )}
 
-            {!asset.is_consumable && canReserve ? (
+            {!asset.is_consumable && !isCounted && canReserve ? (
               <Button
                 size="sm"
                 variant="default"
@@ -631,7 +635,9 @@ export function AssetDetailScreen() {
                 label={
                   asset.is_consumable
                     ? "Consumable assets can't be reserved"
-                    : "You don't have permission to reserve this asset"
+                    : isCounted
+                      ? "Counted assets can't be reserved"
+                      : "You don't have permission to reserve this asset"
                 }
               >
                 <Button size="sm" variant="default" disabled>
@@ -673,7 +679,9 @@ export function AssetDetailScreen() {
                 label={
                   asset.is_consumable
                     ? "Consumable assets can't be checked out"
-                    : !isCheckoutEligible
+                    : isCounted
+                      ? "Counted assets can't be checked out"
+                      : !isCheckoutEligible
                       ? `Asset is '${asset.status}' and can't be checked out right now`
                       : "You don't have permission to check out this asset"
                 }

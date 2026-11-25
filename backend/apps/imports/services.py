@@ -130,9 +130,11 @@ from django.db.models.functions import Lower
 from rest_framework import serializers
 
 from apps.assets.models import Asset, AssetFieldValue, TagLink
-from apps.assets.services import validate_custom_field_values
+from apps.assets.services import asset_tracking_snapshot, validate_custom_field_values
+from apps.audit.models import AuditLog
 from apps.catalog.models import Category, CustomFieldDef, Location, Tag
 from apps.projects.models import Project
+from apps.rbac.permission_keys import ASSET_CREATE
 
 # --- Column-mapping targets (module docstring is the schema authority) ------
 
@@ -144,6 +146,8 @@ TARGET_STATUS = "status"
 TARGET_CONDITION = "condition"
 TARGET_TAGS = "tags"
 TARGET_URL = "url"
+TARGET_TRACKING = "tracking"
+TARGET_QUANTITY = "quantity"
 TARGET_DESCRIPTION = "description"
 TARGET_SERIAL_NUMBER = "serial_number"
 TARGET_MANUFACTURER = "manufacturer"
@@ -198,6 +202,8 @@ CORE_TARGETS: frozenset[str] = frozenset(
         # through to `TARGET_CUSTOM` and a re-imported export would try to
         # materialize the built-in column as a per-category custom field.
         TARGET_URL,
+        TARGET_TRACKING,
+        TARGET_QUANTITY,
         # The rest of `Asset`'s own scalar columns. These were missing from
         # the original T6.1 schema (which was designed blind against Q8's
         # unavailable sample spreadsheet) even though every one of them is a
@@ -287,29 +293,98 @@ def normalize_header(header: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", header.lower()).strip()
 
 
-def default_column_mapping(headers: list[str]) -> dict[str, str]:
+#: Prefix the exporter/template put on a CUSTOM field's column header when the
+#: field's key collides with a core column name (`quantity`, `tracking`, ...),
+#: so a file never has two identically-named columns. The importer maps such a
+#: header back to the custom field (`resolve_import_rows` strips it).
+CUSTOM_HEADER_PREFIX = "custom:"
+
+#: Core targets that used to fall through to a per-category custom field of the
+#: same key (they were not core targets before counted assets). A tenant that
+#: already has such a custom field keeps that mapping by default.
+_FORMERLY_CUSTOM_TARGETS: frozenset[str] = frozenset({TARGET_QUANTITY, TARGET_TRACKING})
+
+
+def _core_header_targets() -> dict[str, str]:
+    """`{normalized header spelling: core target}` for every core target's own
+    name and every `HEADER_ALIASES` spelling."""
+    by_normalized = {normalize_header(target): target for target in CORE_TARGETS}
+    by_normalized.update(HEADER_ALIASES)
+    return by_normalized
+
+
+def is_reserved_custom_key(key: str) -> bool:
+    """True if `key` normalizes to a core target or alias spelling (used to
+    refuse NEW custom field keys that would shadow a built-in column)."""
+    return normalize_header(key) in _core_header_targets()
+
+
+def custom_field_collisions(*, keys_only: bool = False) -> dict[str, str]:
+    """THE collision rule, shared by the exporter, the template and the
+    importer: a tenant custom field "collides" when `normalize_header(key)` or
+    `normalize_header(label)` equals a core target or `HEADER_ALIASES` entry.
+    Returns `{custom field key: core target}` computed tenant-wide (never from
+    a filtered subset). `keys_only=True` ignores label matches (the
+    exporter/template use it: their headers are keys, so a label-only match
+    never clashes with a core column). Caller must be inside the tenant
+    context (uses the tenant-scoped manager).
+    """
+    by_normalized = _core_header_targets()
+    collisions: dict[str, str] = {}
+    for key, label in CustomFieldDef.objects.values_list("key", "label").order_by("id"):
+        target = by_normalized.get(normalize_header(key)) or (
+            None if keys_only else by_normalized.get(normalize_header(label))
+        )
+        if target is not None:
+            collisions.setdefault(key, target)
+    return collisions
+
+
+def default_column_mapping(
+    headers: list[str], colliding_targets: frozenset[str] | set[str] = frozenset()
+) -> dict[str, str]:
     """Auto-match every header against `CORE_TARGETS` — by the target's own
     name or any `HEADER_ALIASES` spelling, compared on `normalize_header`
     output; anything unmatched defaults to `"custom"` (per-row/per-category
     custom-field resolution, see module docstring) rather than `"ignore"` —
     every column is used unless the caller explicitly opts a header out via
     an override mapping.
+
+    `colliding_targets` = the core targets some tenant custom field collides
+    with (`custom_field_collisions().values()`). For a target that used to be
+    custom-only (`quantity`/`tracking`) the plain header then defaults to the
+    custom field (prior behavior) — UNLESS the sheet has any `custom:` header,
+    which marks it as one of our exports/templates whose plain column is the
+    core one.
     """
-    by_normalized = {normalize_header(target): target for target in CORE_TARGETS}
-    by_normalized.update(HEADER_ALIASES)
+    by_normalized = _core_header_targets()
+    lowered = {h.strip().lower() for h in headers}
+    # One of OUR exports/templates (as opposed to a hand-made sheet): it has a
+    # `custom:` column, or both new core columns `tracking` AND `quantity`
+    # (a pre-counted-assets sheet never had `tracking`). Its plain columns are
+    # the core ones.
+    has_both_core = TARGET_TRACKING in lowered and TARGET_QUANTITY in lowered
+    ours = has_both_core or any(h.startswith(CUSTOM_HEADER_PREFIX) for h in lowered)
     mapping: dict[str, str] = {}
     for header in headers:
-        mapping[header] = by_normalized.get(normalize_header(header), TARGET_CUSTOM)
+        target = by_normalized.get(normalize_header(header), TARGET_CUSTOM)
+        if target in _FORMERLY_CUSTOM_TARGETS and target in colliding_targets and not ours:
+            target = TARGET_CUSTOM
+        mapping[header] = target
     return mapping
 
 
-def resolve_column_mapping(headers: list[str], override: dict[str, str] | None) -> dict[str, str]:
+def resolve_column_mapping(
+    headers: list[str],
+    override: dict[str, str] | None,
+    colliding_targets: frozenset[str] | set[str] = frozenset(),
+) -> dict[str, str]:
     """The auto-detected default (`default_column_mapping`), with any
     caller-supplied `override` entries replacing the default for the SAME
     header (an override for a header that isn't actually present in the
     file is silently ignored — it can't apply to anything).
     """
-    resolved = default_column_mapping(headers)
+    resolved = default_column_mapping(headers, colliding_targets)
     if override:
         for header, target in override.items():
             if header in resolved and target in ALL_TARGETS:
@@ -457,6 +532,78 @@ def _parse_date(value: Any) -> tuple[date | None, str | None]:
         return None, f"'{value}' is not a date. Use YYYY-MM-DD (e.g. 2026-03-14)."
 
 
+def _parse_quantity(value: Any) -> tuple[int | None, str | None]:
+    """A quantity cell -> positive `int`, or an error message. Spreadsheets
+    hand back `3.0` for a numeric cell, so an integral float is accepted;
+    anything else (text, 2.5, 0, negative) is a row error, never a crash."""
+    if value is None:
+        return None, None
+    raw = str(value).strip()
+    if not raw:
+        return None, None
+    try:
+        parsed = Decimal(raw.replace(",", ""))
+    except InvalidOperation:
+        return None, f"'{value}' is not a whole number."
+    if not parsed.is_finite() or parsed != parsed.to_integral_value():
+        return None, f"'{value}' is not a whole number."
+    if parsed < 1:
+        return None, "Quantity must be at least 1."
+    if parsed > 2_000_000_000:
+        return None, "Value is too large."
+    return int(parsed), None
+
+
+def _resolve_tracking(resolved: "ResolvedRow", quantity_cell: Any, tracking_cell: Any) -> None:
+    """Derive `tracking`/`quantity` for a row and record per-row errors.
+
+    Blank `tracking` => counted iff quantity > 1, else individual. An explicit
+    `tracking` must agree with `quantity` (individual => 1). A consumable
+    category (its default decides `is_consumable`) can never be counted. Runs
+    after category resolution because that rule needs the category.
+    """
+    quantity, err = _parse_quantity(quantity_cell)
+    if err:
+        resolved.errors[TARGET_QUANTITY] = err
+        return
+
+    explicit: str | None = None
+    if tracking_cell is not None and str(tracking_cell).strip():
+        explicit = str(tracking_cell).strip().lower()
+        if explicit not in Asset.Tracking.values:
+            resolved.errors[TARGET_TRACKING] = (
+                f"'{tracking_cell}' is not a valid tracking value "
+                f"({', '.join(Asset.Tracking.values)})."
+            )
+            return
+
+    qty = quantity if quantity is not None else 1
+    if explicit is None:
+        tracking = Asset.Tracking.COUNTED if qty > 1 else Asset.Tracking.INDIVIDUAL
+    else:
+        tracking = Asset.Tracking(explicit)
+        if tracking == Asset.Tracking.INDIVIDUAL and qty != 1:
+            resolved.errors[TARGET_QUANTITY] = (
+                "An individual asset has a quantity of 1; set tracking to 'counted' "
+                "to import more than one unit."
+            )
+            return
+
+    if (
+        tracking == Asset.Tracking.COUNTED
+        and resolved.category is not None
+        and resolved.category.default_is_consumable
+    ):
+        resolved.errors[TARGET_QUANTITY] = (
+            "This category holds consumables, which can't be counted (they are "
+            "tracked via stock)."
+        )
+        return
+
+    resolved.tracking = tracking
+    resolved.quantity = qty
+
+
 # --- Row resolution -----------------------------------------------------------
 
 
@@ -471,6 +618,10 @@ class ResolvedRow:
     status: str = Asset.Status.AVAILABLE
     condition: str = ""
     url: str = ""
+    #: `Asset.Tracking` value, derived in `resolve_import_rows` from the
+    #: `tracking`/`quantity` cells (see `_resolve_tracking`).
+    tracking: str = Asset.Tracking.INDIVIDUAL
+    quantity: int = 1
     description: str = ""
     serial_number: str = ""
     manufacturer: str = ""
@@ -551,6 +702,8 @@ class ResolvedRow:
                 ),
                 "tags": self.tag_names,
                 "status": self.status,
+                "tracking": self.tracking,
+                "quantity": self.quantity,
                 "condition": self.condition,
                 "url": self.url,
                 "description": self.description,
@@ -656,18 +809,26 @@ def resolve_import_rows(
     projects = _NameIndex(Project.objects.all())
     status_by_lower = {choice.lower(): choice for choice in Asset.Status.values}
 
+    colliding_targets = frozenset(custom_field_collisions().values())
+    core_header_targets = _core_header_targets()
+
     header_to_target: dict[str, str] | None = None
     row_number = 1  # header row is row 1
 
     for headers, raw_row in iter_source_rows(source_stream, filename):
         if header_to_target is None:
-            header_to_target = resolve_column_mapping(headers, mapping_override)
+            header_to_target = resolve_column_mapping(
+                headers, mapping_override, colliding_targets=colliding_targets
+            )
             if resolved_mapping_out is not None:
                 resolved_mapping_out.update(header_to_target)
         row_number += 1
 
         resolved = ResolvedRow(row_number=row_number)
         custom_raw: dict[str, Any] = {}
+        quantity_cell: Any = None
+        tracking_cell: Any = None
+        demoted: dict[str, tuple[str, Any]] = {}
 
         for header, cell in raw_row.items():
             target = header_to_target.get(header, TARGET_CUSTOM)
@@ -758,13 +919,28 @@ def resolve_import_rows(
                     resolved.errors[TARGET_URL] = "URL must start with http:// or https://."
                 else:
                     resolved.url = raw_url
+            elif target == TARGET_QUANTITY:
+                quantity_cell = value
+            elif target == TARGET_TRACKING:
+                tracking_cell = value
             elif target == TARGET_TAGS:
                 if value is not None:
                     resolved.tag_names = [
                         part.strip() for part in str(value).split(",") if part.strip()
                     ]
             else:  # TARGET_CUSTOM
-                custom_raw[header.strip().lower()] = value
+                custom_key = header.strip().lower()
+                if custom_key.startswith(CUSTOM_HEADER_PREFIX):
+                    custom_key = custom_key[len(CUSTOM_HEADER_PREFIX) :]
+                else:
+                    demoted_target = core_header_targets.get(normalize_header(header))
+                    if demoted_target in _FORMERLY_CUSTOM_TARGETS:
+                        # A plain quantity/tracking header that was routed to
+                        # the custom field by the collision fallback: if this
+                        # row's category has no such field, the value goes to
+                        # the core target instead of being dropped.
+                        demoted[custom_key] = (demoted_target, value)
+                custom_raw[custom_key] = value
 
         if resolved.name is None and TARGET_NAME not in resolved.errors:
             # Guarded on the existing error so an over-long name keeps the
@@ -794,6 +970,12 @@ def resolve_import_rows(
             for header_lower, raw_value in custom_raw.items():
                 field_def = by_key.get(header_lower) or by_label.get(header_lower)
                 if field_def is None:
+                    if header_lower in demoted:
+                        core_target, core_value = demoted[header_lower]
+                        if core_target == TARGET_QUANTITY:
+                            quantity_cell = core_value
+                        else:
+                            tracking_cell = core_value
                     continue  # column doesn't apply to this row's category
                 values_by_key[field_def.key] = raw_value
 
@@ -811,6 +993,8 @@ def resolve_import_rows(
                 resolved.errors["custom_field_values"] = errors
             else:
                 resolved.custom_field_pairs = pairs
+
+        _resolve_tracking(resolved, quantity_cell, tracking_cell)
 
         yield resolved
 
@@ -1145,6 +1329,7 @@ def commit_import_rows(
         return [], report
 
     created_ids: list[int] = []
+    audit_entries: list[AuditLog] = []
     with transaction.atomic():
         if creatable:
             by_target_name, created_names = _create_missing_references(
@@ -1196,6 +1381,8 @@ def commit_import_rows(
                 currency=row.currency,
                 warranty_expiry=row.warranty_expiry,
                 is_consumable=row.category.default_is_consumable,
+                tracking=row.tracking,
+                quantity=row.quantity,
             )
             if row.custom_field_pairs:
                 AssetFieldValue.objects.bulk_create(
@@ -1212,6 +1399,21 @@ def commit_import_rows(
                     tag_cache[key.lower()] = tag
                 TagLink.objects.create(tenant=tenant, asset=asset, tag=tag)
             created_ids.append(asset.id)
+            audit_entries.append(
+                AuditLog(
+                    tenant=tenant,
+                    actor=actor if getattr(actor, "is_authenticated", False) else None,
+                    action=ASSET_CREATE,
+                    entity_type="asset",
+                    entity_id=str(asset.id),
+                    before=None,
+                    after=asset_tracking_snapshot(asset),
+                )
+            )
+
+        # Same shape as `AssetViewSet.perform_create`'s `asset.create` entry,
+        # written in the same transaction, in one INSERT (query budget).
+        AuditLog.all_objects.bulk_create(audit_entries)
 
     return created_ids, report
 

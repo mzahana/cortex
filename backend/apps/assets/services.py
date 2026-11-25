@@ -306,3 +306,52 @@ def save_attachment_file(
     if size is None:
         size = default_storage.size(storage_key)
     return storage_key, content_type, size
+
+
+def asset_tracking_snapshot(asset: Any) -> dict[str, Any]:
+    """The only asset fields recorded in `asset.create`/`asset.edit` audit
+    entries (see the `apps.assets.api` module docstring)."""
+    return {
+        "tracking": asset.tracking,
+        "quantity": asset.quantity,
+        "is_consumable": asset.is_consumable,
+    }
+
+
+def counted_blockers(asset: Any) -> list[tuple[str, str]]:
+    """Reasons `asset` can't switch from individual to counted right now, as
+    `(short label, API error message)` pairs in check order (active
+    reservation, stock record, open checkout). Empty = nothing blocks it.
+
+    Single source of truth for `AssetSerializer._assert_can_become_counted`
+    and the `convert_to_counted` management command. Tenant-scoped managers:
+    must run inside a tenant context.
+    """
+    from apps.reservations.models import Checkout, Reservation
+    from apps.stock.models import StockItem
+
+    blockers: list[tuple[str, str]] = []
+    if Reservation.objects.filter(asset=asset, status__in=Reservation.ACTIVE_STATUSES).exists():
+        blockers.append(
+            (
+                "active reservation",
+                "This asset has active reservations. Cancel or complete them "
+                "before switching it to counted.",
+            )
+        )
+    if StockItem.objects.filter(asset=asset).exists():
+        blockers.append(
+            (
+                "stock record",
+                "This asset has a stock record (it was a consumable). A counted "
+                "asset can't also carry stock; remove the stock record first.",
+            )
+        )
+    if Checkout.objects.filter(asset=asset, checked_in_at__isnull=True).exists():
+        blockers.append(
+            (
+                "open checkout",
+                "This asset is checked out. Check it in before switching it to counted.",
+            )
+        )
+    return blockers

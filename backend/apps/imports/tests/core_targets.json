@@ -1,0 +1,21 @@
+[
+  "category",
+  "condition",
+  "currency",
+  "description",
+  "location",
+  "manufacturer",
+  "model",
+  "name",
+  "project",
+  "purchase_cost",
+  "purchase_date",
+  "quantity",
+  "serial_number",
+  "status",
+  "supplier",
+  "tags",
+  "tracking",
+  "url",
+  "warranty_expiry"
+]

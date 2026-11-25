@@ -34,7 +34,7 @@ export function AssetPickerSelect({ value, onChange, ...rest }: AssetPickerSelec
     debounceRef.current = setTimeout(() => {
       setLoading(true);
       api
-        .listAssets({ search: searchValue || undefined, is_consumable: false, page_size: 15 })
+        .listAssets({ search: searchValue || undefined, is_consumable: false, tracking: "individual", page_size: 15 })
         .then((body) => setOptions(body.results))
         .catch(() => setOptions([]))
         .finally(() => setLoading(false));
@@ -50,7 +50,7 @@ export function AssetPickerSelect({ value, onChange, ...rest }: AssetPickerSelec
   useEffect(() => {
     setLoading(true);
     api
-      .listAssets({ is_consumable: false, page_size: 15 })
+      .listAssets({ is_consumable: false, tracking: "individual", page_size: 15 })
       .then((body) => setOptions((prev) => (prev.length ? prev : body.results)))
       .catch(() => undefined)
       .finally(() => setLoading(false));

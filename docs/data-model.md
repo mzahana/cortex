@@ -79,6 +79,14 @@ erDiagram
 - **Asset** — the central record.
   - Identity: `id (uuid, public code), tenant_id, category_id, name, description`.
   - Type flags: `is_consumable(bool)`, `project_id(nullable)`.
+  - Unit tracking: `tracking(individual|counted)` (default `individual`), `quantity(int >=1, default 1)`.
+    A *counted* asset is ONE record for N identical durable units (a box of screwdrivers) — just a
+    count; no partial lending. Counted assets are never reservable/checkout-able (rejected in the
+    reservation and checkout serializers; an individual->counted switch is refused while the asset
+    has an active reservation or open checkout). DB CheckConstraints: `asset_tracking_valid`,
+    `asset_quantity_positive`, `asset_individual_quantity_one` (individual => quantity 1),
+    `asset_consumable_not_counted`. `quantity` is NOT consumable stock (`StockItem.quantity_on_hand`)
+    and never feeds money (budgets come from `Expense.amount`). Create/edit of tracking/quantity is audited.
   - Physical/commercial: `serial_number, manufacturer, model, location_id, purchase_date, purchase_cost, currency, warranty_expiry, supplier, url`.
     `url` is the built-in link (product/procurement/docs page) so the
     near-universal case needs no per-category custom field; `http`/`https`

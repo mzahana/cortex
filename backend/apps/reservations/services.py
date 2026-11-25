@@ -17,6 +17,8 @@ from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.exceptions import APIException
 
+from apps.assets.models import Asset
+
 from .models import Reservation
 from .signals import approval_decision, approval_request, reservation_confirmed
 
@@ -180,6 +182,12 @@ def create_reservation(
 
     try:
         with transaction.atomic():
+            # Serialize against a concurrent individual->counted switch
+            # (`AssetSerializer.update` locks the same row and checks for
+            # active reservations); counted assets are never reservable.
+            locked_asset = Asset.objects.select_for_update().get(pk=asset.pk)
+            if locked_asset.tracking == Asset.Tracking.COUNTED:
+                raise serializers.ValidationError({"asset": "Counted assets can't be reserved."})
             reservation = Reservation.objects.create(
                 tenant=tenant,
                 asset=asset,

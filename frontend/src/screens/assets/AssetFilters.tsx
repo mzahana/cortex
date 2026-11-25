@@ -15,6 +15,7 @@ export interface AssetFiltersValue {
   tagId: string | null;
   status: string | null;
   isConsumable: string | null;
+  tracking: string | null;
   includeRetired: boolean;
   ordering: AssetOrderingOrRelevance;
   viewMode: ViewMode;
@@ -37,6 +38,11 @@ interface AssetFiltersProps {
 const IS_CONSUMABLE_OPTIONS: SelectOption[] = [
   { value: "true", label: "Consumable" },
   { value: "false", label: "Durable" },
+];
+
+const TRACKING_OPTIONS: SelectOption[] = [
+  { value: "individual", label: "Individual" },
+  { value: "counted", label: "Counted" },
 ];
 
 /**
@@ -129,6 +135,15 @@ export function AssetFilters({
           clearable
           w={140}
           aria-label="Filter by consumable/durable"
+        />
+        <Select
+          placeholder="Tracking"
+          data={TRACKING_OPTIONS}
+          value={value.tracking}
+          onChange={(v) => set("tracking", v)}
+          clearable
+          w={140}
+          aria-label="Filter by tracking"
         />
         <Select
           placeholder="Sort"

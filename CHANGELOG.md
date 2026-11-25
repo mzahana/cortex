@@ -20,6 +20,34 @@ matching `## [X.Y.Z]` section here all agree. See "Cutting a release" in
 
 ## [Unreleased]
 
+### Added
+
+- **`convert_to_counted` management command** to bulk-convert existing assets to
+  Counted on a live deployment (export candidates CSV, dry-run by default,
+  all-or-nothing `--apply` with audit entries and a before/after project
+  financial-figures guard). See `docs/deployment-runbook.md` §3g.
+- **Counted assets.** Identical durable items (screwdrivers, cables) can now be
+  tracked as ONE asset with a count instead of one record per unit. When adding
+  an asset you pick *Individual* (today's behavior, one physical unit,
+  reservable and checkout-able) or *Counted* (a quantity of 1 or more). Counted
+  assets are never reservable or checkout-able, can't be consumables, and still
+  get a single QR label. The asset list can be filtered by tracking, the CSV
+  export gains `tracking` and `quantity` columns, and the spreadsheet import
+  accepts a `quantity` column (above 1 creates a counted asset). An existing
+  asset can be switched to counted unless it has active reservations or is
+  checked out. Costs, budgets and dashboards are unaffected.
+- **Import mapping for `quantity`/`tracking`.** Only the exact `quantity` and
+  `tracking` headers map to the built-in columns (no `Qty`/`Count` aliases). If
+  your tenant already has a custom field with key `quantity` or `tracking`, that
+  header keeps filling the custom field by default (re-point it in the mapping
+  step to use the built-in column). Exports and the template label such a custom
+  column `custom:<key>` so no two columns share a name, and new custom fields
+  can no longer use a key that matches a built-in column.
+- **Spreadsheet import note.** A plain "Quantity" or "Tracking" column now maps
+  to the new built-in fields (choose *Ignore* in the mapping step if you don't
+  want that). New custom field keys that match built-in import columns or their
+  aliases (for example `model`, `brand`, `price`) are refused.
+
 ## [0.17.4] - 2026-11-14
 
 ### Added

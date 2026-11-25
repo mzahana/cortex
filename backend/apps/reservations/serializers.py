@@ -89,6 +89,8 @@ class ReservationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "This asset is a consumable (tracked via stock, not reservations)."
             )
+        if asset.tracking == Asset.Tracking.COUNTED:
+            raise serializers.ValidationError("Counted assets can't be reserved.")
         return asset
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:

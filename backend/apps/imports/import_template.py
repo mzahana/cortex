@@ -76,12 +76,12 @@ from apps.assets.models import Asset
 from apps.catalog.models import Category, CustomFieldDef, Location
 from apps.projects.models import Project
 
-from .exports import CORE_EXPORT_COLUMNS
+from .exports import CORE_EXPORT_COLUMNS, custom_column_header
 from .permissions import ImportRunPermission
 
 # Single source of truth: the parser picks the sheet by THIS name
 # (`apps.imports.services._pick_worksheet`), so the two can never drift.
-from .services import DATA_SHEET_TITLE
+from .services import DATA_SHEET_TITLE, custom_field_collisions
 
 INSTRUCTIONS_SHEET_TITLE = "Instructions"
 LISTS_SHEET_TITLE = "Lists"
@@ -126,6 +126,19 @@ _CORE_COLUMN_HELP: dict[str, tuple[str, str]] = {
     "status": (
         "Optional",
         "Drop-down, fixed set of values. Blank defaults to 'available'.",
+    ),
+    "tracking": (
+        "Optional",
+        "'individual' (one physical unit, the default) or 'counted' (one row "
+        "standing for several identical durable units, e.g. a box of "
+        "screwdrivers). Blank = counted if quantity is above 1, else "
+        "individual. Counted assets can't be reserved or checked out, and "
+        "consumable categories can't be counted.",
+    ),
+    "quantity": (
+        "Optional",
+        "Whole number of 1 or more. Above 1 creates ONE counted asset "
+        "standing for that many identical units. Blank = 1.",
     ),
     "condition": ("Optional", "Free text, e.g. 'Scratched lid, works fine'."),
     "description": ("Optional", "Free text, any length."),
@@ -193,7 +206,9 @@ def tenant_custom_field_columns() -> list[tuple[str, CustomFieldDef]]:
     return columns
 
 
-def _write_instructions(worksheet, custom_columns: list[tuple[str, CustomFieldDef]]) -> None:
+def _write_instructions(
+    worksheet, custom_columns: list[tuple[str, CustomFieldDef]], collisions: dict[str, str]
+) -> None:
     def section(title: str) -> None:
         worksheet.append([])
         worksheet.append([title])
@@ -223,7 +238,7 @@ def _write_instructions(worksheet, custom_columns: list[tuple[str, CustomFieldDe
     for key, field_def in custom_columns:
         worksheet.append(
             [
-                key,
+                custom_column_header(key, collisions),
                 "Required" if field_def.required else "Optional",
                 (
                     f"Custom field '{field_def.label}' ({field_def.data_type})"
@@ -380,7 +395,10 @@ def build_import_template_workbook() -> openpyxl.Workbook:
     context (see `tenant_custom_field_columns`).
     """
     custom_columns = tenant_custom_field_columns()
-    header = CORE_EXPORT_COLUMNS + [key for key, _ in custom_columns]
+    collisions = custom_field_collisions(keys_only=True)
+    header = CORE_EXPORT_COLUMNS + [
+        custom_column_header(key, collisions) for key, _ in custom_columns
+    ]
 
     workbook = openpyxl.Workbook()
     data_sheet = workbook.active
@@ -388,7 +406,7 @@ def build_import_template_workbook() -> openpyxl.Workbook:
     _write_header_row(data_sheet, header)
 
     instructions = workbook.create_sheet(INSTRUCTIONS_SHEET_TITLE)
-    _write_instructions(instructions, custom_columns)
+    _write_instructions(instructions, custom_columns, collisions)
 
     # The drop-down source sheet must EXIST before a validation can point a
     # defined name at it.

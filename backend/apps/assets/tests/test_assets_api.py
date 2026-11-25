@@ -344,9 +344,8 @@ class TestAssetRetireLifecycle:
         client.post(f"/api/v1/assets/{asset_id}/retire/")
 
         entry = AuditLog.all_objects.get(
-            tenant=tenant, entity_type="asset", entity_id=str(asset_id)
+            tenant=tenant, entity_type="asset", entity_id=str(asset_id), action="asset.retire"
         )
-        assert entry.action == "asset.retire"
         assert entry.before is not None and entry.before["status"] == "available"
         assert entry.after is not None and entry.after["status"] == "retired"
         assert entry.actor_id == admin.id
@@ -371,7 +370,7 @@ class TestAssetRetireLifecycle:
 
         assert (
             AuditLog.all_objects.filter(
-                tenant=tenant, entity_type="asset", entity_id=str(asset_id)
+                tenant=tenant, entity_type="asset", entity_id=str(asset_id), action="asset.retire"
             ).count()
             == 1
         )

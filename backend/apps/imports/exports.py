@@ -8,7 +8,7 @@ scoped to their own project's assets, Member ✅ tenant-wide, Viewer ➖).
 `apps.assets.api.visible_assets_queryset` (the SAME helper `AssetViewSet.
 get_queryset` uses for `list`, just keyed by `ASSET_EXPORT` instead of
 `ASSET_VIEW`), and `?category=`/`?location=`/`?project=`/`?tag=`/`?status=`/
-`?is_consumable=`/`?search=` are applied by the SAME `AssetFilterSet`/
+`?is_consumable=`/`?tracking=`/`?search=` are applied by the SAME `AssetFilterSet`/
 `AssetSearchFilter` classes `AssetViewSet` uses, via `GenericAPIView.
 filter_queryset()` — no separate filter implementation exists here at all.
 
@@ -48,6 +48,12 @@ from apps.rbac.permission_keys import ASSET_EXPORT
 from apps.tenancy.context import tenant_context
 
 from .permissions import AssetExportPermission
+from .services import (
+    CUSTOM_HEADER_PREFIX,
+    TARGET_QUANTITY,
+    TARGET_TRACKING,
+    custom_field_collisions,
+)
 
 #: Every scalar `Asset` column, grouped the way a person reads an inventory
 #: sheet (identity -> where/who -> state -> purchase -> link) rather than in
@@ -65,6 +71,8 @@ CORE_EXPORT_COLUMNS = [
     "location",
     "project",
     "status",
+    "tracking",
+    "quantity",
     "condition",
     "tags",
     "purchase_date",
@@ -74,6 +82,14 @@ CORE_EXPORT_COLUMNS = [
     "warranty_expiry",
     "url",
 ]
+
+
+def custom_column_header(key: str, collisions: dict[str, str]) -> str:
+    """Header for a custom field's column. A field that collides with a core
+    column (`apps.imports.services.custom_field_collisions`, a TENANT-WIDE
+    set) is prefixed so the sheet never has two same-named columns; the
+    importer strips the prefix and maps it back to the field."""
+    return f"{CUSTOM_HEADER_PREFIX}{key}" if key in collisions else key
 
 
 class _EchoWriter:
@@ -116,7 +132,18 @@ class AssetExportView(generics.GenericAPIView):
                 seen_keys.add(field_def.key)
                 custom_columns.append(field_def.key)
 
-        header = CORE_EXPORT_COLUMNS + custom_columns
+        # Only KEY collisions are prefixed (export headers are keys, so a
+        # label-only match never clashed). Fields whose key collides with
+        # `quantity`/`tracking` are ALWAYS emitted (blank where a row's
+        # category lacks them), so the sheet carries its `custom:` marker even
+        # when filtered; the importer additionally recognizes our sheets by
+        # having both `tracking` and `quantity` columns.
+        collisions = custom_field_collisions(keys_only=True)
+        for key, target in collisions.items():
+            if target in (TARGET_QUANTITY, TARGET_TRACKING) and key not in seen_keys:
+                seen_keys.add(key)
+                custom_columns.append(key)
+        header = CORE_EXPORT_COLUMNS + [custom_column_header(k, collisions) for k in custom_columns]
 
         # **Bug found/fixed while writing this view's tests.** A
         # `StreamingHttpResponse`'s generator body runs LAZILY, as the WSGI
@@ -150,6 +177,8 @@ class AssetExportView(generics.GenericAPIView):
                         asset.location.name if asset.location else "",
                         asset.project.name if asset.project else "",
                         asset.status,
+                        asset.tracking,
+                        asset.quantity,
                         asset.condition,
                         ", ".join(sorted(link.tag.name for link in asset.tag_links.all())),
                         asset.purchase_date.isoformat() if asset.purchase_date else "",

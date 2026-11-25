@@ -725,6 +725,68 @@ step 4 above; this only recreates containers, no data is at risk.
 
 ---
 
+### 3g. Converting existing assets to Counted
+
+Counted assets (`tracking=counted` + `quantity`) stand for N identical durable
+units (screwdrivers, cables). To convert assets that already exist, use the
+`convert_to_counted` management command. It runs as the RLS-subject
+`cortex_app` role inside the `web` container, never merges anything, and is a
+**dry run unless you pass `--apply`**. `<slug>` is your tenant slug. Commands
+use the same `sudo` + full-binary-path form as §3e/§3f (the SSH user has no
+`docker` in PATH and isn't in the `docker` group).
+
+Run it in a quiet window (nobody editing finances or checking items out): the
+command refuses to commit if any project financial figure changes while it
+runs. If that guard trips because someone edited an expense at the same moment,
+nothing was written, so just re-run.
+
+```bash
+cd /volume1/docker/cortex
+DC="sudo /usr/local/bin/docker-compose -f docker-compose.yml -f docker-compose.prod.yml"
+CMD="exec -T web python manage.py convert_to_counted --tenant <slug>"
+
+# 0. Back up the database first (same script as §3f step 1 / §5a), and copy the
+#    dump out of the 7-day nightly rotation so it can't be deleted:
+sudo PROJECT_DIR=/volume1/docker/cortex BACKUP_DIR=/volume1/docker/cortex/backups \
+  bash docker/backup/backup.sh
+sudo cp backups/daily/cortex-<newest-timestamp>.dump \
+  backups/cortex-pre-convert-counted-$(date +%Y%m%d-%H%M%S).dump
+
+# 1. Cache sudo credentials NOW so a password prompt can never swallow the CSV
+#    piped to stdin in later steps. Redirects run as your unprivileged SSH
+#    user, so write the file to your home directory:
+sudo -v
+$DC $CMD export-candidates > ~/candidates.csv
+
+# 2. Edit ~/candidates.csv (save as "CSV UTF-8" if you use Excel): put the unit
+#    count in the `quantity` column for each asset to convert and leave it blank
+#    for the rest. Do NOT edit `id`, `uuid` or `name` and don't sort a subset of
+#    columns: rows whose name or id/uuid don't match the asset are rejected.
+#    `possible_duplicate_group` marks rows sharing a name+category
+#    (informational: decide yourself); `blockers` lists why a row can't convert
+#    yet (active reservation, open checkout, stock record) - resolve those first.
+
+# 3. Dry run: validates every row with the same rules as the API, writes nothing:
+sudo -v
+$DC $CMD apply - < ~/candidates.csv
+
+# 4. Apply (all-or-nothing, one transaction; any row error aborts everything).
+#    --actor is required: the email of an active user in this tenant.
+sudo -v
+$DC $CMD apply - --apply --actor you@example.com < ~/candidates.csv
+```
+
+Safety: before and after the writes the command fingerprints every project's
+spent / remaining / spend-by-category, every expense's resolved asset
+allocations and every expense-asset link; if anything differs it rolls back and
+prints the diff, otherwise it prints `Financial figures unchanged (N projects,
+M expenses)`. Each conversion writes an `asset.edit` audit entry attributed to
+`--actor`. Rows already counted with the same quantity are reported as
+unchanged and not touched. Exit code 0 = success / clean dry run, 1 = errors.
+To undo: edit the assets individually (set tracking back to individual with
+quantity 1), or restore the `cortex-pre-convert-counted-<timestamp>.dump` from
+step 0 using §5d (this also discards any other changes made since the backup).
+
 ## 4. Verification checklist
 
 Run through all of these after §1-3 are complete:

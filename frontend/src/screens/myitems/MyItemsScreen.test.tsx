@@ -63,6 +63,8 @@ function makeAsset(overrides: Partial<Asset> = {}): Asset {
     name: "Drone Alpha",
     description: "",
     is_consumable: false,
+    tracking: "individual",
+    quantity: 1,
     project: null,
     serial_number: "SN-10",
     manufacturer: "",

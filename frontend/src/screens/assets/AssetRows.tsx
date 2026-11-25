@@ -15,6 +15,16 @@ interface AssetRowProps extends AssetRowLookups {
   style?: CSSProperties;
 }
 
+/** "×10" badge for counted assets; nothing for individual ones. */
+function CountBadge({ asset }: { asset: Asset }) {
+  if (asset.tracking !== "counted") return null;
+  return (
+    <Badge size="sm" variant="outline" color="teal" style={{ flexShrink: 0 }} data-testid="asset-count-badge">
+      ×{asset.quantity}
+    </Badge>
+  );
+}
+
 /** Card view row (T1.6: "card and table views"). One asset per row, full
  * width — deliberately a single column, not a multi-column card grid, so
  * this stays comfortable one-handed on a phone (CLAUDE.md mobile-first). */
@@ -25,9 +35,12 @@ export function AssetCardRow({ asset, categoryName, locationName, projectName, o
         <Card withBorder padding="sm" mb="xs" h="100%">
           <Group justify="space-between" wrap="nowrap" align="flex-start">
             <div style={{ minWidth: 0 }}>
-              <Text fw={600} truncate>
-                {asset.name}
-              </Text>
+              <Group gap={6} wrap="nowrap">
+                <Text fw={600} truncate>
+                  {asset.name}
+                </Text>
+                <CountBadge asset={asset} />
+              </Group>
               <Text size="xs" c="dimmed" truncate>
                 {categoryName}
                 {asset.serial_number ? ` · SN ${asset.serial_number}` : ""}
@@ -75,9 +88,12 @@ export function AssetTableRow({ asset, categoryName, locationName, projectName, 
           borderBottom: "1px solid var(--mantine-color-default-border)",
         }}
       >
-        <Text size="sm" fw={500} truncate>
-          {asset.name}
-        </Text>
+        <Group gap={6} wrap="nowrap" style={{ overflow: "hidden" }}>
+          <Text size="sm" fw={500} truncate>
+            {asset.name}
+          </Text>
+          <CountBadge asset={asset} />
+        </Group>
         <Text size="sm" c="dimmed" truncate>
           {categoryName}
         </Text>

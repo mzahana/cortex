@@ -56,6 +56,13 @@ class Asset(TenantScopedModel):
         RETIRED = "retired", "Retired"
         LOST = "lost", "Lost"
 
+    class Tracking(models.TextChoices):
+        """How many physical units this one record stands for — see the
+        `tracking`/`quantity` field docs below."""
+
+        INDIVIDUAL = "individual", "Individual"
+        COUNTED = "counted", "Counted"
+
     # --- Identity ------------------------------------------------------------
     uuid = models.UUIDField(
         default=uuid_lib.uuid4,
@@ -86,6 +93,37 @@ class Asset(TenantScopedModel):
         related_name="assets",
         help_text="NULL = general pool (docs/data-model.md §4). PROTECT: reassign "
         "an active project's assets before it can be deleted.",
+    )
+
+    # --- Unit tracking ---------------------------------------------------------
+    # An *individual* asset is one physical unit (a GPU, a drone) — the default,
+    # and every row that predates this field. A *counted* asset is ONE record
+    # standing for N identical durable units (a box of identical screwdrivers,
+    # a bin of the same cable) that are not worth labelling one by one.
+    #
+    # `quantity` is the count of those identical durable units. It is NOT the
+    # consumable stock count: consumables keep using
+    # `StockItem.quantity_on_hand` + the `StockTxn` ledger, and a consumable can
+    # never be counted (`asset_consumable_not_counted`), so the two quantities
+    # can't be confused on the same row.
+    #
+    # Invariants are enforced in the DB, not just in serializers
+    # (`Meta.constraints`): quantity >= 1; an individual asset's quantity is
+    # exactly 1; tracking is one of the two choices (Django `choices` are not
+    # a DB constraint on their own).
+    tracking = models.CharField(
+        max_length=16,
+        choices=Tracking.choices,
+        default=Tracking.INDIVIDUAL,
+        help_text="'individual' = this record is one physical unit; 'counted' = "
+        "this record stands for `quantity` identical durable units. Consumables "
+        "are never counted (they use StockItem instead).",
+    )
+    quantity = models.PositiveIntegerField(
+        default=1,
+        help_text="Number of identical units for a counted asset; always 1 for an "
+        "individual asset (DB-enforced). NOT the consumable stock count — that is "
+        "`StockItem.quantity_on_hand`.",
     )
 
     # --- Physical / commercial ------------------------------------------------
@@ -149,6 +187,23 @@ class Asset(TenantScopedModel):
             models.UniqueConstraint(
                 fields=["tenant", "qr_token"], name="uniq_asset_tenant_qr_token"
             ),
+            # Unit-tracking invariants (see the `tracking`/`quantity` fields).
+            models.CheckConstraint(
+                check=models.Q(tracking__in=["individual", "counted"]),
+                name="asset_tracking_valid",
+            ),
+            models.CheckConstraint(
+                check=models.Q(quantity__gte=1),
+                name="asset_quantity_positive",
+            ),
+            models.CheckConstraint(
+                check=models.Q(tracking="counted") | models.Q(quantity=1),
+                name="asset_individual_quantity_one",
+            ),
+            models.CheckConstraint(
+                check=~models.Q(is_consumable=True, tracking="counted"),
+                name="asset_consumable_not_counted",
+            ),
         ]
         indexes = [
             # T1.3 also adds: GIN(search_vector), pg_trgm GIN(name),
@@ -159,6 +214,14 @@ class Asset(TenantScopedModel):
             models.Index(fields=["tenant", "category"]),
             models.Index(fields=["tenant", "location"]),
             models.Index(fields=["tenant", "project"]),
+            # Deliberately NO (tenant, tracking) index: `tracking` has two
+            # values and is expected to be overwhelmingly 'individual', so a
+            # btree on it is low-selectivity for the common case and pure
+            # write overhead; `?tracking=` is always combined with the tenant
+            # predicate (and usually other filters/search) that existing
+            # indexes already drive. Revisit with a partial index
+            # `WHERE tracking = 'counted'` if counted assets become a hot,
+            # standalone filter at scale.
         ]
         ordering = ["-created_at"]
 

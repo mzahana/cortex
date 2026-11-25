@@ -548,6 +548,11 @@ export interface Attachment {
  * `AssetSerializer.get_field_values`). Rendering it against the category's
  * `CustomFieldDef[]` (for `label`/`data_type`/`unit`/`order`) is the
  * caller's job — this type alone doesn't carry the schema. */
+/** `Asset.tracking`: `individual` = one record per physical item (reservable /
+ * checkout-able); `counted` = identical items tracked as a count (never
+ * reservable or checkout-able). */
+export type AssetTracking = "individual" | "counted";
+
 export interface Asset {
   id: number;
   uuid: string;
@@ -556,6 +561,9 @@ export interface Asset {
   name: string;
   description: string;
   is_consumable: boolean;
+  tracking: AssetTracking;
+  /** Always 1 for `individual`; >= 1 for `counted`. */
+  quantity: number;
   project: number | null;
   serial_number: string;
   manufacturer: string;
@@ -599,6 +607,8 @@ export interface AssetWritePayload {
   name?: string;
   description?: string;
   is_consumable?: boolean;
+  tracking?: AssetTracking;
+  quantity?: number;
   project?: number | null;
   serial_number?: string;
   manufacturer?: string;
@@ -649,6 +659,7 @@ export interface AssetListParams extends ListParams {
   unassigned?: boolean;
   tag?: number;
   is_consumable?: boolean;
+  tracking?: AssetTracking;
   /** Retired assets are hidden from the default list server-side; this is
    * the documented opt-in to include them (`apps.assets.api.AssetViewSet.
    * get_queryset`). */
@@ -1224,6 +1235,8 @@ export const IMPORT_CORE_TARGETS = [
   "location",
   "project",
   "status",
+  "tracking",
+  "quantity",
   "condition",
   "tags",
   "purchase_date",
